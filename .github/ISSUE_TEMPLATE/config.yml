@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Question / discussion
+    url: https://github.com/KoichiIshiguro/claude-code-remote/discussions
+    about: For "how do I" or general usage questions
+  - name: 🛡️ Security report
+    url: https://github.com/KoichiIshiguro/claude-code-remote/security/advisories/new
+    about: Please do NOT open a public issue for security problems

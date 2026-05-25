@@ -1,0 +1,41 @@
+name: 💡 Feature request
+description: Suggest something — but please read CONTRIBUTING.md first
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening this, please skim [CONTRIBUTING.md](../../CONTRIBUTING.md).
+        The project is intentionally tiny — features that bloat it (build pipelines,
+        CSS frameworks, multi-user) probably won't be merged.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      placeholder: I'm trying to do X but ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      placeholder: I think adding ... would let me ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      placeholder: I could also do X by ...
+
+  - type: checkboxes
+    id: fits-philosophy
+    attributes:
+      label: Project fit
+      options:
+        - label: This stays single-user (no RBAC / admin panel)
+        - label: This doesn't require a frontend build step
+        - label: This doesn't add a heavy runtime dependency

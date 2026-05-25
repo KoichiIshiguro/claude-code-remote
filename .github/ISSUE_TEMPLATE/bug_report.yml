@@ -1,0 +1,70 @@
+name: 🐛 Bug report
+description: Something is broken
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! A few quick checks before you submit:
+        - Are you on the latest `main`?
+        - Have you checked `pm2 logs claude-code-remote` (or wherever your stdout goes)?
+        - Does the browser DevTools console show anything red?
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what did you see instead?
+      placeholder: |
+        1. I opened ...
+        2. I clicked ...
+        3. I expected ...
+        4. Instead I got ...
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit SHA
+      description: Output of `git rev-parse --short HEAD`
+      placeholder: e.g. 1afc422
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      placeholder: e.g. v20.11.0
+    validations:
+      required: true
+
+  - type: input
+    id: claude
+    attributes:
+      label: claude CLI version
+      placeholder: e.g. 2.1.123
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome (desktop)
+        - Safari (desktop)
+        - Firefox (desktop)
+        - Safari (iOS)
+        - Chrome (Android)
+        - Other (please describe)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Server stdout, browser console, etc. Paste only what's relevant — no secrets.
+      render: shell

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Lint & syntax check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['18', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check all JS
+        run: |
+          set -e
+          for f in server.js src/*.js; do
+            echo "→ checking $f"
+            node --check "$f"
+          done
+
+      - name: Verify server can start (3s smoke)
+        env:
+          PORT: 4123
+          SESSION_SECRET: ci-smoke-test-secret-do-not-deploy
+          ALLOWED_GITHUB_USER: ci
+        run: |
+          node server.js &
+          PID=$!
+          sleep 3
+          if curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4123/login | grep -q 200; then
+            echo "✓ server responded 200 on /login"
+            kill $PID
+          else
+            echo "✗ server did not respond"
+            kill $PID || true
+            exit 1
+          fi
