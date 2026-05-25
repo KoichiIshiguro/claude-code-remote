@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Runtime data — session state, uploaded images
+data/
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+pm2-error.log
+pm2-out.log
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build / cache
+.cache/
+dist/
+build/
+.next/
+coverage/
+
+# Local PM2 / process manager artifacts
+.pm2/
+ecosystem.local.config.js

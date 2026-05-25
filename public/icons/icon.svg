@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a1d27"/>
+      <stop offset="100%" stop-color="#0a0d14"/>
+    </linearGradient>
+    <linearGradient id="arc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffaa60"/>
+      <stop offset="45%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#c2410c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="48%">
+      <stop offset="0%" stop-color="#f97316" stop-opacity="0.22"/>
+      <stop offset="60%" stop-color="#f97316" stop-opacity="0.07"/>
+      <stop offset="100%" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="bloom" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="9" result="b"/>
+      <feColorMatrix in="b" type="saturate" values="1.4" result="b2"/>
+      <feMerge><feMergeNode in="b2"/><feMergeNode in="b2"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Subtle highlight border -->
+  <rect x="1.5" y="1.5" width="509" height="509" rx="111" fill="none"
+        stroke="white" stroke-width="2" stroke-opacity="0.06"/>
+  <!-- Warm glow halo -->
+  <circle cx="256" cy="256" r="210" fill="url(#glow)"/>
+
+  <!-- C-arc: 270° arc, opening to the right -->
+  <!-- Center (256,256), radius 136, stroke 54 -->
+  <!-- Start: upper-right (354,158) = angle −45° -->
+  <!-- End:   lower-right (354,354) = angle +45° -->
+  <!-- Sweep counterclockwise (flag 0) with large-arc (flag 1) → 270° through left side -->
+  <path d="M 354,158 A 136,136 0 1 0 354,354"
+        fill="none" stroke="url(#arc)" stroke-width="54" stroke-linecap="round"
+        filter="url(#bloom)"/>
+
+  <!-- Accent dot at top end -->
+  <circle cx="354" cy="158" r="29" fill="url(#arc)" filter="url(#bloom)"/>
+
+  <!-- Tiny inner dot hint -->
+  <circle cx="256" cy="256" r="14" fill="#f97316" opacity="0.55"/>
+</svg>

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="arc" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffaa60"/>
+      <stop offset="45%" stop-color="#f97316"/>
+      <stop offset="100%" stop-color="#c2410c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="48%">
+      <stop offset="0%" stop-color="#f97316" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="bloom" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- Full bleed background for maskable (safe zone = center 80%) -->
+  <rect width="512" height="512" fill="#0a0d14"/>
+  <circle cx="256" cy="256" r="210" fill="url(#glow)"/>
+  <!-- Scale down slightly for safe zone -->
+  <g transform="translate(256,256) scale(0.72) translate(-256,-256)">
+    <path d="M 354,158 A 136,136 0 1 0 354,354"
+          fill="none" stroke="url(#arc)" stroke-width="54" stroke-linecap="round"
+          filter="url(#bloom)"/>
+    <circle cx="354" cy="158" r="29" fill="url(#arc)" filter="url(#bloom)"/>
+    <circle cx="256" cy="256" r="14" fill="#f97316" opacity="0.55"/>
+  </g>
+</svg>

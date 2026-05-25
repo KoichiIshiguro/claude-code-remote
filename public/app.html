@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Claude Code Remote</title>
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Claude">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon.svg">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});</script>
+  <style>
+    .projects-grid {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+      align-content: start;
+    }
+    .project-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 14px 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+      position: relative;
+    }
+    .project-card:hover { border-color: var(--accent); background: var(--surface2); }
+    .project-card .proj-icon { font-size: 28px; }
+    .project-card .proj-name {
+      font-size: 14px;
+      font-weight: 500;
+      word-break: break-all;
+      line-height: 1.3;
+    }
+    .project-card .proj-status {
+      font-size: 11px;
+      color: var(--green);
+      display: none;
+      align-items: center;
+      gap: 4px;
+    }
+    .project-card.active .proj-status { display: flex; }
+    .project-card.active { border-color: var(--green); }
+    .project-card .proj-status::before {
+      content: '';
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+    }
+    /* New project card */
+    .project-card.new-card {
+      border-style: dashed;
+      border-color: var(--border);
+      color: var(--text-muted);
+      align-items: center;
+      justify-content: center;
+      min-height: 110px;
+    }
+    .project-card.new-card:hover { border-color: var(--accent); color: var(--accent); }
+    .project-card.new-card .plus { font-size: 28px; line-height: 1; }
+    .project-card.new-card .new-label { font-size: 13px; font-weight: 500; }
+    /* New project modal */
+    .modal-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.6);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .modal h2 { font-size: 16px; font-weight: 600; }
+    .modal input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 15px;
+      outline: none;
+      width: 100%;
+    }
+    .modal input:focus { border-color: var(--accent); }
+    .modal .modal-hint { font-size: 12px; color: var(--text-muted); }
+    .modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .btn-cancel {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .btn-cancel:hover { background: var(--surface2); }
+    .section-label {
+      padding: 8px 16px 0;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body class="page">
+  <div class="header">
+    <span style="font-size:20px">🤖</span>
+    <h1>Claude Code Remote</h1>
+    <a href="/auth/logout" class="btn btn-sm" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:6px 12px;font-size:13px;border-radius:6px;">Logout</a>
+  </div>
+
+  <div class="section-label" id="sectionLabel">Projects</div>
+  <div class="projects-grid" id="grid">
+    <div class="project-card new-card" id="newCard">
+      <span class="plus">+</span>
+      <span class="new-label">New Project</span>
+    </div>
+  </div>
+
+  <!-- New project modal -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal">
+      <h2>New Project</h2>
+      <input type="text" id="projectNameInput" placeholder="my-project" autocomplete="off" spellcheck="false">
+      <p class="modal-hint" id="modalHint">Created under your project root.</p>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="cancelBtn">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="createBtn">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
+
+    // Active sessions from WS
+    let activeSessions = {};
+
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ type: 'list_sessions' }));
+    });
+    ws.addEventListener('message', (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'sessions_list') {
+        activeSessions = {};
+        msg.sessions.forEach(s => { activeSessions[s.directory] = s; });
+        refreshCards();
+      }
+      if (msg.type === 'session_created') {
+        location.href = `/terminal?session=${msg.session.id}`;
+      }
+      if (msg.type === 'error') {
+        alert(msg.message);
+      }
+    });
+
+    // Load projects from API
+    let projects = [];
+    let baseDir = '';
+
+    async function loadProjects() {
+      const res = await fetch('/api/projects');
+      const data = await res.json();
+      projects = data.projects || [];
+      baseDir = data.base || '';
+      document.getElementById('modalHint').textContent = baseDir
+        ? `Created under ${baseDir}/`
+        : 'Set BASE_DIR in .env to enable project creation.';
+      refreshCards();
+    }
+
+    function refreshCards() {
+      const grid = document.getElementById('grid');
+      // Remove old project cards, keep new-card
+      Array.from(grid.querySelectorAll('.project-card:not(.new-card)')).forEach(el => el.remove());
+
+      const label = document.getElementById('sectionLabel');
+      label.textContent = projects.length
+        ? (baseDir ? `Projects (${baseDir})` : 'Projects')
+        : 'No projects yet';
+
+      projects.forEach(proj => {
+        const isActive = !!activeSessions[proj.path];
+        const card = document.createElement('div');
+        card.className = `project-card${isActive ? ' active' : ''}`;
+        card.innerHTML = `
+          <span class="proj-icon">📁</span>
+          <span class="proj-name">${escHtml(proj.name)}</span>
+          <span class="proj-status">Running</span>`;
+        card.addEventListener('click', () => openProject(proj.path, isActive ? activeSessions[proj.path].id : null));
+        grid.insertBefore(card, document.getElementById('newCard'));
+      });
+    }
+
+    function openProject(directory, existingSessionId) {
+      if (existingSessionId) {
+        location.href = `/terminal?session=${existingSessionId}`;
+      } else {
+        ws.send(JSON.stringify({ type: 'create_session', directory }));
+      }
+    }
+
+    // New project modal
+    document.getElementById('newCard').addEventListener('click', () => {
+      document.getElementById('projectNameInput').value = '';
+      document.getElementById('modalOverlay').classList.add('open');
+      document.getElementById('projectNameInput').focus();
+    });
+    document.getElementById('cancelBtn').addEventListener('click', closeModal);
+    document.getElementById('modalOverlay').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeModal();
+    });
+    document.getElementById('projectNameInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') createProject();
+      if (e.key === 'Escape') closeModal();
+    });
+    document.getElementById('createBtn').addEventListener('click', createProject);
+
+    function closeModal() {
+      document.getElementById('modalOverlay').classList.remove('open');
+    }
+
+    async function createProject() {
+      const name = document.getElementById('projectNameInput').value.trim();
+      if (!name) return;
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+      closeModal();
+      // Reload projects then open the new one
+      await loadProjects();
+      ws.send(JSON.stringify({ type: 'create_session', directory: data.path }));
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    loadProjects();
+  </script>
+</body>
+</html>

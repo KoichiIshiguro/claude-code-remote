@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+  <title>Claude Code</title>
+  <!-- PWA -->
+  <meta name="theme-color" content="#0d1117">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Claude">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon.svg">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <style>
+  /* ── 3-panel app shell ── */
+  .app-shell {
+    display: flex; height: 100dvh; overflow: hidden; background: var(--bg);
+  }
+
+  /* ── Sidebars ── */
+  .side {
+    width: 240px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    background: var(--surface);
+  }
+  .side-left  { border-right: 1px solid var(--border); }
+  .side-right { border-left:  1px solid var(--border); }
+
+  /* Mobile: transform-based drawers */
+  @media (max-width: 767px) {
+    .side {
+      position: fixed; top: 0; bottom: 0; width: 80vw; max-width: 300px;
+      z-index: 300; transition: transform .25s ease;
+    }
+    .side-left  { left: 0;  transform: translateX(-100%); }
+    .side-right { right: 0; transform: translateX(100%); }
+    .side.open  { transform: translateX(0) !important; }
+  }
+
+  .side-hdr {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--text-muted);
+  }
+  .side-hdr span { flex: 1; }
+  .side-close {
+    background: none; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 18px; padding: 2px 6px; line-height: 1;
+    border-radius: 4px;
+  }
+  .side-close:hover { background: var(--surface2); color: var(--text); }
+
+  /* ── Left: project list ── */
+  .proj-list { flex: 1; overflow-y: auto; padding: 6px; }
+  .proj-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 10px; border-radius: var(--radius-sm); cursor: pointer;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
+    color: var(--text-muted); border: 1px solid transparent; transition: all .12s;
+  }
+  .proj-item:hover { background: var(--surface2); color: var(--text); }
+  .proj-item.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+  .proj-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+  .proj-item.running .proj-dot { background: var(--green); }
+  .proj-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-empty { padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
+  .proj-new-area {
+    padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .proj-new-row {
+    display: flex; gap: 6px;
+  }
+  .proj-new-input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); padding: 7px 10px;
+    font-size: 13px; outline: none; font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .proj-new-input:focus { border-color: var(--accent); }
+  .proj-new-input::placeholder { color: var(--text-muted); }
+  .proj-new-btn {
+    padding: 7px 12px; background: var(--accent); color: var(--bg);
+    border: none; border-radius: var(--radius-sm); font-size: 18px; font-weight: 600;
+    cursor: pointer; line-height: 1; flex-shrink: 0;
+  }
+  .proj-new-btn:hover { opacity: .85; }
+  .proj-new-hint { font-size: 11px; color: var(--text-muted); margin-top: 5px; padding: 0 2px; }
+
+  /* ── Right: file browser ── */
+  .fb-bread {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+    padding: 5px 10px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; min-height: 30px;
+  }
+  .bc-seg { color: var(--accent); cursor: pointer; }
+  .bc-seg:hover { text-decoration: underline; }
+  .bc-sep { color: var(--border); padding: 0 1px; }
+  .fb-list { flex: 1; overflow-y: auto; }
+  .fb-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; cursor: pointer; transition: background .1s; user-select: none;
+  }
+  .fb-item:hover { background: var(--surface2); }
+  .fi-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
+  .fi-name { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fi-hidden { opacity: .4; }
+  .fb-viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .fb-viewer-hdr {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text-muted);
+  }
+  .fv-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-viewer-body { flex: 1; overflow: auto; padding: 10px 12px; }
+  .fb-viewer-body pre {
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
+    color: var(--text); white-space: pre; tab-size: 2; line-height: 1.6; margin: 0;
+  }
+  .fb-viewer-body .fb-md { font-size: 13px; line-height: 1.6; color: var(--text); }
+  .fb-viewer-body .fb-md h1,
+  .fb-viewer-body .fb-md h2,
+  .fb-viewer-body .fb-md h3 { margin-top: 1.2em; margin-bottom: .4em; }
+  .fb-viewer-body .fb-md pre { background: var(--surface2); padding: 8px; border-radius: 4px; overflow-x: auto; white-space: pre; }
+  .fb-viewer-body .fb-md code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .fb-viewer-body .fb-md :not(pre) > code { background: var(--surface2); padding: 1px 4px; border-radius: 3px; }
+  .fb-viewer-body .fb-md a { color: var(--accent); }
+  .fb-viewer-body .fb-md img { max-width: 100%; }
+  .fb-viewer-body .fb-md table { border-collapse: collapse; }
+  .fb-viewer-body .fb-md th, .fb-viewer-body .fb-md td { border: 1px solid var(--border); padding: 4px 8px; }
+  .fb-loading, .fb-empty {
+    padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 13px;
+  }
+
+  /* ── Main area ── */
+  .chat-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-width: 0; }
+
+  /* ── Top loader ── */
+  .top-loader { position: absolute; top: 0; left: 0; right: 0; height: 3px; z-index: 10; overflow: hidden; pointer-events: none; }
+  .top-loader::after { content: ''; display: block; width: 40%; height: 100%; background: linear-gradient(90deg, transparent, var(--accent), transparent); transform: translateX(-100%); }
+  .top-loader.active::after { animation: slide-bar 1.4s ease-in-out infinite; }
+  @keyframes slide-bar { 0%{transform:translateX(-100%)} 100%{transform:translateX(350%)} }
+
+  /* ── Header ── */
+  .chat-hdr {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    flex-shrink: 0; padding-top: max(8px, env(safe-area-inset-top, 0px));
+  }
+  .hdr-btn {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 18px; padding: 4px 6px; line-height: 1; border-radius: 4px; flex-shrink: 0;
+  }
+  .hdr-btn:hover { background: var(--surface2); color: var(--text); }
+  .dir-label { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+  /* ── Working chip ── */
+  .working-chip {
+    display: none; align-items: center; gap: 5px; padding: 3px 9px;
+    background: rgba(217,119,6,.15); border: 1px solid rgba(217,119,6,.35);
+    border-radius: 99px; font-size: 12px; color: #d97706; white-space: nowrap; flex-shrink: 0;
+  }
+  .working-chip.on { display: flex; }
+  .dot-anim { display: inline-block; width: 18px; }
+
+  /* ── Claude dot pulse ── */
+  .claude-dot { transition: box-shadow .3s; }
+  .streaming-active .claude-dot { animation: dot-pulse 1.4s ease-in-out infinite; }
+  @keyframes dot-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(217,119,6,.5)} 50%{box-shadow:0 0 0 7px rgba(217,119,6,0)} }
+
+  /* ── Reconnect banner ── */
+  .reconnect-banner { display: none; background: rgba(210,153,34,.9); color: #000; text-align: center; font-size: 13px; padding: 5px; font-weight: 500; flex-shrink: 0; }
+  .reconnect-banner.on { display: block; }
+
+  /* ── Cancel / Queue ── */
+  .btn-stop { display: none; align-items: center; gap: 6px; padding: 5px 12px; background: rgba(248,81,73,.15); border: 1px solid rgba(248,81,73,.4); color: var(--red); border-radius: var(--radius-sm); font-size: 13px; cursor: pointer; }
+  .btn-stop.on { display: flex; }
+  .btn-stop:hover { background: rgba(248,81,73,.28); }
+  .queue-badge { display: none; align-items: center; gap: 5px; padding: 4px 10px; background: var(--accent-dim); border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius-sm); font-size: 12px; }
+  .queue-badge.on { display: flex; }
+  .queue-list { display: none; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+  .queue-list.on { display: flex; }
+  .queue-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--surface2); border-radius: var(--radius-sm); font-size: 12px; color: var(--text-muted); }
+  .q-num { background: var(--accent-dim); color: var(--accent); border-radius: 99px; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+  .q-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .q-remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
+  .q-remove:hover { color: var(--red); }
+  .status-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; min-height: 28px; }
+
+  /* ── AskUserQuestion ── */
+  .ask-card { background: var(--surface2); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 12px 14px; }
+  .ask-q { font-size: 14px; margin-bottom: 10px; color: var(--text); line-height: 1.5; }
+  .ask-opts { display: flex; flex-direction: column; gap: 6px; }
+  .ask-btn { padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; font-size: 13px; text-align: left; transition: all .12s; }
+  .ask-btn:hover { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .ask-btn.chosen { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); pointer-events: none; }
+  .ask-note { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+
+  /* ── msg-cancelled ── */
+  .msg-cancelled .bubble { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3); color: var(--yellow); padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px; }
+
+  /* ── Permissions modal ── */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 500; align-items: center; justify-content: center; padding: 20px; }
+  .modal-overlay.on { display: flex; }
+  .perm-modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); width: 100%; max-width: 440px; max-height: 82vh; display: flex; flex-direction: column; overflow: hidden; }
+  .perm-hdr { display: flex; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .perm-hdr h3 { flex: 1; font-size: 15px; font-weight: 600; }
+  .perm-body { flex: 1; overflow-y: auto; padding: 16px; }
+  .perm-all { display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; background: var(--surface2); border-radius: var(--radius-sm); margin-bottom: 16px; cursor: pointer; }
+  .perm-all-text { flex: 1; }
+  .perm-all-text b { display: block; font-size: 14px; margin-bottom: 2px; }
+  .perm-all-text small { font-size: 12px; color: var(--text-muted); }
+  .perm-group { margin-bottom: 14px; }
+  .perm-group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 6px; }
+  .perm-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--surface2); cursor: pointer; }
+  .perm-row:last-child { border-bottom: none; }
+  .perm-row label { flex: 1; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .perm-row small { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+  .perm-ftr { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0; }
+  .btn-save { padding: 8px 20px; background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500; cursor: pointer; }
+  .btn-save:hover { opacity: .85; }
+  .btn-ghost { padding: 8px 16px; background: none; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 14px; cursor: pointer; }
+  .btn-ghost:hover { background: var(--surface2); }
+
+  /* ── Backdrop (mobile sidebar overlay) ── */
+  .backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 200; }
+  .backdrop.on { display: block; }
+
+  /* ── Bottom nav (mobile only) ── */
+  .bottom-nav {
+    display: none;
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom, 0); flex-shrink: 0;
+  }
+  .bottom-nav-inner { display: flex; }
+  .bnav-btn {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    gap: 2px; padding: 8px 4px; background: none; border: none;
+    color: var(--text-muted); cursor: pointer; font-size: 10px; font-weight: 500;
+    min-height: 52px; transition: color .15s;
+  }
+  .bnav-btn .bnav-icon { font-size: 22px; line-height: 1; }
+  .bnav-btn.active { color: var(--accent); }
+  .bnav-btn:hover { color: var(--text); }
+
+  @media (max-width: 767px) {
+    .bottom-nav { display: block; }
+    /* Hide desktop sidebar toggles, keep settings */
+    .hdr-left-btn, .hdr-right-btn { display: none; }
+    /* Give input area bottom space so it's above safe area */
+    .input-area { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+  }
+
+  /* Desktop: hide bottom nav, show sidebar toggle buttons */
+  @media (min-width: 768px) {
+    .hdr-left-btn, .hdr-right-btn { display: flex !important; }
+  }
+  </style>
+</head>
+<body class="app-shell">
+
+<!-- ── Backdrop for mobile drawers ── -->
+<div class="backdrop" id="backdrop"></div>
+
+<!-- ── Left sidebar: Projects ── -->
+<aside class="side side-left" id="sideL">
+  <div class="side-hdr">
+    <span>Projects</span>
+    <button class="side-close" id="sideL-close" aria-label="Close">×</button>
+  </div>
+  <div class="proj-list" id="projList"><div class="proj-empty">Loading…</div></div>
+  <div class="proj-new-area">
+    <div class="proj-new-row">
+      <input class="proj-new-input" id="projNameInput" placeholder="new-project" spellcheck="false" autocomplete="off">
+      <button class="proj-new-btn" id="projNewBtn" title="Create project">+</button>
+    </div>
+    <div class="proj-new-hint" id="projNewHint">Created under your project root.</div>
+  </div>
+</aside>
+
+<!-- ── Center: Chat ── -->
+<main class="chat-main">
+  <div class="top-loader" id="topLoader"></div>
+  <div class="reconnect-banner" id="reconnectBanner">Reconnecting…</div>
+
+  <div class="chat-hdr">
+    <button class="hdr-btn hdr-left-btn" id="leftBtn" title="Projects" aria-label="Projects">☰</button>
+    <span class="dir-label" id="dirLabel">Loading…</span>
+    <div class="working-chip" id="workingChip">
+      <span class="dot-anim" id="dotAnim">●</span> Working
+    </div>
+    <button class="hdr-btn" id="permBtn" title="Permissions" aria-label="Permissions">⚙</button>
+    <button class="hdr-btn hdr-right-btn" id="rightBtn" title="Files" aria-label="Files">📁</button>
+  </div>
+
+  <div class="chat-messages" id="messages"></div>
+
+  <div class="input-area">
+    <div class="queue-list" id="queueList"></div>
+    <div class="image-previews" id="imagePreviews"></div>
+    <div class="status-bar">
+      <button class="btn-stop" id="cancelBtn">■ Stop</button>
+      <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
+    </div>
+    <div class="input-row">
+      <textarea id="promptInput" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+      <div class="input-actions">
+        <button class="btn-icon" id="imgBtn" title="Attach image">🖼</button>
+        <button class="btn-send" id="sendBtn" aria-label="Send">↑</button>
+      </div>
+    </div>
+    <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
+  </div>
+
+  <!-- Mobile bottom nav -->
+  <nav class="bottom-nav" id="bottomNav">
+    <div class="bottom-nav-inner">
+      <button class="bnav-btn" id="bnavProj">
+        <span class="bnav-icon">☰</span>Projects
+      </button>
+      <button class="bnav-btn active" id="bnavChat">
+        <span class="bnav-icon">💬</span>Chat
+      </button>
+      <button class="bnav-btn" id="bnavFiles">
+        <span class="bnav-icon">📁</span>Files
+      </button>
+    </div>
+  </nav>
+</main>
+
+<!-- ── Right sidebar: File Browser ── -->
+<aside class="side side-right" id="sideR">
+  <div class="side-hdr">
+    <span>Files</span>
+    <div style="display:flex;gap:4px;align-items:center;">
+      <button class="side-close" id="fbRefresh" aria-label="Refresh" title="Refresh">⟳</button>
+      <button class="side-close" id="sideR-close" aria-label="Close">×</button>
+    </div>
+  </div>
+  <div class="fb-bread" id="fbBread"></div>
+  <div id="fbContent" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+    <div class="fb-loading">Loading…</div>
+  </div>
+</aside>
+
+<!-- ── Permissions Modal ── -->
+<div class="modal-overlay" id="permOverlay">
+  <div class="perm-modal">
+    <div class="perm-hdr">
+      <h3>Tool Permissions</h3>
+      <button class="side-close" id="permClose">×</button>
+    </div>
+    <div class="perm-body">
+      <label class="perm-all">
+        <input type="checkbox" id="permAll">
+        <div class="perm-all-text">
+          <b>All tools — unrestricted</b>
+          <small>Uses --dangerously-skip-permissions. Recommended for personal use.</small>
+        </div>
+      </label>
+      <div id="permToolsWrap">
+        <div class="perm-group">
+          <div class="perm-group-title">Execute</div>
+          <label class="perm-row"><input type="checkbox" data-tool="Bash"><label>Bash <small>Shell commands</small></label></label>
+        </div>
+        <div class="perm-group">
+          <div class="perm-group-title">File Read</div>
+          <label class="perm-row"><input type="checkbox" data-tool="Read"><label>Read <small>Read files</small></label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="LS"><label>LS <small>List directory</small></label></label>
+        </div>
+        <div class="perm-group">
+          <div class="perm-group-title">File Write</div>
+          <label class="perm-row"><input type="checkbox" data-tool="Write"><label>Write <small>Create files</small></label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="Edit"><label>Edit <small>Edit files</small></label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="MultiEdit"><label>MultiEdit</label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="NotebookEdit"><label>NotebookEdit</label></label>
+        </div>
+        <div class="perm-group">
+          <div class="perm-group-title">Web</div>
+          <label class="perm-row"><input type="checkbox" data-tool="WebFetch"><label>WebFetch <small>Fetch URLs</small></label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="WebSearch"><label>WebSearch <small>Search</small></label></label>
+        </div>
+        <div class="perm-group">
+          <div class="perm-group-title">Tasks</div>
+          <label class="perm-row"><input type="checkbox" data-tool="Task"><label>Task <small>Sub-agents</small></label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="TodoRead"><label>TodoRead</label></label>
+          <label class="perm-row"><input type="checkbox" data-tool="TodoWrite"><label>TodoWrite</label></label>
+        </div>
+      </div>
+    </div>
+    <div class="perm-ftr">
+      <button class="btn-ghost" id="permCancel">Cancel</button>
+      <button class="btn-save" id="permSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const sessionId = new URLSearchParams(location.search).get('session');
+if (!sessionId) location.href = '/app';
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+marked.setOptions({ breaks: true, gfm: true });
+
+// ── Register service worker ───────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let ws, isStreaming = false, pendingImages = [], dotTimer = null;
+let currentAssistantEl = null, currentTextEl = null, streamingText = '';
+let currentToolEls = {}, promptQueue = [];
+let allowedTools = null;
+let fbCurrentDir = '', fbSessionRoot = '';
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+// Browser WebSocket API cannot expose the HTTP status code that the server
+// returned during the upgrade (always reports close code 1006). To distinguish
+// "server restarting" from "session expired", probe /api/auth/status over HTTP
+// before (re)connecting and redirect to /login on 401.
+async function checkAuthOrRedirect() {
+  try {
+    const r = await fetch('/api/auth/status', { credentials: 'same-origin' });
+    if (r.status === 401) {
+      location.href = '/login';
+      return false;
+    }
+    return r.ok;
+  } catch {
+    // Network error — server is down. Stay on the page and let the caller retry.
+    return null;
+  }
+}
+
+async function connect() {
+  const ok = await checkAuthOrRedirect();
+  if (ok === false) return; // redirecting to /login
+  if (ok === null) {
+    // Server unreachable — show banner and retry
+    document.getElementById('reconnectBanner').classList.add('on');
+    setTimeout(connect, 2000);
+    return;
+  }
+  ws = new WebSocket(WS_URL);
+  ws.addEventListener('open', () => {
+    document.getElementById('reconnectBanner').classList.remove('on');
+    ws.send(JSON.stringify({ type: 'attach', sessionId }));
+    // Always refresh the project list on (re)connect — the sidebar may have
+    // been opened during a disconnect, in which case its wsSend was dropped.
+    ws.send(JSON.stringify({ type: 'list_sessions' }));
+  });
+  ws.addEventListener('message', e => handleMessage(JSON.parse(e.data)));
+  ws.addEventListener('close', () => {
+    document.getElementById('reconnectBanner').classList.add('on');
+    setTimeout(connect, 2000);
+  });
+}
+function wsSend(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+// ── Message handling ──────────────────────────────────────────────────────────
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'history': {
+      const dir = msg.directory || '';
+      document.getElementById('dirLabel').textContent = dir || sessionId;
+      document.getElementById('messages').innerHTML = '';
+      allowedTools = msg.allowedTools ?? null;
+      for (const e of msg.history) renderHistoryEntry(e);
+      if (msg.streaming) {
+        isStreaming = true;
+        currentAssistantEl = createAssistantMessage();
+        currentTextEl = null; streamingText = ''; currentToolEls = {};
+        if (msg.currentEntry) renderBlocks(currentAssistantEl.querySelector('.assistant-content'), msg.currentEntry.blocks);
+        setStreamingUI(true);
+      } else {
+        // Server says not streaming — reset any stale local streaming state
+        // (e.g. WS dropped mid-response, server finished, then we reattached).
+        isStreaming = false;
+        currentAssistantEl = null; currentTextEl = null; streamingText = '';
+        currentToolEls = {};
+        setStreamingUI(false);
+      }
+      fbSessionRoot = dir;
+      fbCurrentDir = dir;
+      if (dir) loadDir(dir);
+      scrollToBottom();
+      break;
+    }
+    case 'stream_start':
+      isStreaming = true; setStreamingUI(true);
+      currentAssistantEl = createAssistantMessage();
+      currentTextEl = null; streamingText = ''; currentToolEls = {};
+      break;
+    case 'stream_event':
+      handleStreamEvent(msg.event); break;
+    case 'stream_end':
+      isStreaming = false;
+      if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); removeCursor(currentTextEl); }
+      currentAssistantEl = null; currentTextEl = null; streamingText = '';
+      scrollToBottom();
+      if (promptQueue.length > 0) {
+        const next = promptQueue.shift(); renderQueue(); dispatchPrompt(next.text, next.uploadedPaths);
+      } else { setStreamingUI(false); }
+      break;
+    case 'sessions_list':
+      renderProjList(msg.sessions); break;
+    case 'session_created':
+      location.href = `/terminal?session=${msg.session.id}`;
+      break;
+    case 'permissions_updated':
+      if (msg.sessionId === sessionId) allowedTools = msg.allowedTools;
+      break;
+    case 'error':
+      isStreaming = false; setStreamingUI(false); appendError(msg.message); break;
+  }
+}
+
+// ── History rendering ─────────────────────────────────────────────────────────
+function renderHistoryEntry(entry) {
+  if (entry.type === 'user') {
+    const m = document.createElement('div'); m.className = 'msg msg-user';
+    const imgs = entry.imageCount > 0 ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">📎 ${entry.imageCount} image(s)</div>` : '';
+    m.innerHTML = `${imgs}<div class="bubble">${escHtml(entry.text)}</div>`;
+    document.getElementById('messages').appendChild(m);
+  } else if (entry.type === 'assistant') {
+    const m = createAssistantMessage();
+    const c = m.querySelector('.assistant-content');
+    renderBlocks(c, entry.blocks);
+    if (entry.cost != null) { const p = document.createElement('div'); p.className = 'usage-pill'; p.textContent = `$${entry.cost.toFixed(4)}`; c.appendChild(p); }
+    if (entry.cancelled) appendCancelled();
+    if (entry.interrupted) {
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:12px;color:var(--text-muted);margin-top:6px;padding:6px 10px;background:var(--surface2);border-left:3px solid var(--accent);border-radius:4px';
+      note.textContent = '⚠ Interrupted by a server restart. Type "continue" to resume.';
+      c.appendChild(note);
+    }
+  } else if (entry.type === 'error') { appendError(entry.message); }
+}
+
+function renderBlocks(container, blocks) {
+  for (const b of (blocks || [])) {
+    if (b.kind === 'text') {
+      const el = document.createElement('div'); el.className = 'md-text';
+      el.innerHTML = marked.parse(b.text); container.appendChild(el);
+    } else if (b.kind === 'tool') {
+      const card = buildToolCard(b.name, b.title);
+      if (b.result !== null) card.querySelector('.tool-card-body pre').textContent = b.result;
+      container.appendChild(card);
+    } else if (b.kind === 'thinking') {
+      container.appendChild(buildThinking(b.text));
+    } else if (b.kind === 'ask') {
+      container.appendChild(buildAskCard(b, false));
+    }
+  }
+}
+
+// ── Live stream ───────────────────────────────────────────────────────────────
+function handleStreamEvent(event) {
+  if (!currentAssistantEl) return;
+  const c = currentAssistantEl.querySelector('.assistant-content');
+  switch (event.type) {
+    case 'assistant':
+      for (const blk of (event.message?.content || [])) {
+        if (blk.type === 'text') { appendStreamText(c, blk.text); }
+        else if (blk.type === 'tool_use') {
+          finalizeText();
+          if (blk.name === 'AskUserQuestion') {
+            const card = buildAskCard({ question: blk.input?.question||'', options: blk.input?.options||[], toolId: blk.id, result: null }, true);
+            currentToolEls[blk.id] = card; c.appendChild(card);
+          } else {
+            const card = buildToolCard(blk.name, getToolTitle(blk.name, blk.input));
+            currentToolEls[blk.id] = card.querySelector('.tool-card-body pre'); c.appendChild(card);
+          }
+        } else if (blk.type === 'thinking') { finalizeText(); c.appendChild(buildThinking(blk.thinking)); }
+      }
+      break;
+    case 'tool': {
+      const ref = currentToolEls[event.tool_use_id];
+      if (ref instanceof HTMLPreElement) {
+        const r = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
+        ref.textContent = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
+      }
+      break;
+    }
+    case 'result':
+      if (event.cost_usd != null) { const p = document.createElement('div'); p.className = 'usage-pill'; p.textContent = `$${event.cost_usd.toFixed(4)}`; c.appendChild(p); }
+      break;
+    case 'cancelled': finalizeText(); appendCancelled(); break;
+  }
+  scrollToBottom();
+}
+
+// ── Streaming UI ──────────────────────────────────────────────────────────────
+function setStreamingUI(active) {
+  document.getElementById('topLoader').classList.toggle('active', active);
+  document.getElementById('workingChip').classList.toggle('on', active);
+  document.getElementById('cancelBtn').classList.toggle('on', active || promptQueue.length > 0);
+  document.getElementById('messages').classList.toggle('streaming-active', active);
+  if (active) startDotAnim(); else if (!promptQueue.length) stopDotAnim();
+  if (!active && !promptQueue.length) {
+    document.getElementById('cancelBtn').classList.remove('on');
+    document.getElementById('queueBadge').classList.remove('on');
+    document.getElementById('queueList').classList.remove('on');
+  }
+}
+function startDotAnim() {
+  const el = document.getElementById('dotAnim'); let i = 0;
+  dotTimer = setInterval(() => { el.textContent = ['●','●·','●··','●···'][i++ % 4]; }, 350);
+}
+function stopDotAnim() { clearInterval(dotTimer); document.getElementById('dotAnim').textContent = '●'; }
+
+// ── Text streaming ────────────────────────────────────────────────────────────
+function appendStreamText(container, text) {
+  streamingText += text;
+  if (!currentTextEl) { currentTextEl = document.createElement('div'); currentTextEl.className = 'md-text'; container.appendChild(currentTextEl); }
+  currentTextEl.innerHTML = marked.parse(streamingText); addCursor(currentTextEl);
+}
+function finalizeText() {
+  if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); removeCursor(currentTextEl); streamingText = ''; currentTextEl = null; }
+}
+function addCursor(el) { removeCursor(el); const c = document.createElement('span'); c.className = 'cursor'; el.appendChild(c); }
+function removeCursor(el) { el.querySelectorAll('.cursor').forEach(c => c.remove()); }
+
+// ── DOM builders ──────────────────────────────────────────────────────────────
+function createAssistantMessage() {
+  const m = document.createElement('div'); m.className = 'msg msg-assistant';
+  m.innerHTML = `<div class="label"><span class="claude-dot"></span> Claude</div><div class="assistant-content"></div>`;
+  document.getElementById('messages').appendChild(m); return m;
+}
+function buildToolCard(toolName, title) {
+  const bm = {Bash:'badge-bash',Read:'badge-read',Write:'badge-write',Edit:'badge-edit',MultiEdit:'badge-edit',LS:'badge-ls'};
+  const card = document.createElement('div'); card.className = 'tool-card';
+  card.innerHTML = `<div class="tool-card-header"><span class="tool-badge ${bm[toolName]||'badge-default'}">${toolName}</span><span class="tool-card-title">${escHtml(title)}</span><span class="tool-card-chevron">›</span></div><div class="tool-card-body"><pre>(running…)</pre></div>`;
+  card.querySelector('.tool-card-header').addEventListener('click', () => card.classList.toggle('open'));
+  return card;
+}
+function buildAskCard(block, live) {
+  const card = document.createElement('div'); card.className = 'ask-card';
+  const opts = (block.options || []).map((o,i) => `<button class="ask-btn" data-i="${i}">${escHtml(o)}</button>`).join('');
+  card.innerHTML = `<div class="ask-q">${escHtml(block.question)}</div><div class="ask-opts">${opts}</div><div class="ask-note"></div>`;
+  if (live) {
+    card.querySelectorAll('.ask-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        card.querySelectorAll('.ask-btn').forEach(b => b.classList.remove('chosen'));
+        btn.classList.add('chosen'); card.querySelector('.ask-note').textContent = '✓ Selected';
+        const chosen = block.options[+btn.dataset.i];
+        if (!isStreaming) { appendUserMsg(chosen, [], false); dispatchPrompt(chosen, []); }
+        else { promptQueue.unshift({ text: chosen, previewUrls: [], uploadedPaths: [] }); renderQueue(); }
+      });
+    });
+  }
+  return card;
+}
+function buildThinking(text) {
+  const b = document.createElement('div'); b.className = 'thinking-block';
+  b.innerHTML = `<div class="label">Thinking</div><pre>${escHtml(text)}</pre>`; return b;
+}
+function appendUserMsg(text, images, queued) {
+  const m = document.createElement('div'); m.className = 'msg msg-user';
+  const imgs = images?.length ? `<div class="img-previews">${images.map(u=>`<img src="${u}">`).join('')}</div>` : '';
+  const lbl = queued ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">⏳ queued</div>` : '';
+  m.innerHTML = `${lbl}${imgs}<div class="bubble">${escHtml(text)}</div>`;
+  document.getElementById('messages').appendChild(m); scrollToBottom();
+}
+function appendError(text) {
+  const m = document.createElement('div'); m.className = 'msg msg-error';
+  m.innerHTML = `<div class="bubble">⚠ ${escHtml(text)}</div>`;
+  document.getElementById('messages').appendChild(m); scrollToBottom();
+}
+function appendCancelled() {
+  const m = document.createElement('div'); m.className = 'msg msg-cancelled';
+  m.innerHTML = `<div class="bubble">■ Stopped by user</div>`;
+  document.getElementById('messages').appendChild(m); scrollToBottom();
+}
+function getToolTitle(name, input) {
+  if (!input) return name;
+  if (name === 'Bash') return (input.command||'').split('\n')[0].slice(0,80)||name;
+  if (['Read','Write','Edit','MultiEdit'].includes(name)) return input.file_path||name;
+  if (name === 'LS') return input.path||name;
+  return JSON.stringify(input).slice(0,80);
+}
+
+// ── Send prompt ───────────────────────────────────────────────────────────────
+async function sendPrompt() {
+  const inp = document.getElementById('promptInput');
+  const text = inp.value.trim();
+  if (!text && pendingImages.length === 0) return;
+  inp.value = ''; autoResize(inp);
+  let uploadedPaths = [];
+  const previewUrls = pendingImages.map(p => p.dataUrl);
+  if (pendingImages.length > 0) {
+    const fd = new FormData();
+    for (const p of pendingImages) fd.append('images', p.file);
+    try { const r = await fetch('/upload',{method:'POST',body:fd}); uploadedPaths=(await r.json()).paths||[]; }
+    catch(e) { appendError('Upload failed: '+e.message); return; }
+  }
+  clearImgPreviews();
+  if (isStreaming) { appendUserMsg(text,previewUrls,true); promptQueue.push({text,previewUrls,uploadedPaths}); renderQueue(); setStreamingUI(true); }
+  else { appendUserMsg(text,previewUrls,false); dispatchPrompt(text,uploadedPaths); }
+}
+function dispatchPrompt(text, paths) { wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths}); }
+
+document.getElementById('cancelBtn').addEventListener('click', () => { wsSend({type:'cancel',sessionId}); promptQueue=[]; renderQueue(); });
+
+function renderQueue() {
+  const list = document.getElementById('queueList');
+  document.getElementById('queueCount').textContent = promptQueue.length;
+  list.innerHTML = '';
+  if (!promptQueue.length) { list.classList.remove('on'); document.getElementById('queueBadge').classList.remove('on'); return; }
+  document.getElementById('queueBadge').classList.add('on'); list.classList.add('on');
+  promptQueue.forEach((item,i) => {
+    const el = document.createElement('div'); el.className = 'queue-item';
+    el.innerHTML = `<span class="q-num">${i+1}</span><span class="q-text">${escHtml(item.text)}</span><button class="q-remove">×</button>`;
+    el.querySelector('.q-remove').addEventListener('click', () => { promptQueue.splice(i,1); renderQueue(); });
+    list.appendChild(el);
+  });
+}
+
+// ── Image handling ────────────────────────────────────────────────────────────
+document.getElementById('imgBtn').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', e => { for (const f of e.target.files) addImg(f); e.target.value=''; });
+document.addEventListener('paste', e => { for (const item of e.clipboardData.items) { if(item.type.startsWith('image/')) { const f=item.getAsFile(); if(f) addImg(f); } } });
+function addImg(file) { const r=new FileReader(); r.onload=e=>{ pendingImages.push({file,dataUrl:e.target.result}); renderImgPreviews(); }; r.readAsDataURL(file); }
+function renderImgPreviews() {
+  const c=document.getElementById('imagePreviews'); c.innerHTML='';
+  pendingImages.forEach((img,i) => { const el=document.createElement('div'); el.className='preview-item'; el.innerHTML=`<img src="${img.dataUrl}"><button class="remove-img">×</button>`; el.querySelector('.remove-img').addEventListener('click',()=>{pendingImages.splice(i,1);renderImgPreviews();}); c.appendChild(el); });
+}
+function clearImgPreviews() { pendingImages=[]; document.getElementById('imagePreviews').innerHTML=''; }
+
+// ── Input events ──────────────────────────────────────────────────────────────
+document.getElementById('sendBtn').addEventListener('click', sendPrompt);
+document.getElementById('promptInput').addEventListener('keydown', e => { if(e.isComposing||e.keyCode===229) return; if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendPrompt();} });
+document.getElementById('promptInput').addEventListener('input', e => autoResize(e.target));
+
+// ── Sidebar / panel open-close ────────────────────────────────────────────────
+const backdrop = document.getElementById('backdrop');
+
+function openSide(id) {
+  document.getElementById(id).classList.add('open');
+  backdrop.classList.add('on');
+}
+function closeSide(id) {
+  document.getElementById(id).classList.remove('open');
+  const anyOpen = document.getElementById('sideL').classList.contains('open') || document.getElementById('sideR').classList.contains('open');
+  if (!anyOpen) backdrop.classList.remove('on');
+}
+function toggleSide(id) {
+  const side = document.getElementById(id);
+  side.classList.contains('open') ? closeSide(id) : openSide(id);
+}
+
+document.getElementById('leftBtn').addEventListener('click', () => { wsSend({type:'list_sessions'}); toggleSide('sideL'); });
+document.getElementById('rightBtn').addEventListener('click', () => toggleSide('sideR'));
+document.getElementById('fbRefresh').addEventListener('click', () => { if (fbCurrentDir) loadDir(fbCurrentDir); });
+document.getElementById('sideL-close').addEventListener('click', () => closeSide('sideL'));
+document.getElementById('sideR-close').addEventListener('click', () => closeSide('sideR'));
+backdrop.addEventListener('click', () => { closeSide('sideL'); closeSide('sideR'); });
+
+// ── Mobile bottom nav ─────────────────────────────────────────────────────────
+document.getElementById('bnavProj').addEventListener('click', () => {
+  wsSend({type:'list_sessions'});
+  setActiveNav('bnavProj'); openSide('sideL');
+});
+document.getElementById('bnavChat').addEventListener('click', () => {
+  setActiveNav('bnavChat'); closeSide('sideL'); closeSide('sideR');
+});
+document.getElementById('bnavFiles').addEventListener('click', () => {
+  setActiveNav('bnavFiles'); openSide('sideR');
+});
+function setActiveNav(activeId) {
+  ['bnavProj','bnavChat','bnavFiles'].forEach(id => document.getElementById(id).classList.toggle('active', id === activeId));
+}
+// Reset nav to chat when a drawer closes
+backdrop.addEventListener('click', () => setActiveNav('bnavChat'));
+
+// ── Project list ──────────────────────────────────────────────────────────────
+function renderProjList(sessions) {
+  const list = document.getElementById('projList'); list.innerHTML = '';
+  if (!sessions.length) { list.innerHTML = '<div class="proj-empty">No sessions</div>'; return; }
+  for (const s of sessions) {
+    const el = document.createElement('div');
+    el.className = 'proj-item' + (s.streaming?' running':'') + (s.id===sessionId?' active':'');
+    const name = s.directory.split('/').pop() || s.directory;
+    el.innerHTML = `<span class="proj-dot"></span><span class="proj-name" title="${escHtml(s.directory)}">${escHtml(name)}</span>`;
+    if (s.id !== sessionId) el.addEventListener('click', () => location.href = `/terminal?session=${s.id}`);
+    list.appendChild(el);
+  }
+}
+
+// ── New project ───────────────────────────────────────────────────────────────
+(async () => {
+  // Populate the hint with actual BASE_DIR from the server.
+  try {
+    const r = await fetch('/api/projects');
+    const d = await r.json();
+    const el = document.getElementById('projNewHint');
+    if (d.base) el.textContent = `Create under ${d.base}/`;
+    else el.textContent = 'Set BASE_DIR in .env to enable project creation.';
+  } catch {}
+})();
+
+async function createProject() {
+  const inp = document.getElementById('projNameInput');
+  const name = inp.value.trim();
+  if (!name) return;
+  const btn = document.getElementById('projNewBtn');
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await fetch('/api/projects', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }),
+    });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    inp.value = '';
+    // Create session and navigate
+    wsSend({ type: 'create_session', directory: d.path });
+  } catch (e) { alert('Failed: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = '+'; }
+}
+
+document.getElementById('projNewBtn').addEventListener('click', createProject);
+document.getElementById('projNameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') createProject();
+});
+
+// ── File browser ──────────────────────────────────────────────────────────────
+async function loadDir(dir) {
+  fbCurrentDir = dir;
+  const content = document.getElementById('fbContent');
+  content.innerHTML = '<div class="fb-loading">Loading…</div>';
+  renderBread(dir);
+  try {
+    const r = await fetch(`/api/files?dir=${encodeURIComponent(dir)}`);
+    const data = await r.json();
+    if (data.error) { content.innerHTML = `<div class="fb-empty">Error: ${escHtml(data.error)}</div>`; return; }
+    const list = document.createElement('div'); list.className = 'fb-list'; list.style.flex = '1'; list.style.overflowY = 'auto';
+    if (!data.items.length) { list.innerHTML = '<div class="fb-empty">Empty directory</div>'; }
+    for (const item of data.items) {
+      const el = document.createElement('div');
+      el.className = 'fb-item' + (item.hidden ? ' fi-hidden' : '');
+      const icon = item.type === 'dir' ? '📁' : getFileIcon(item.name);
+      el.innerHTML = `<span class="fi-icon">${icon}</span><span class="fi-name">${escHtml(item.name)}</span>`;
+      const fullPath = dir.replace(/\/+$/, '') + '/' + item.name;
+      if (item.type === 'dir') el.addEventListener('dblclick', () => loadDir(fullPath));
+      else el.addEventListener('dblclick', () => viewFile(fullPath, item.name));
+      el.title = `${item.type === 'dir' ? 'Folder' : 'File'}: ${item.name}\nDouble-click to ${item.type === 'dir' ? 'open' : 'view'}`;
+      list.appendChild(el);
+    }
+    content.innerHTML = ''; content.appendChild(list);
+  } catch { content.innerHTML = '<div class="fb-empty">Failed to load</div>'; }
+}
+
+async function viewFile(filePath, name) {
+  const content = document.getElementById('fbContent');
+  const isMd = /\.(md|markdown)$/i.test(name);
+  const bodyInner = isMd
+    ? '<div class="fb-md md-text">Loading…</div>'
+    : '<pre>Loading…</pre>';
+  content.innerHTML = `<div class="fb-viewer"><div class="fb-viewer-hdr"><span class="fv-path">${escHtml(name)}</span><button class="side-close" id="fbBack">×</button></div><div class="fb-viewer-body">${bodyInner}</div></div>`;
+  content.querySelector('#fbBack').addEventListener('click', () => loadDir(fbCurrentDir));
+  try {
+    const r = await fetch(`/api/file?path=${encodeURIComponent(filePath)}`);
+    const data = await r.json();
+    const target = content.querySelector(isMd ? '.fb-md' : 'pre');
+    if (data.error) {
+      target.textContent = 'Error: ' + data.error;
+    } else if (isMd) {
+      target.innerHTML = marked.parse(data.content || '');
+    } else {
+      target.textContent = data.content || '(empty)';
+    }
+  } catch {
+    const target = content.querySelector(isMd ? '.fb-md' : 'pre');
+    target.textContent = 'Failed to load';
+  }
+}
+
+function renderBread(dir) {
+  const bread = document.getElementById('fbBread'); bread.innerHTML = '';
+  // Build path relative to session root
+  let rel = dir;
+  if (fbSessionRoot && dir.startsWith(fbSessionRoot)) rel = dir.slice(fbSessionRoot.length) || '';
+  const segs = rel.split('/').filter(Boolean);
+
+  const root = document.createElement('span'); root.className = 'bc-seg'; root.textContent = '~';
+  root.addEventListener('click', () => loadDir(fbSessionRoot)); bread.appendChild(root);
+
+  let built = fbSessionRoot;
+  for (const seg of segs) {
+    built = built.replace(/\/+$/, '') + '/' + seg;
+    const sep = document.createElement('span'); sep.className = 'bc-sep'; sep.textContent = '/'; bread.appendChild(sep);
+    const s = document.createElement('span'); s.className = 'bc-seg'; s.textContent = seg;
+    const p = built;
+    s.addEventListener('click', () => loadDir(p)); bread.appendChild(s);
+  }
+}
+
+function getFileIcon(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  const m = {js:'🟨',ts:'🔷',jsx:'🟨',tsx:'🔷',html:'🌐',css:'🎨',json:'📋',md:'📝',py:'🐍',sh:'⚙️',txt:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',svg:'🖼',pdf:'📕',zip:'🗜',env:'🔐',gitignore:'🙈'};
+  return m[ext] || '📄';
+}
+
+// ── Permissions modal ─────────────────────────────────────────────────────────
+const permAll = document.getElementById('permAll');
+const permToolsWrap = document.getElementById('permToolsWrap');
+
+document.getElementById('permBtn').addEventListener('click', openPermModal);
+document.getElementById('permClose').addEventListener('click', closePermModal);
+document.getElementById('permCancel').addEventListener('click', closePermModal);
+document.getElementById('permSave').addEventListener('click', savePerms);
+document.getElementById('permOverlay').addEventListener('click', e => { if(e.target===e.currentTarget) closePermModal(); });
+
+permAll.addEventListener('change', () => {
+  permToolsWrap.style.opacity = permAll.checked ? '.4' : '1';
+  permToolsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => cb.disabled = permAll.checked);
+});
+
+function openPermModal() {
+  if (allowedTools === null) {
+    permAll.checked = true;
+    permToolsWrap.style.opacity = '.4';
+    permToolsWrap.querySelectorAll('input[data-tool]').forEach(cb => { cb.checked=false; cb.disabled=true; });
+  } else {
+    permAll.checked = false;
+    permToolsWrap.style.opacity = '1';
+    permToolsWrap.querySelectorAll('input[data-tool]').forEach(cb => { cb.checked = allowedTools.includes(cb.dataset.tool); cb.disabled=false; });
+  }
+  document.getElementById('permOverlay').classList.add('on');
+}
+function closePermModal() { document.getElementById('permOverlay').classList.remove('on'); }
+function savePerms() {
+  const newAllowed = permAll.checked ? null : Array.from(permToolsWrap.querySelectorAll('input[data-tool]:checked')).map(cb => cb.dataset.tool);
+  wsSend({type:'update_permissions',sessionId,allowedTools:newAllowed});
+  allowedTools = newAllowed; closePermModal();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,180)+'px'; }
+function scrollToBottom() { const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+connect();
+</script>
+</body>
+</html>
