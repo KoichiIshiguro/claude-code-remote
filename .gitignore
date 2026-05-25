@@ -36,3 +36,6 @@ coverage/
 # Local PM2 / process manager artifacts
 .pm2/
 ecosystem.local.config.js
+
+# Puppeteer / Chromium runtime cache (created by capture-website during README screenshot generation)
+engine.bin
