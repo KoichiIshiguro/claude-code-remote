@@ -327,7 +327,7 @@
     <div class="input-row">
       <textarea id="promptInput" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
       <div class="input-actions">
-        <button class="btn-icon" id="imgBtn" title="Attach image" aria-label="Attach image">
+        <button class="btn-icon" id="imgBtn" title="Attach file" aria-label="Attach file">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="2.5"/>
             <circle cx="9" cy="9" r="1.6"/>
@@ -337,7 +337,7 @@
         <button class="btn-send" id="sendBtn" aria-label="Send">↑</button>
       </div>
     </div>
-    <input type="file" id="fileInput" accept="image/*" multiple style="display:none">
+    <input type="file" id="fileInput" multiple style="display:none">
   </div>
 
   <!-- Mobile bottom nav -->
@@ -560,7 +560,7 @@ function handleMessage(msg) {
 function renderHistoryEntry(entry) {
   if (entry.type === 'user') {
     const m = document.createElement('div'); m.className = 'msg msg-user';
-    const imgs = entry.imageCount > 0 ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">📎 ${entry.imageCount} image(s)</div>` : '';
+    const imgs = entry.imageCount > 0 ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">📎 ${entry.imageCount} file${entry.imageCount > 1 ? 's' : ''}</div>` : '';
     m.innerHTML = `${imgs}<div class="bubble">${escHtml(entry.text)}</div>`;
     document.getElementById('messages').appendChild(m);
   } else if (entry.type === 'assistant') {
@@ -757,12 +757,15 @@ function renderQueue() {
   });
 }
 
-// ── Image handling ────────────────────────────────────────────────────────────
+// ── File attachment handling ──────────────────────────────────────────────────
+// `pendingImages` is kept as the variable name for backward compatibility with
+// the rest of this file, but it now holds any attachment (image or other file).
 document.getElementById('imgBtn').addEventListener('click', () => document.getElementById('fileInput').click());
-document.getElementById('fileInput').addEventListener('change', e => { for (const f of e.target.files) addImg(f); e.target.value=''; });
-document.addEventListener('paste', e => { for (const item of e.clipboardData.items) { if(item.type.startsWith('image/')) { const f=item.getAsFile(); if(f) addImg(f); } } });
+document.getElementById('fileInput').addEventListener('change', e => { for (const f of e.target.files) addFile(f); e.target.value=''; });
+document.addEventListener('paste', e => { for (const item of e.clipboardData.items) { if(item.type.startsWith('image/')) { const f=item.getAsFile(); if(f) addFile(f); } } });
 
-// Drag & drop anywhere on the window — image files only (server only accepts images).
+// Drag & drop anywhere on the window — any file type. Claude's Read tool handles
+// text, code, PDFs, etc.; images are previewed as thumbnails.
 (function setupDragDrop() {
   // Counter pattern: dragenter/dragleave fire on every child, so depth-track them.
   let depth = 0;
@@ -787,25 +790,48 @@ document.addEventListener('paste', e => { for (const item of e.clipboardData.ite
     e.preventDefault();
     depth = 0;
     document.body.classList.remove('drag-over');
-    let added = 0, rejected = 0;
-    for (const f of e.dataTransfer.files) {
-      if (f.type.startsWith('image/')) { addImg(f); added++; }
-      else rejected++;
-    }
-    if (added === 0 && rejected > 0) {
-      appendError(`Only image files are supported (${rejected} file${rejected > 1 ? 's' : ''} ignored).`);
-    } else if (rejected > 0) {
-      appendError(`${rejected} non-image file${rejected > 1 ? 's' : ''} ignored.`);
-    }
+    for (const f of e.dataTransfer.files) addFile(f);
   });
 })();
 
-function addImg(file) { const r=new FileReader(); r.onload=e=>{ pendingImages.push({file,dataUrl:e.target.result}); renderImgPreviews(); }; r.readAsDataURL(file); }
-function renderImgPreviews() {
-  const c=document.getElementById('imagePreviews'); c.innerHTML='';
-  pendingImages.forEach((img,i) => { const el=document.createElement('div'); el.className='preview-item'; el.innerHTML=`<img src="${img.dataUrl}"><button class="remove-img">×</button>`; el.querySelector('.remove-img').addEventListener('click',()=>{pendingImages.splice(i,1);renderImgPreviews();}); c.appendChild(el); });
+function addFile(file) {
+  if (file.type.startsWith('image/')) {
+    const r = new FileReader();
+    r.onload = e => {
+      pendingImages.push({ file, dataUrl: e.target.result, kind: 'image' });
+      renderImgPreviews();
+    };
+    r.readAsDataURL(file);
+  } else {
+    pendingImages.push({ file, kind: 'file', name: file.name, size: file.size });
+    renderImgPreviews();
+  }
 }
-function clearImgPreviews() { pendingImages=[]; document.getElementById('imagePreviews').innerHTML=''; }
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+function renderImgPreviews() {
+  const c = document.getElementById('imagePreviews');
+  c.innerHTML = '';
+  pendingImages.forEach((p, i) => {
+    const el = document.createElement('div');
+    el.className = 'preview-item';
+    if (p.kind === 'image') {
+      el.innerHTML = `<img src="${p.dataUrl}"><button class="remove-img" aria-label="Remove">×</button>`;
+    } else {
+      el.classList.add('preview-file');
+      el.innerHTML = `<div class="file-chip"><span class="file-icon">📄</span><span class="file-name">${escHtml(p.name)}</span><span class="file-size">${fmtBytes(p.size)}</span></div><button class="remove-img" aria-label="Remove">×</button>`;
+    }
+    el.querySelector('.remove-img').addEventListener('click', () => {
+      pendingImages.splice(i, 1);
+      renderImgPreviews();
+    });
+    c.appendChild(el);
+  });
+}
+function clearImgPreviews() { pendingImages = []; document.getElementById('imagePreviews').innerHTML = ''; }
 
 // ── Input events ──────────────────────────────────────────────────────────────
 document.getElementById('sendBtn').addEventListener('click', sendPrompt);

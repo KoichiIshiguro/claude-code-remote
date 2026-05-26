@@ -20,23 +20,22 @@ setupAuth(app);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Image upload endpoint
+// File upload endpoint — images, text, PDFs, anything Claude can read.
+// Files are stored with a random name; original extension is preserved so
+// Claude's Read tool can detect type from path.
 const storage = multer.diskStorage({
   destination: path.join(__dirname, 'uploads'),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname) || '.png';
+    const ext = path.extname(file.originalname) || '';
     cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
   },
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) cb(null, true);
-    else cb(new Error('Only image files are allowed'));
-  },
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
 });
 
+// Field name is still "images" for backward compat with older clients.
 app.post('/upload', requireAuth, upload.array('images', 10), (req, res) => {
   const paths = req.files.map((f) => f.path);
   res.json({ paths });
