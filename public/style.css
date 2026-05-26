@@ -148,6 +148,19 @@ a { color: var(--accent); text-decoration: none; }
 .btn-send:hover { opacity: .85; }
 .btn-send:disabled { opacity: .4; cursor: not-allowed; }
 
+/* ── Drag & drop overlay ── */
+body.drag-over::after {
+  content: 'Drop images to attach';
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(13, 17, 23, .82);
+  border: 3px dashed var(--accent);
+  color: var(--accent);
+  font-size: 20px; font-weight: 600; letter-spacing: .02em;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -761,6 +761,45 @@ function renderQueue() {
 document.getElementById('imgBtn').addEventListener('click', () => document.getElementById('fileInput').click());
 document.getElementById('fileInput').addEventListener('change', e => { for (const f of e.target.files) addImg(f); e.target.value=''; });
 document.addEventListener('paste', e => { for (const item of e.clipboardData.items) { if(item.type.startsWith('image/')) { const f=item.getAsFile(); if(f) addImg(f); } } });
+
+// Drag & drop anywhere on the window — image files only (server only accepts images).
+(function setupDragDrop() {
+  // Counter pattern: dragenter/dragleave fire on every child, so depth-track them.
+  let depth = 0;
+  const isFileDrag = e => Array.from(e.dataTransfer?.types || []).includes('Files');
+
+  window.addEventListener('dragenter', e => {
+    if (!isFileDrag(e)) return;
+    depth++;
+    document.body.classList.add('drag-over');
+  });
+  window.addEventListener('dragleave', e => {
+    if (!isFileDrag(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) document.body.classList.remove('drag-over');
+  });
+  window.addEventListener('dragover', e => {
+    // Required for `drop` to fire.
+    if (isFileDrag(e)) e.preventDefault();
+  });
+  window.addEventListener('drop', e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    depth = 0;
+    document.body.classList.remove('drag-over');
+    let added = 0, rejected = 0;
+    for (const f of e.dataTransfer.files) {
+      if (f.type.startsWith('image/')) { addImg(f); added++; }
+      else rejected++;
+    }
+    if (added === 0 && rejected > 0) {
+      appendError(`Only image files are supported (${rejected} file${rejected > 1 ? 's' : ''} ignored).`);
+    } else if (rejected > 0) {
+      appendError(`${rejected} non-image file${rejected > 1 ? 's' : ''} ignored.`);
+    }
+  });
+})();
+
 function addImg(file) { const r=new FileReader(); r.onload=e=>{ pendingImages.push({file,dataUrl:e.target.result}); renderImgPreviews(); }; r.readAsDataURL(file); }
 function renderImgPreviews() {
   const c=document.getElementById('imagePreviews'); c.innerHTML='';
