@@ -430,6 +430,17 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
+// ── Markdown: open all links in a new tab ─────────────────────────────────────
+// Applies to every marked.parse() call below (chat stream, history, file viewer).
+marked.use({
+  renderer: {
+    link(token) {
+      const html = marked.Renderer.prototype.link.call(this, token);
+      return html.replace(/^<a /, '<a target="_blank" rel="noopener noreferrer" ');
+    },
+  },
+});
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws, isStreaming = false, pendingImages = [], dotTimer = null;
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
