@@ -327,7 +327,13 @@
     <div class="input-row">
       <textarea id="promptInput" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
       <div class="input-actions">
-        <button class="btn-icon" id="imgBtn" title="Attach image">🖼</button>
+        <button class="btn-icon" id="imgBtn" title="Attach image" aria-label="Attach image">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2.5"/>
+            <circle cx="9" cy="9" r="1.6"/>
+            <path d="M21 16l-5-5L5 21"/>
+          </svg>
+        </button>
         <button class="btn-send" id="sendBtn" aria-label="Send">↑</button>
       </div>
     </div>
