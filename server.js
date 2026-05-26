@@ -129,6 +129,21 @@ app.get('/api/file', requireAuth, (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Raw file delivery — used by the file viewer for images, PDFs, etc.
+// Restricted to BASE_DIR like /api/file.
+app.get('/api/file/raw', requireAuth, (req, res) => {
+  const { path: filePath } = req.query;
+  if (!filePath) return res.status(400).send('path is required');
+  const absPath = path.resolve(filePath);
+  const baseDir = process.env.BASE_DIR;
+  if (baseDir && !absPath.startsWith(path.resolve(baseDir))) {
+    return res.status(403).send('Access denied');
+  }
+  res.sendFile(absPath, (err) => {
+    if (err && !res.headersSent) res.status(500).send(err.message);
+  });
+});
+
 // Page routes
 app.get('/', requireAuth, (req, res) => res.redirect('/app'));
 app.get('/app', requireAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'app.html')));
