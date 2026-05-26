@@ -277,6 +277,13 @@ async function* runPrompt(sessionId, promptText, imagePaths = []) {
 
   const args = ['-p', finalPrompt, '--output-format', 'stream-json', '--verbose'];
 
+  // `-p` (non-interactive) mode cannot return a tool_result, so any
+  // AskUserQuestion call will hang from Claude's perspective and it'll
+  // self-cancel with "質問キャンセルされました". Tell the model to ask in
+  // plain text instead. We append this every turn so it survives --resume.
+  args.push('--append-system-prompt',
+    'When you need to ask the user a question or offer choices, write the question as plain text in your reply and STOP your turn. List options as a numbered or bulleted list. Do NOT call the AskUserQuestion tool — this environment cannot return a tool result, so the question would silently fail.');
+
   if (session.allowedTools === null) {
     // null = unrestricted
     args.push('--dangerously-skip-permissions');
