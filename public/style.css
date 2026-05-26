@@ -183,8 +183,11 @@ body.drag-over::after {
 }
 
 /* ── 3-panel: desktop persistent sidebars ── */
+/* Keep `position: relative` so the inner absolute-positioned resize handle
+   (terminal.html: .side-resize-handle) anchors to the sidebar, not the viewport.
+   Override only the mobile transform reset. */
 @media (min-width: 768px) {
-  .side { position:static !important; transform:none !important; }
-  .side-left  { border-right-width:1px; }
-  .side-right { border-left-width:1px; }
+  .side { transform: none !important; }
+  .side-left  { border-right-width: 1px; }
+  .side-right { border-left-width: 1px; }
 }
