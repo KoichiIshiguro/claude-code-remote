@@ -145,8 +145,25 @@
       <span class="plus">⬆</span>
       <span class="new-label">Import .zip</span>
     </div>
+    <div class="project-card new-card" id="cloneCard" title="git clone a remote repository">
+      <span class="plus">⎇</span>
+      <span class="new-label">Clone from Git</span>
+    </div>
   </div>
   <input type="file" id="zipInput" accept=".zip,application/zip" style="display:none">
+
+  <!-- Git clone modal -->
+  <div class="modal-overlay" id="cloneOverlay">
+    <div class="modal">
+      <h2>Clone from Git</h2>
+      <input type="text" id="cloneUrlInput" placeholder="https://github.com/user/repo.git" autocomplete="off" spellcheck="false">
+      <p class="modal-hint">Supports https, ssh, and git@host:user/repo form. Private repos need keys/credentials already configured on the server.</p>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="cloneCancelBtn">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="cloneRunBtn">Clone</button>
+      </div>
+    </div>
+  </div>
 
   <!-- New project modal -->
   <div class="modal-overlay" id="modalOverlay">
@@ -265,6 +282,45 @@
       // Reload projects then open the new one
       await loadProjects();
       ws.send(JSON.stringify({ type: 'create_session', directory: data.path }));
+    }
+
+    // Clone from Git
+    const cloneCard = document.getElementById('cloneCard');
+    const cloneOverlay = document.getElementById('cloneOverlay');
+    const cloneUrlInput = document.getElementById('cloneUrlInput');
+    const cloneRunBtn = document.getElementById('cloneRunBtn');
+    cloneCard.addEventListener('click', () => {
+      cloneUrlInput.value = '';
+      cloneOverlay.classList.add('open');
+      cloneUrlInput.focus();
+    });
+    document.getElementById('cloneCancelBtn').addEventListener('click', () => cloneOverlay.classList.remove('open'));
+    cloneOverlay.addEventListener('click', (e) => { if (e.target === e.currentTarget) cloneOverlay.classList.remove('open'); });
+    cloneUrlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') runClone();
+      if (e.key === 'Escape') cloneOverlay.classList.remove('open');
+    });
+    cloneRunBtn.addEventListener('click', runClone);
+    async function runClone() {
+      const url = cloneUrlInput.value.trim();
+      if (!url) return;
+      const origText = cloneRunBtn.textContent;
+      cloneRunBtn.disabled = true; cloneRunBtn.textContent = 'Cloning…';
+      try {
+        const res = await fetch('/api/projects/clone', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.error) { alert(data.error || `Clone failed (${res.status})`); return; }
+        cloneOverlay.classList.remove('open');
+        await loadProjects();
+      } catch (err) {
+        alert('Clone failed: ' + err.message);
+      } finally {
+        cloneRunBtn.disabled = false; cloneRunBtn.textContent = origText;
+      }
     }
 
     // Import .zip

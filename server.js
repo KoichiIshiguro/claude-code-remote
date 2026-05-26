@@ -174,6 +174,75 @@ app.post('/api/projects', requireAuth, (req, res) => {
   }
 });
 
+// Clone a remote repository into BASE_DIR via `git clone`.
+// Accepts: https://, git://, ssh://, or scp-form like git@host:user/repo(.git)
+// Sanitization: we never pass the URL through a shell; spawn() with an array.
+// We still reject obviously-bad characters as a belt-and-suspenders check.
+app.post('/api/projects/clone', requireAuth, (req, res) => {
+  const base = process.env.BASE_DIR;
+  if (!base) return res.status(400).json({ error: 'BASE_DIR not configured' });
+  const baseAbs = path.resolve(base);
+
+  const { url, name: customName } = req.body || {};
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url is required' });
+  if (url.length > 1000) return res.status(400).json({ error: 'url is too long' });
+  // Whitelist: https / http / git / ssh / scp-form (user@host:path)
+  const urlOk =
+    /^https?:\/\/[^\s'"`;|&<>]+$/i.test(url) ||
+    /^git:\/\/[^\s'"`;|&<>]+$/i.test(url) ||
+    /^ssh:\/\/[^\s'"`;|&<>]+$/i.test(url) ||
+    /^[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+:[^\s'"`;|&<>]+$/.test(url);
+  if (!urlOk) return res.status(400).json({ error: 'Unsupported or unsafe git url' });
+
+  // Pick the folder name from the URL (last path segment, strip .git) unless
+  // the caller passed one explicitly.
+  let name = customName;
+  if (!name) {
+    const m = url.match(/([^/:]+?)(?:\.git)?\/?$/);
+    name = m ? m[1] : null;
+  }
+  if (!name || !/^[a-zA-Z0-9_\-.]+$/.test(name)) {
+    return res.status(400).json({ error: 'Could not derive a valid folder name from URL; supply ?name=' });
+  }
+  const target = path.join(baseAbs, name);
+  if (!target.startsWith(baseAbs + path.sep) && target !== baseAbs) {
+    return res.status(400).json({ error: 'Invalid target path' });
+  }
+  if (fs.existsSync(target)) {
+    return res.status(409).json({ error: `Project "${name}" already exists` });
+  }
+
+  const { spawn } = require('child_process');
+  // GIT_TERMINAL_PROMPT=0 so a private repo doesn't hang waiting for credentials.
+  const proc = spawn('git', ['clone', '--', url, target], {
+    cwd: baseAbs,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+
+  let stderr = '';
+  proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+  // Hard timeout in case git hangs (e.g. SSH key prompt despite the env var).
+  const killTimer = setTimeout(() => {
+    proc.kill('SIGTERM');
+  }, 5 * 60 * 1000);
+
+  proc.on('close', (code) => {
+    clearTimeout(killTimer);
+    if (code === 0) {
+      res.json({ name, path: target });
+    } else {
+      // Best-effort cleanup of half-cloned dirs
+      try { fs.rmSync(target, { recursive: true, force: true }); } catch {}
+      res.status(500).json({ error: stderr.trim() || `git exited with code ${code}` });
+    }
+  });
+  proc.on('error', (err) => {
+    clearTimeout(killTimer);
+    res.status(500).json({ error: err.message });
+  });
+});
+
 // File browser APIs
 app.get('/api/files', requireAuth, (req, res) => {
   const { dir } = req.query;
