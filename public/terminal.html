@@ -442,15 +442,16 @@ if ('serviceWorker' in navigator) {
 }
 
 // ── Markdown: open all links in a new tab ─────────────────────────────────────
-// Applies to every marked.parse() call below (chat stream, history, file viewer).
-marked.use({
-  renderer: {
-    link(token) {
-      const html = marked.Renderer.prototype.link.call(this, token);
-      return html.replace(/^<a /, '<a target="_blank" rel="noopener noreferrer" ');
-    },
-  },
-});
+// We post-process the rendered DOM rather than overriding marked's link
+// renderer — the v12 link(token) override is fragile across `marked.use({...})`
+// (the inner tokens get lost when called via prototype). DOM rewriting is
+// simple and version-proof.
+function openLinksInNewTab(root) {
+  root.querySelectorAll('a[href]').forEach(a => {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  });
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws, isStreaming = false, pendingImages = [], dotTimer = null;
@@ -541,7 +542,7 @@ function handleMessage(msg) {
       handleStreamEvent(msg.event); break;
     case 'stream_end':
       isStreaming = false;
-      if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); removeCursor(currentTextEl); }
+      if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); removeCursor(currentTextEl); }
       currentAssistantEl = null; currentTextEl = null; streamingText = '';
       scrollToBottom();
       if (promptQueue.length > 0) {
@@ -587,7 +588,7 @@ function renderBlocks(container, blocks) {
   for (const b of (blocks || [])) {
     if (b.kind === 'text') {
       const el = document.createElement('div'); el.className = 'md-text';
-      el.innerHTML = marked.parse(b.text); container.appendChild(el);
+      el.innerHTML = marked.parse(b.text); openLinksInNewTab(el); container.appendChild(el);
     } else if (b.kind === 'tool') {
       const card = buildToolCard(b.name, b.title);
       if (b.result !== null) card.querySelector('.tool-card-body pre').textContent = b.result;
@@ -659,10 +660,10 @@ function stopDotAnim() { clearInterval(dotTimer); document.getElementById('dotAn
 function appendStreamText(container, text) {
   streamingText += text;
   if (!currentTextEl) { currentTextEl = document.createElement('div'); currentTextEl.className = 'md-text'; container.appendChild(currentTextEl); }
-  currentTextEl.innerHTML = marked.parse(streamingText); addCursor(currentTextEl);
+  currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); addCursor(currentTextEl);
 }
 function finalizeText() {
-  if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); removeCursor(currentTextEl); streamingText = ''; currentTextEl = null; }
+  if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); removeCursor(currentTextEl); streamingText = ''; currentTextEl = null; }
 }
 function addCursor(el) { removeCursor(el); const c = document.createElement('span'); c.className = 'cursor'; el.appendChild(c); }
 function removeCursor(el) { el.querySelectorAll('.cursor').forEach(c => c.remove()); }
@@ -1044,6 +1045,7 @@ async function viewFile(filePath, name) {
       target.textContent = 'Error: ' + data.error;
     } else if (isMd) {
       target.innerHTML = marked.parse(data.content || '');
+      openLinksInNewTab(target);
     } else {
       target.textContent = data.content || '(empty)';
     }
