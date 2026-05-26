@@ -120,17 +120,19 @@
     font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
     color: var(--text); white-space: pre; tab-size: 2; line-height: 1.6; margin: 0;
   }
-  .fb-viewer-body .fb-md { font-size: 13px; line-height: 1.6; color: var(--text); }
+  .fb-viewer-body .fb-md { font-size: 13px; line-height: 1.6; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
   .fb-viewer-body .fb-md h1,
   .fb-viewer-body .fb-md h2,
   .fb-viewer-body .fb-md h3 { margin-top: 1.2em; margin-bottom: .4em; }
-  .fb-viewer-body .fb-md pre { background: var(--surface2); padding: 8px; border-radius: 4px; overflow-x: auto; white-space: pre; }
+  .fb-viewer-body .fb-md pre { background: var(--surface2); padding: 8px; border-radius: 4px; overflow-x: auto; white-space: pre; max-width: 100%; }
   .fb-viewer-body .fb-md code { font-family: 'SF Mono', monospace; font-size: 12px; }
-  .fb-viewer-body .fb-md :not(pre) > code { background: var(--surface2); padding: 1px 4px; border-radius: 3px; }
+  .fb-viewer-body .fb-md pre code { white-space: pre; word-break: normal; }
+  .fb-viewer-body .fb-md :not(pre) > code { background: var(--surface2); padding: 1px 4px; border-radius: 3px; word-break: break-all; }
   .fb-viewer-body .fb-md a { color: var(--accent); }
-  .fb-viewer-body .fb-md img { max-width: 100%; }
-  .fb-viewer-body .fb-md table { border-collapse: collapse; }
-  .fb-viewer-body .fb-md th, .fb-viewer-body .fb-md td { border: 1px solid var(--border); padding: 4px 8px; }
+  .fb-viewer-body .fb-md img, .fb-viewer-body .fb-md video { max-width: 100%; height: auto; }
+  .fb-viewer-body .fb-md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; }
+  .fb-viewer-body .fb-md th, .fb-viewer-body .fb-md td { border: 1px solid var(--border); padding: 4px 8px; white-space: nowrap; }
+  .fb-viewer-body .fb-md th { background: var(--surface2); font-weight: 600; text-align: left; }
   .fb-loading, .fb-empty {
     padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 13px;
   }
