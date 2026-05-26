@@ -141,7 +141,12 @@
       <span class="plus">+</span>
       <span class="new-label">New Project</span>
     </div>
+    <div class="project-card new-card" id="importCard" title="Upload a .zip of an existing project">
+      <span class="plus">⬆</span>
+      <span class="new-label">Import .zip</span>
+    </div>
   </div>
+  <input type="file" id="zipInput" accept=".zip,application/zip" style="display:none">
 
   <!-- New project modal -->
   <div class="modal-overlay" id="modalOverlay">
@@ -261,6 +266,32 @@
       await loadProjects();
       ws.send(JSON.stringify({ type: 'create_session', directory: data.path }));
     }
+
+    // Import .zip
+    const zipInput = document.getElementById('zipInput');
+    const importCard = document.getElementById('importCard');
+    importCard.addEventListener('click', () => zipInput.click());
+    zipInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const origLabel = importCard.querySelector('.new-label').textContent;
+      importCard.querySelector('.new-label').textContent = 'Uploading…';
+      importCard.style.pointerEvents = 'none';
+      try {
+        const fd = new FormData();
+        fd.append('zip', file);
+        const res = await fetch('/api/projects/import', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok || data.error) { alert(data.error || `Import failed (${res.status})`); return; }
+        await loadProjects();
+      } catch (err) {
+        alert('Import failed: ' + err.message);
+      } finally {
+        importCard.querySelector('.new-label').textContent = origLabel;
+        importCard.style.pointerEvents = '';
+      }
+    });
 
     function escHtml(s) {
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

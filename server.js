@@ -69,6 +69,92 @@ app.get('/api/projects', requireAuth, (req, res) => {
   }
 });
 
+// Import a zipped project. Accepts one .zip in field "zip", extracts into
+// BASE_DIR/<filename-without-.zip>/. Refuses zip-slip (../) entries and
+// existing target directories.
+const zipUpload = multer({
+  storage: multer.diskStorage({
+    destination: path.join(__dirname, 'uploads'),
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}.zip`),
+  }),
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/zip' || /\.zip$/i.test(file.originalname)) cb(null, true);
+    else cb(new Error('Only .zip files are allowed'));
+  },
+});
+app.post('/api/projects/import', requireAuth, zipUpload.single('zip'), (req, res) => {
+  const base = process.env.BASE_DIR;
+  if (!base) return res.status(400).json({ error: 'BASE_DIR not configured' });
+  if (!req.file) return res.status(400).json({ error: 'No zip uploaded' });
+
+  const tmpZipPath = req.file.path;
+  const cleanup = () => { try { fs.unlinkSync(tmpZipPath); } catch {} };
+
+  // Derive target folder name from upload original filename (strip .zip).
+  const rawName = (req.file.originalname || 'imported').replace(/\.zip$/i, '');
+  if (!/^[a-zA-Z0-9_\-. ]+$/.test(rawName)) {
+    cleanup();
+    return res.status(400).json({ error: 'Invalid project name derived from zip filename' });
+  }
+  const baseAbs = path.resolve(base);
+  const targetDir = path.join(baseAbs, rawName);
+  if (!targetDir.startsWith(baseAbs + path.sep) && targetDir !== baseAbs) {
+    cleanup();
+    return res.status(400).json({ error: 'Invalid target path' });
+  }
+  if (fs.existsSync(targetDir)) {
+    cleanup();
+    return res.status(409).json({ error: `Project "${rawName}" already exists` });
+  }
+
+  try {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(tmpZipPath);
+    const entries = zip.getEntries();
+
+    // Zip-slip / absolute-path guard on every entry.
+    for (const e of entries) {
+      const entryName = e.entryName;
+      const dest = path.resolve(targetDir, entryName);
+      if (!dest.startsWith(path.resolve(targetDir) + path.sep) && dest !== path.resolve(targetDir)) {
+        cleanup();
+        return res.status(400).json({ error: `Unsafe entry path in zip: ${entryName}` });
+      }
+    }
+
+    // If the zip wraps everything in a single top-level folder, strip that
+    // folder so we don't end up with BASE_DIR/foo/foo/...
+    const topNames = new Set();
+    for (const e of entries) {
+      const top = e.entryName.split('/')[0];
+      if (top) topNames.add(top);
+    }
+    const stripPrefix = topNames.size === 1 ? [...topNames][0] + '/' : null;
+
+    fs.mkdirSync(targetDir, { recursive: true });
+    for (const e of entries) {
+      let rel = e.entryName;
+      if (stripPrefix && rel.startsWith(stripPrefix)) rel = rel.slice(stripPrefix.length);
+      if (!rel) continue;
+      const outPath = path.join(targetDir, rel);
+      if (e.isDirectory) {
+        fs.mkdirSync(outPath, { recursive: true });
+      } else {
+        fs.mkdirSync(path.dirname(outPath), { recursive: true });
+        fs.writeFileSync(outPath, e.getData());
+      }
+    }
+    cleanup();
+    res.json({ name: rawName, path: targetDir, entries: entries.length });
+  } catch (err) {
+    cleanup();
+    // Best-effort rollback
+    try { fs.rmSync(targetDir, { recursive: true, force: true }); } catch {}
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/projects', requireAuth, (req, res) => {
   const base = process.env.BASE_DIR;
   if (!base) return res.status(400).json({ error: 'BASE_DIR not configured' });
