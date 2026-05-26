@@ -26,19 +26,35 @@
     width: 240px; flex-shrink: 0;
     display: flex; flex-direction: column;
     background: var(--surface);
+    position: relative;
   }
   .side-left  { border-right: 1px solid var(--border); }
-  .side-right { border-left:  1px solid var(--border); }
+  .side-right { border-left:  1px solid var(--border); width: 280px; }
 
-  /* Mobile: transform-based drawers */
+  /* Desktop: hide when not .open so the close button actually closes */
+  @media (min-width: 768px) {
+    .side:not(.open) { display: none; }
+  }
+
+  /* Right-side resize handle (desktop only) */
+  .side-resize-handle {
+    position: absolute; left: -3px; top: 0; bottom: 0;
+    width: 6px; cursor: col-resize; z-index: 10;
+    background: transparent; transition: background .15s;
+  }
+  .side-resize-handle:hover,
+  .side-resize-handle.resizing { background: var(--accent); }
+
+  /* Mobile: transform-based drawers, full screen width */
   @media (max-width: 767px) {
     .side {
-      position: fixed; top: 0; bottom: 0; width: 80vw; max-width: 300px;
+      position: fixed; top: 0; bottom: 0; width: 100vw; max-width: none;
       z-index: 300; transition: transform .25s ease;
     }
     .side-left  { left: 0;  transform: translateX(-100%); }
-    .side-right { right: 0; transform: translateX(100%); }
+    .side-right { right: 0; transform: translateX(100%); width: 100vw; }
     .side.open  { transform: translateX(0) !important; }
+    .side-resize-handle { display: none; }
   }
 
   .side-hdr {
@@ -336,6 +352,7 @@
 
 <!-- ── Right sidebar: File Browser ── -->
 <aside class="side side-right" id="sideR">
+  <div class="side-resize-handle" id="sideR-resize" aria-label="Resize file panel" title="Drag to resize"></div>
   <div class="side-hdr">
     <span>Files</span>
     <div style="display:flex;gap:4px;align-items:center;">
@@ -741,20 +758,77 @@ document.getElementById('promptInput').addEventListener('input', e => autoResize
 
 // ── Sidebar / panel open-close ────────────────────────────────────────────────
 const backdrop = document.getElementById('backdrop');
+const isMobile = () => window.matchMedia('(max-width: 767px)').matches;
 
 function openSide(id) {
   document.getElementById(id).classList.add('open');
-  backdrop.classList.add('on');
+  localStorage.setItem(id + '-open', '1');
+  if (isMobile()) backdrop.classList.add('on');
 }
 function closeSide(id) {
   document.getElementById(id).classList.remove('open');
-  const anyOpen = document.getElementById('sideL').classList.contains('open') || document.getElementById('sideR').classList.contains('open');
-  if (!anyOpen) backdrop.classList.remove('on');
+  localStorage.setItem(id + '-open', '0');
+  if (isMobile()) {
+    const anyOpen = document.getElementById('sideL').classList.contains('open') || document.getElementById('sideR').classList.contains('open');
+    if (!anyOpen) backdrop.classList.remove('on');
+  }
 }
 function toggleSide(id) {
   const side = document.getElementById(id);
   side.classList.contains('open') ? closeSide(id) : openSide(id);
 }
+
+// Initial sidebar state: desktop opens both unless previously closed, mobile starts closed.
+(function initSidebars() {
+  const sideR = document.getElementById('sideR');
+  const savedW = localStorage.getItem('sideR-width');
+  if (savedW && !isMobile()) sideR.style.width = savedW;
+
+  if (isMobile()) {
+    // mobile: never auto-open
+    return;
+  }
+  if (localStorage.getItem('sideL-open') !== '0') {
+    document.getElementById('sideL').classList.add('open');
+  }
+  if (localStorage.getItem('sideR-open') !== '0') {
+    sideR.classList.add('open');
+  }
+})();
+
+// Right sidebar resize (desktop only)
+(function setupRightResize() {
+  const sideR = document.getElementById('sideR');
+  const handle = document.getElementById('sideR-resize');
+  let resizing = false;
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (isMobile()) return;
+    resizing = true;
+    handle.classList.add('resizing');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    handle.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!resizing) return;
+    const newWidth = window.innerWidth - e.clientX;
+    const clamped = Math.max(220, Math.min(window.innerWidth - 320, newWidth));
+    sideR.style.width = clamped + 'px';
+  });
+  const endResize = (e) => {
+    if (!resizing) return;
+    resizing = false;
+    handle.classList.remove('resizing');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    try { handle.releasePointerCapture(e.pointerId); } catch {}
+    localStorage.setItem('sideR-width', sideR.style.width);
+  };
+  handle.addEventListener('pointerup', endResize);
+  handle.addEventListener('pointercancel', endResize);
+})();
 
 document.getElementById('leftBtn').addEventListener('click', () => { wsSend({type:'list_sessions'}); toggleSide('sideL'); });
 document.getElementById('rightBtn').addEventListener('click', () => toggleSide('sideR'));
