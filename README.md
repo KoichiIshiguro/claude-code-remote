@@ -60,8 +60,8 @@ claude "Read setup.md and set this up. Stop and ask whenever you need input."
 
 That's the whole installer. Claude will:
 
-1. Check Node / npm / `claude` are present
-2. Run `npm install`
+1. Check Node / npm (or pnpm) / `claude` are present
+2. Run `pnpm install` (or `npm install`)
 3. Walk you through creating the GitHub OAuth App on github.com
 4. Generate a `SESSION_SECRET`
 5. Write a reviewed `.env`
@@ -79,8 +79,11 @@ If it gets interrupted, re-run the same command — `setup.md` is **idempotent a
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-npm install
+pnpm install   # or: npm install / yarn — they all work
 ```
+
+> The committed lockfile is `pnpm-lock.yaml`. `npm` and `yarn` will resolve from
+> `package.json` and Just Work — you only lose strict version pinning.
 
 ### 2. Install the Claude CLI
 
@@ -119,7 +122,7 @@ CLAUDE_PATH=/home/you/.local/bin/claude
 ### 5. Run it
 
 ```bash
-npm start
+pnpm start   # or: npm start
 # or for production:
 pm2 start server.js --name claude-code-remote && pm2 save
 ```
@@ -252,9 +255,9 @@ This is a personal tool that grew into something shareable. PRs that **keep the 
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-npm install
+pnpm install          # or: npm install
 cp .env.example .env  # fill in your secrets
-npm run dev           # auto-restart on file change
+pnpm dev              # auto-restart on file change
 ```
 
 ---

@@ -25,10 +25,13 @@ afternoon**. PRs that respect that goal are very welcome.
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-npm install
+pnpm install           # or: npm install / yarn
 cp .env.example .env   # fill in your secrets
-npm run dev            # node --watch, auto-restart on file change
+pnpm dev               # node --watch, auto-restart on file change
 ```
+
+> The repo uses **pnpm** (lockfile: `pnpm-lock.yaml`). `npm` and `yarn` work
+> too — they just resolve from `package.json` without the strict version pin.
 
 You'll need a working `claude` CLI logged into Anthropic, and a GitHub OAuth
 App pointing at `http://localhost:4000/auth/github/callback`.

@@ -60,8 +60,8 @@ claude "Read setup.md and set this up. Stop and ask whenever you need input."
 
 これだけ。Claude が以下をやってくれます：
 
-1. Node / npm / `claude` の存在確認
-2. `npm install`
+1. Node / npm (または pnpm) / `claude` の存在確認
+2. `pnpm install`（または `npm install`）
 3. github.com 上での OAuth App 作成を対話的にガイド
 4. `SESSION_SECRET` を生成
 5. レビュー済みの `.env` を書き込み
@@ -79,8 +79,11 @@ claude "Read setup.md and set this up. Stop and ask whenever you need input."
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-npm install
+pnpm install   # または npm install / yarn でも OK
 ```
+
+> リポジトリには `pnpm-lock.yaml` のみコミット。`npm` / `yarn` でも `package.json`
+> から解決して動作しますが、厳密なバージョン固定は失われます。
 
 ### 2. Claude CLI のインストール
 
@@ -119,7 +122,7 @@ CLAUDE_PATH=/home/you/.local/bin/claude
 ### 5. 起動
 
 ```bash
-npm start
+pnpm start   # または npm start
 # 本番運用：
 pm2 start server.js --name claude-code-remote && pm2 save
 ```
@@ -252,9 +255,9 @@ PR 歓迎（最後の項目は反論も歓迎）。
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-npm install
+pnpm install          # または npm install
 cp .env.example .env  # 秘密情報を埋める
-npm run dev           # ファイル変更で自動再起動
+pnpm dev              # ファイル変更で自動再起動
 ```
 
 ---

@@ -38,7 +38,7 @@ If this does not print `OK`, stop and tell the user to `cd` into the repo first.
 Check each, and stop with a clear error if missing:
 
 - `node --version` → must be ≥ 18
-- `npm --version` → must exist
+- At least one of `pnpm --version`, `npm --version`, or `yarn --version` → must exist
 - `claude --version` → must exist (this is the Claude Code CLI itself)
 
 If `claude` is missing, point the user at <https://docs.claude.com/en/docs/claude-code/quickstart>
@@ -51,11 +51,19 @@ it later for `CLAUDE_PATH` if the user picks PM2.
 
 ## Step 2 — Install dependencies
 
+Detect the package manager the user has and use whatever they prefer.
+The repo ships `pnpm-lock.yaml`, but npm and yarn also work.
+
 ```bash
-test -d node_modules && echo "deps already installed" || npm install
+test -d node_modules && echo "deps already installed" && exit 0
+# pick whichever is available, preferring pnpm
+if command -v pnpm >/dev/null; then pnpm install
+elif command -v npm  >/dev/null; then npm install
+elif command -v yarn >/dev/null; then yarn install
+else echo "Need pnpm, npm, or yarn"; exit 1; fi
 ```
 
-If `npm install` fails, show the user the last 20 lines of the error and stop.
+If install fails, show the user the last 20 lines of the error and stop.
 
 ---
 
