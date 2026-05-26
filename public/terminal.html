@@ -511,9 +511,10 @@ async function connect() {
   ws.addEventListener('open', () => {
     document.getElementById('reconnectBanner').classList.remove('on');
     ws.send(JSON.stringify({ type: 'attach', sessionId }));
-    // Always refresh the project list on (re)connect — the sidebar may have
-    // been opened during a disconnect, in which case its wsSend was dropped.
-    ws.send(JSON.stringify({ type: 'list_sessions' }));
+    // Always refresh project + session lists on (re)connect — the sidebar may
+    // have been opened during a disconnect, dropping its wsSend.
+    if (typeof refreshProjects === 'function') refreshProjects();
+    else ws.send(JSON.stringify({ type: 'list_sessions' }));
   });
   ws.addEventListener('message', e => handleMessage(JSON.parse(e.data)));
   ws.addEventListener('close', () => {
@@ -569,7 +570,9 @@ function handleMessage(msg) {
       } else { setStreamingUI(false); }
       break;
     case 'sessions_list':
-      renderProjList(msg.sessions); break;
+      _sessions = msg.sessions || [];
+      rerenderProjList();
+      break;
     case 'session_created':
       location.href = `/terminal?session=${msg.session.id}`;
       break;
@@ -947,7 +950,7 @@ function toggleSide(id) {
   handle.addEventListener('pointercancel', onEnd);
 })();
 
-document.getElementById('leftBtn').addEventListener('click', () => { wsSend({type:'list_sessions'}); toggleSide('sideL'); });
+document.getElementById('leftBtn').addEventListener('click', () => { refreshProjects(); toggleSide('sideL'); });
 document.getElementById('rightBtn').addEventListener('click', () => toggleSide('sideR'));
 document.getElementById('fbRefresh').addEventListener('click', () => { if (fbCurrentDir) loadDir(fbCurrentDir); });
 document.getElementById('sideL-close').addEventListener('click', () => closeSide('sideL'));
@@ -956,7 +959,7 @@ backdrop.addEventListener('click', () => { closeSide('sideL'); closeSide('sideR'
 
 // ── Mobile bottom nav ─────────────────────────────────────────────────────────
 document.getElementById('bnavProj').addEventListener('click', () => {
-  wsSend({type:'list_sessions'});
+  refreshProjects();
   setActiveNav('bnavProj'); openSide('sideL');
 });
 document.getElementById('bnavChat').addEventListener('click', () => {
@@ -972,17 +975,72 @@ function setActiveNav(activeId) {
 backdrop.addEventListener('click', () => setActiveNav('bnavChat'));
 
 // ── Project list ──────────────────────────────────────────────────────────────
-function renderProjList(sessions) {
-  const list = document.getElementById('projList'); list.innerHTML = '';
-  if (!sessions.length) { list.innerHTML = '<div class="proj-empty">No sessions</div>'; return; }
-  for (const s of sessions) {
+// Left sidebar = BASE_DIR projects (filesystem) merged with active sessions (memory).
+// _projects comes from REST /api/projects, _sessions comes from WS list_sessions.
+let _projects = [];
+let _sessions = [];
+
+function rerenderProjList() {
+  const list = document.getElementById('projList');
+  list.innerHTML = '';
+
+  // Index sessions by directory so we can mark which projects have one.
+  const sessByDir = {};
+  for (const s of _sessions) sessByDir[s.directory] = s;
+
+  // Show every project, plus any "orphan" sessions whose directory is outside BASE_DIR.
+  const items = [];
+  const seen = new Set();
+  for (const p of _projects) {
+    items.push({ name: p.name, dir: p.path, session: sessByDir[p.path] || null, orphan: false });
+    seen.add(p.path);
+  }
+  for (const s of _sessions) {
+    if (!seen.has(s.directory)) {
+      items.push({
+        name: s.directory.split('/').pop() || s.directory,
+        dir: s.directory, session: s, orphan: true,
+      });
+    }
+  }
+
+  if (!items.length) {
+    list.innerHTML = '<div class="proj-empty">No projects yet</div>';
+    return;
+  }
+
+  for (const it of items) {
+    const isActive = it.session && it.session.id === sessionId;
     const el = document.createElement('div');
-    el.className = 'proj-item' + (s.streaming?' running':'') + (s.id===sessionId?' active':'');
-    const name = s.directory.split('/').pop() || s.directory;
-    el.innerHTML = `<span class="proj-dot"></span><span class="proj-name" title="${escHtml(s.directory)}">${escHtml(name)}</span>`;
-    if (s.id !== sessionId) el.addEventListener('click', () => location.href = `/terminal?session=${s.id}`);
+    el.className = 'proj-item'
+      + (it.session && it.session.streaming ? ' running' : '')
+      + (isActive ? ' active' : '');
+    const label = escHtml(it.name) + (it.orphan ? ' <span style="color:var(--text-muted);font-size:11px">(orphan)</span>' : '');
+    el.innerHTML = `<span class="proj-dot"></span><span class="proj-name" title="${escHtml(it.dir)}">${label}</span>`;
+    el.addEventListener('click', () => {
+      if (isActive) return;
+      if (it.session) {
+        location.href = `/terminal?session=${it.session.id}`;
+      } else {
+        // No active session for this project — create one. The server replies
+        // with `session_created` and we navigate there.
+        wsSend({ type: 'create_session', directory: it.dir });
+      }
+    });
     list.appendChild(el);
   }
+}
+
+// Reload both lists. Sessions come via WS event handler (rerender there);
+// projects come over REST and we rerender immediately.
+async function refreshProjects() {
+  wsSend({ type: 'list_sessions' });
+  try {
+    const r = await fetch('/api/projects');
+    const d = await r.json();
+    _projects = d.projects || [];
+  } catch { _projects = []; }
+  rerenderProjList();
 }
 
 // ── New project ───────────────────────────────────────────────────────────────
