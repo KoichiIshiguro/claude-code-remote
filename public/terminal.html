@@ -589,14 +589,14 @@ function handleMessage(msg) {
 }
 
 // ── Context size indicator ────────────────────────────────────────────────────
-// Thresholds match the server's auto-compact logic (150k default).
+// Thresholds match the server's auto-compact logic (167k default = TUI ~83.5%).
 function updateCtxPill(tokens) {
   const el = document.getElementById('ctxPill');
   if (!el) return;
   if (!tokens) { el.textContent = ''; el.className = 'ctx-pill'; return; }
   const k = (tokens / 1000).toFixed(tokens >= 100_000 ? 0 : 1);
   el.textContent = `${k}k`;
-  el.className = 'ctx-pill' + (tokens > 150_000 ? ' hot' : tokens > 100_000 ? ' warn' : '');
+  el.className = 'ctx-pill' + (tokens > 167_000 ? ' hot' : tokens > 100_000 ? ' warn' : '');
 }
 
 // ── History rendering ─────────────────────────────────────────────────────────

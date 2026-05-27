@@ -10,9 +10,10 @@ const activeProcesses = new Map(); // sessionId → child process
 
 const DATA_FILE = path.join(__dirname, '..', 'data', 'sessions.json');
 
-// Auto-compact threshold (input tokens incl. cache). Default 150k leaves
-// headroom on 200k-context models. Override via env if you tune cache strategy.
-const AUTO_COMPACT_THRESHOLD = parseInt(process.env.CLAUDE_AUTO_COMPACT_THRESHOLD) || 150_000;
+// Auto-compact threshold (input tokens incl. cache). Default 167k matches
+// the Claude Code TUI's ~83.5% trigger on 200k-context models. Override via
+// env if you tune cache strategy.
+const AUTO_COMPACT_THRESHOLD = parseInt(process.env.CLAUDE_AUTO_COMPACT_THRESHOLD) || 167_000;
 
 // ── Persistence ──────────────────────────────────────────────────────────────
 
