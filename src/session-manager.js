@@ -207,14 +207,21 @@ function feedEvent(sessionId, event) {
         e.blocks.push({ kind: 'thinking', text: block.thinking });
       }
     }
-  } else if (event.type === 'tool') {
-    const toolBlock = e._tools[event.tool_use_id];
-    if (toolBlock) {
-      const r = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
-      toolBlock.result = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
+  } else if (event.type === 'user') {
+    // Tool results arrive wrapped in synthetic "user" events with tool_result
+    // content blocks, not as standalone "tool" events.
+    for (const block of (event.message?.content || [])) {
+      if (block.type === 'tool_result') {
+        const toolBlock = e._tools[block.tool_use_id];
+        if (toolBlock) {
+          const c = block.content;
+          const r = typeof c === 'string' ? c : JSON.stringify(c, null, 2);
+          toolBlock.result = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
+        }
+      }
     }
   } else if (event.type === 'result') {
-    e.cost = event.cost_usd ?? null;
+    e.cost = event.total_cost_usd ?? null;
   } else if (event.type === 'cancelled') {
     e.cancelled = true;
   }
