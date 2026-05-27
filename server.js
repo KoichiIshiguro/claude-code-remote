@@ -9,7 +9,7 @@ const { WebSocketServer } = require('ws');
 const multer = require('multer');
 const { setupAuth, requireAuth, authenticateUpgrade } = require('./src/auth');
 const { handleConnection } = require('./src/ws-handler');
-const { flushPendingSave } = require('./src/session-manager');
+const { flushPendingSave, shutdownAllProcesses } = require('./src/session-manager');
 
 const app = express();
 const server = http.createServer(app);
@@ -326,14 +326,14 @@ server.listen(PORT, () => {
   console.log(`Claude Code Remote running at http://localhost:${PORT}`);
 });
 
-// On signal, flush any debounced in-flight state to disk so a hard restart
-// (PM2 reload, container kill) preserves the latest partial response. We
-// intentionally don't wait for child claude processes — they will be killed by
-// the OS, but the disk state is enough to render the interrupted entry on
-// reattach and lets the user say "continue" to resume via --resume.
+// On signal, flush any debounced in-flight state to disk and SIGTERM all
+// long-lived claude children so they don't outlive the parent. The disk state
+// is enough to render the interrupted entry on reattach; the next prompt for
+// that session respawns claude with --resume.
 function shutdown(signal) {
-  console.log(`[shutdown] ${signal} received — flushing state`);
+  console.log(`[shutdown] ${signal} received — flushing state and killing claude processes`);
   try { flushPendingSave(); } catch (e) { console.error('[shutdown] flush failed:', e.message); }
+  try { shutdownAllProcesses(); } catch (e) { console.error('[shutdown] kill failed:', e.message); }
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
