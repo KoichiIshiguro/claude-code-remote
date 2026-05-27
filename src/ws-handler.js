@@ -4,6 +4,7 @@ const {
   createSession, getSession, listSessions, deleteSession,
   cancelRunning, runPrompt, updatePermissions,
   pushUserMessage, startAssistantEntry, feedEvent, finalizeEntry, getHistory,
+  shouldAutoCompact,
 } = require('./session-manager');
 const fs = require('fs');
 
@@ -105,6 +106,26 @@ function handleConnection(ws, req) {
           send(ws, { type: 'error', message: 'Session not found', sessionId }); return;
         }
         subscribe(sessionId, ws);
+
+        // Auto-compact when context is heavy. Runs /compact as a standalone
+        // turn so it shows in history; the user's prompt follows on a fresh
+        // (compacted) context.
+        if (shouldAutoCompact(sessionId)) {
+          pushUserMessage(sessionId, '/compact', 0);
+          broadcast(sessionId, { type: 'stream_start', sessionId, autoCompact: true });
+          startAssistantEntry(sessionId);
+          try {
+            for await (const event of runPrompt(sessionId, '/compact', [])) {
+              feedEvent(sessionId, event);
+              broadcast(sessionId, { type: 'stream_event', sessionId, event });
+            }
+          } catch (err) {
+            broadcast(sessionId, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId });
+          } finally {
+            finalizeEntry(sessionId);
+            broadcast(sessionId, { type: 'stream_end', sessionId });
+          }
+        }
 
         pushUserMessage(sessionId, prompt, imagePaths.length);
         broadcast(sessionId, { type: 'stream_start', sessionId });

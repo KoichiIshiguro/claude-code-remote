@@ -334,6 +334,7 @@
     <a href="/app" class="hdr-btn" id="homeBtn" title="All projects" aria-label="All projects" style="text-decoration:none;">🤖</a>
     <button class="hdr-btn hdr-left-btn" id="leftBtn" title="Projects" aria-label="Projects">☰</button>
     <span class="dir-label" id="dirLabel">Loading…</span>
+    <span class="ctx-pill" id="ctxPill" title="Context size (input tokens incl. cache from last turn)"></span>
     <div class="working-chip" id="workingChip">
       <span class="dot-anim" id="dotAnim">●</span> Working
     </div>
@@ -534,6 +535,7 @@ function handleMessage(msg) {
       document.getElementById('dirLabel').textContent = dir || sessionId;
       document.getElementById('messages').innerHTML = '';
       allowedTools = msg.allowedTools ?? null;
+      updateCtxPill(msg.lastTokens);
       for (const e of msg.history) renderHistoryEntry(e);
       if (msg.streaming) {
         isStreaming = true;
@@ -584,6 +586,17 @@ function handleMessage(msg) {
     case 'error':
       isStreaming = false; setStreamingUI(false); appendError(msg.message); break;
   }
+}
+
+// ── Context size indicator ────────────────────────────────────────────────────
+// Thresholds match the server's auto-compact logic (150k default).
+function updateCtxPill(tokens) {
+  const el = document.getElementById('ctxPill');
+  if (!el) return;
+  if (!tokens) { el.textContent = ''; el.className = 'ctx-pill'; return; }
+  const k = (tokens / 1000).toFixed(tokens >= 100_000 ? 0 : 1);
+  el.textContent = `${k}k`;
+  el.className = 'ctx-pill' + (tokens > 150_000 ? ' hot' : tokens > 100_000 ? ' warn' : '');
 }
 
 // ── History rendering ─────────────────────────────────────────────────────────
@@ -654,7 +667,12 @@ function handleStreamEvent(event) {
       break;
     }
     case 'result':
-      if (event.cost_usd != null) { const p = document.createElement('div'); p.className = 'usage-pill'; p.textContent = `$${event.cost_usd.toFixed(4)}`; c.appendChild(p); }
+      if (event.total_cost_usd != null) { const p = document.createElement('div'); p.className = 'usage-pill'; p.textContent = `$${event.total_cost_usd.toFixed(4)}`; c.appendChild(p); }
+      if (event.usage) {
+        const u = event.usage;
+        const total = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+        updateCtxPill(total);
+      }
       break;
     case 'cancelled': finalizeText(); appendCancelled(); break;
   }

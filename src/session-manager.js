@@ -10,6 +10,10 @@ const activeProcesses = new Map(); // sessionId → child process
 
 const DATA_FILE = path.join(__dirname, '..', 'data', 'sessions.json');
 
+// Auto-compact threshold (input tokens incl. cache). Default 150k leaves
+// headroom on 200k-context models. Override via env if you tune cache strategy.
+const AUTO_COMPACT_THRESHOLD = parseInt(process.env.CLAUDE_AUTO_COMPACT_THRESHOLD) || 150_000;
+
 // ── Persistence ──────────────────────────────────────────────────────────────
 
 function loadSessions() {
@@ -34,6 +38,7 @@ function loadSessions() {
         lastActivity: new Date(s.lastActivity),
         streaming: false,
         currentEntry: null,
+        lastTokens: s.lastTokens ?? null,
       });
     }
     console.log(`[sessions] Loaded ${data.length} session(s) from disk`);
@@ -70,6 +75,7 @@ function saveSessions() {
       sessionId: s.sessionId,
       history: s.history,
       allowedTools: s.allowedTools ?? null,
+      lastTokens: s.lastTokens ?? null,
       // Persist in-flight response so a crash/restart loses no visible output.
       // Strip private _text/_tools — flushPendingText emits final blocks only.
       currentEntry: s.currentEntry ? flushPendingText(s.currentEntry) : null,
@@ -118,6 +124,7 @@ function createSession(directory) {
     streaming: false,
     currentEntry: null,
     allowedTools: null,  // null = dangerously-skip-permissions; array = --allowedTools
+    lastTokens: null,    // input_tokens + cache_* from most recent result event
   });
   saveSessions();
   return sessions.get(id);
@@ -126,9 +133,15 @@ function createSession(directory) {
 function getSession(id) { return sessions.get(id) || null; }
 
 function listSessions() {
-  return Array.from(sessions.values()).map(({ id, directory, createdAt, lastActivity, streaming, allowedTools }) => ({
-    id, directory, createdAt, lastActivity, streaming, allowedTools,
+  return Array.from(sessions.values()).map(({ id, directory, createdAt, lastActivity, streaming, allowedTools, lastTokens }) => ({
+    id, directory, createdAt, lastActivity, streaming, allowedTools, lastTokens,
   }));
+}
+
+function shouldAutoCompact(sessionId) {
+  const s = sessions.get(sessionId);
+  if (!s || !s.lastTokens) return false;
+  return s.lastTokens > AUTO_COMPACT_THRESHOLD;
 }
 
 function deleteSession(id) {
@@ -222,6 +235,13 @@ function feedEvent(sessionId, event) {
     }
   } else if (event.type === 'result') {
     e.cost = event.total_cost_usd ?? null;
+    // Capture context size so we can warn / auto-compact before the next turn.
+    if (event.usage) {
+      const u = event.usage;
+      s.lastTokens = (u.input_tokens || 0)
+                   + (u.cache_read_input_tokens || 0)
+                   + (u.cache_creation_input_tokens || 0);
+    }
   } else if (event.type === 'cancelled') {
     e.cancelled = true;
   }
@@ -258,7 +278,7 @@ function getHistory(sessionId) {
       cost: s.currentEntry.cost,
     };
   }
-  return { history: s.history, streaming: s.streaming, currentEntry: current, allowedTools: s.allowedTools };
+  return { history: s.history, streaming: s.streaming, currentEntry: current, allowedTools: s.allowedTools, lastTokens: s.lastTokens };
 }
 
 function toolTitle(name, input) {
@@ -353,4 +373,5 @@ module.exports = {
   updatePermissions, cancelRunning, runPrompt,
   pushUserMessage, startAssistantEntry, feedEvent, finalizeEntry, getHistory,
   getActiveProcesses, flushPendingSave,
+  shouldAutoCompact, AUTO_COMPACT_THRESHOLD,
 };
