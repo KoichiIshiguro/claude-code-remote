@@ -32,6 +32,8 @@
 - 🔌 **Auto-reconnect WebSocket** that survives mobile network switches and PM2 reloads
 - 📄 **In-browser file viewer** with Markdown rendering and a refresh button
 - ⚡ **Stateless prompt model** — spawns a fresh `claude` per turn, no zombies to babysit
+- 📊 **Context size indicator** — header pill + status-bar meter show the real input-token count from the last API call (matches what the TUI shows)
+- 🗜️ **Auto-compact at TUI threshold** — when context hits 167k (Claude Code TUI's ~83.5% trigger on 200k models), `/compact` runs automatically before the next prompt
 
 ## 📸 Screenshots
 
@@ -208,6 +210,7 @@ Then `sudo certbot --apache -d claude.example.com`.
 - **In-flight responses are streamed to disk** every 500 ms (debounced). If the server is killed mid-response, reattach renders the partial output and lets you say "continue" — Claude resumes via `--resume`.
 - **Images are passed as file paths** (`/abs/path/to/image.png`) embedded in the prompt — the same way Claude Code's TUI handles drag-and-drop.
 - **No build step.** The frontend is `<script>` + Vanilla JS + a single `marked` import. You can `npm install` over a flaky mobile tether and still ship.
+- **Context tracked from per-call `usage`.** Each `assistant` stream event carries the actual input-token count of that API call (not a turn-aggregate); the meter and the auto-compact decision both read from it, so behavior matches Claude Code TUI's own `/compact` threshold.
 
 ---
 
@@ -223,6 +226,7 @@ Then `sudo certbot --apache -d claude.example.com`.
 | `PORT` | | Default `4000` |
 | `BASE_DIR` | | Root for the project picker (e.g. `/home/you/projects`) |
 | `CLAUDE_PATH` | | Absolute path to `claude` — set this under PM2 / systemd |
+| `CLAUDE_AUTO_COMPACT_THRESHOLD` | | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context Opus/Sonnet). Set higher (e.g. `835000`) if you're on a 1M-context tier |
 | `NODE_ENV` | | Set to `production` to enforce HTTPS-only cookies |
 
 ---

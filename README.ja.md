@@ -32,6 +32,8 @@
 - 🔌 **WebSocket 自動再接続** — モバイル回線切替や PM2 reload を耐える
 - 📄 **ブラウザ内ファイルビューワ** — Markdown レンダリング & 更新ボタン
 - ⚡ **ステートレスなプロンプトモデル** — プロンプト毎に `claude` を spawn、面倒を見るゾンビなし
+- 📊 **コンテキストサイズ表示** — ヘッダの pill と入力エリア上のメータで、直前 API コール時点の input トークン数を表示（TUI と同じ指標）
+- 🗜️ **TUI と同じ閾値で auto-compact** — 167k に達したら（Claude Code TUI の 200k context モデル ~83.5% トリガー相当）、次のプロンプト送信前に `/compact` を自動実行
 
 ## 📸 スクリーンショット
 
@@ -208,6 +210,7 @@ pm2 start server.js --name claude-code-remote && pm2 save
 - **応答中の状態を 500 ms ごと（debounce）にディスク書き出し。** サーバーが応答中に殺されても、再接続で途中までを描画 → 「続けて」と書けば Claude が `--resume` で再開。
 - **画像はプロンプト本文にファイルパスを埋め込み。** Claude Code TUI のドラッグ&ドロップと同じ仕様。
 - **ビルド工程なし。** フロントは `<script>` + Vanilla JS + `marked` 1 つだけ。不安定なモバイル回線越しでも `npm install` で動く。
+- **コンテキスト追跡は per-call `usage` から。** 各 `assistant` ストリームイベントが持つその API コール固有の input トークン数を使用（ターン累計ではない）。メータと auto-compact 判定の両方がこの値を読むので、Claude Code TUI 本体の `/compact` 閾値と同じ挙動になる。
 
 ---
 
@@ -223,6 +226,7 @@ pm2 start server.js --name claude-code-remote && pm2 save
 | `PORT` | | デフォルト `4000` |
 | `BASE_DIR` | | プロジェクトピッカーの起点（例 `/home/you/projects`） |
 | `CLAUDE_PATH` | | `claude` の絶対パス — PM2 / systemd 配下では必須 |
+| `CLAUDE_AUTO_COMPACT_THRESHOLD` | | 次プロンプト送信前に自動 `/compact` を発火する input トークン閾値。デフォルト `167000`（TUI の 200k context モデル ~83.5% トリガー相当）。1M context tier 利用時は `835000` 等に上げる |
 | `NODE_ENV` | | `production` に設定すると HTTPS-only クッキーになる |
 
 ---
