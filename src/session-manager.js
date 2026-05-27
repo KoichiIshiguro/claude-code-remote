@@ -194,6 +194,17 @@ function feedEvent(sessionId, event) {
   const e = s.currentEntry;
 
   if (event.type === 'assistant') {
+    // Each assistant event is one API call's response. Its usage reflects the
+    // context size of THAT call — i.e. the actual prompt size sent to the
+    // model. Use this for context-size tracking (TUI uses the same metric for
+    // its /compact threshold). The result event's usage is a turn-aggregate
+    // across all tool round-trips and over-counts when a turn fires many calls.
+    if (event.message?.usage) {
+      const u = event.message.usage;
+      s.lastTokens = (u.input_tokens || 0)
+                   + (u.cache_read_input_tokens || 0)
+                   + (u.cache_creation_input_tokens || 0);
+    }
     for (const block of (event.message?.content || [])) {
       if (block.type === 'text') {
         e._text += block.text;
@@ -236,13 +247,6 @@ function feedEvent(sessionId, event) {
     }
   } else if (event.type === 'result') {
     e.cost = event.total_cost_usd ?? null;
-    // Capture context size so we can warn / auto-compact before the next turn.
-    if (event.usage) {
-      const u = event.usage;
-      s.lastTokens = (u.input_tokens || 0)
-                   + (u.cache_read_input_tokens || 0)
-                   + (u.cache_creation_input_tokens || 0);
-    }
   } else if (event.type === 'cancelled') {
     e.cancelled = true;
   }
