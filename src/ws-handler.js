@@ -77,6 +77,7 @@ function handleConnection(ws, req) {
           streaming: hist.streaming,
           currentEntry: hist.currentEntry,
           allowedTools: hist.allowedTools,
+          lastTokens: hist.lastTokens,
         });
         break;
       }
