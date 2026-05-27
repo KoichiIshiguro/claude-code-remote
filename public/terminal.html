@@ -231,6 +231,10 @@
   .q-remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
   .q-remove:hover { color: var(--red); }
   .status-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; min-height: 28px; }
+  .ctx-meter { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap; opacity: .8; }
+  .ctx-meter:empty { display: none; }
+  .ctx-meter.warn { color: var(--accent); opacity: 1; }
+  .ctx-meter.hot { color: var(--red); opacity: 1; font-weight: 500; }
 
   /* ── AskUserQuestion ── */
   .ask-card { background: var(--surface2); border: 1px solid var(--accent); border-radius: var(--radius-sm); padding: 12px 14px; }
@@ -350,6 +354,7 @@
     <div class="status-bar">
       <button class="btn-stop" id="cancelBtn">■ Stop</button>
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
+      <div class="ctx-meter" id="ctxMeter" title="Context size from last turn (auto-compact runs at 167k)"></div>
     </div>
     <div class="input-row">
       <textarea id="promptInput" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)" rows="3"></textarea>
@@ -591,12 +596,27 @@ function handleMessage(msg) {
 // ── Context size indicator ────────────────────────────────────────────────────
 // Thresholds match the server's auto-compact logic (167k default = TUI ~83.5%).
 function updateCtxPill(tokens) {
-  const el = document.getElementById('ctxPill');
-  if (!el) return;
-  if (!tokens) { el.textContent = ''; el.className = 'ctx-pill'; return; }
+  const pill = document.getElementById('ctxPill');
+  const meter = document.getElementById('ctxMeter');
+  if (!tokens) {
+    if (pill) { pill.textContent = ''; pill.className = 'ctx-pill'; }
+    if (meter) { meter.textContent = ''; meter.className = 'ctx-meter'; }
+    return;
+  }
   const k = (tokens / 1000).toFixed(tokens >= 100_000 ? 0 : 1);
-  el.textContent = `${k}k`;
-  el.className = 'ctx-pill' + (tokens > 167_000 ? ' hot' : tokens > 100_000 ? ' warn' : '');
+  const cls = tokens > 167_000 ? 'hot' : tokens > 100_000 ? 'warn' : '';
+  if (pill) {
+    pill.textContent = `${k}k`;
+    pill.className = 'ctx-pill' + (cls ? ' ' + cls : '');
+  }
+  if (meter) {
+    const pct = Math.round((tokens / 200_000) * 100);
+    const tail = tokens > 167_000 ? ' · auto-compacting next turn'
+               : tokens > 100_000 ? ` · ${pct}%`
+               : '';
+    meter.textContent = `Context: ${k}k tokens${tail}`;
+    meter.className = 'ctx-meter' + (cls ? ' ' + cls : '');
+  }
 }
 
 // ── History rendering ─────────────────────────────────────────────────────────
