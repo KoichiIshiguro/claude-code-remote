@@ -31,7 +31,7 @@
 - 📱 **Installable PWA** with status-bar styling, splash screen, home-screen icon
 - 🔌 **Auto-reconnect WebSocket** that survives mobile network switches and PM2 reloads
 - 📄 **In-browser file viewer** with Markdown rendering and a refresh button
-- ⚡ **Long-lived `claude` per session** — first prompt warms the cache, subsequent turns reuse the same process so the prompt cache stays hot and token usage drops dramatically as the conversation grows
+- ⚡ **Stateless prompt model** — spawns a fresh `claude` per turn, no zombies to babysit
 
 ## 📸 Screenshots
 
@@ -192,21 +192,19 @@ Then `sudo certbot --apache -d claude.example.com`.
                                │ • ws             │
                                │ • passport       │
                                └────────┬─────────┘
-                                        │ spawn once per session
+                                        │ spawn() per prompt
                                         ▼
                                ┌──────────────────┐
                                │ claude CLI       │
-                               │ -p --input-format│
-                               │   stream-json    │
+                               │ -p --resume <id> │
                                │ --output-format  │
                                │   stream-json    │
-                               │ (long-lived)     │
                                └──────────────────┘
 ```
 
 **Key design choices**
 
-- **One long-lived `claude` per session.** Spawned on the first prompt, fed subsequent prompts as JSON lines on stdin, kept alive for the life of the session. The Anthropic prompt cache stays warm so token usage doesn't balloon as the conversation grows. Process crash or server restart → respawn with `--resume <session_id>` on the next prompt; the source of truth is Claude's own `~/.claude/projects/*.jsonl`.
+- **One `claude` process per prompt.** No long-lived background agents. Conversation state lives in Claude's own `~/.claude/projects/*.jsonl` and is restored via `--resume`.
 - **In-flight responses are streamed to disk** every 500 ms (debounced). If the server is killed mid-response, reattach renders the partial output and lets you say "continue" — Claude resumes via `--resume`.
 - **Images are passed as file paths** (`/abs/path/to/image.png`) embedded in the prompt — the same way Claude Code's TUI handles drag-and-drop.
 - **No build step.** The frontend is `<script>` + Vanilla JS + a single `marked` import. You can `npm install` over a flaky mobile tether and still ship.

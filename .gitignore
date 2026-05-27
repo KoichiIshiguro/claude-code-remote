@@ -39,6 +39,3 @@ ecosystem.local.config.js
 
 # Puppeteer / Chromium runtime cache (created by capture-website during README screenshot generation)
 engine.bin
-
-# Personal / local-only notes — never committed
-local/**

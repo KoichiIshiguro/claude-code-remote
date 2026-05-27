@@ -6,8 +6,7 @@ const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
 const sessions = new Map();
-// sessionId → { proc, buffer, exited, currentTurn }
-const processes = new Map();
+const activeProcesses = new Map(); // sessionId → child process
 
 const DATA_FILE = path.join(__dirname, '..', 'data', 'sessions.json');
 
@@ -18,10 +17,10 @@ function loadSessions() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     const data = JSON.parse(raw);
     for (const s of data) {
-      // After a restart all claude processes are gone, so any session that was
-      // mid-stream when we exited has an interrupted currentEntry. Promote it
-      // to history with an interrupted flag — the next prompt will respawn via
-      // --resume and the user can say "continue".
+      // If a session was streaming when we crashed/restarted, the child claude
+      // process is gone but the partial response on disk is still useful.
+      // Promote the interrupted currentEntry into history so the user can see
+      // what was produced before the interrupt, and offer a "continue" hint.
       let history = s.history || [];
       if (s.currentEntry) {
         const flushed = flushPendingText(s.currentEntry);
@@ -41,6 +40,9 @@ function loadSessions() {
   } catch { /* first run or corrupted */ }
 }
 
+// Build a clean (serializable, no _text/_tools) copy of currentEntry, flushing
+// any in-progress text buffer into a final text block. Used for both persistence
+// and for getHistory snapshots.
 function flushPendingText(entry) {
   const blocks = [...entry.blocks];
   if (entry._text) blocks.push({ kind: 'text', text: entry._text });
@@ -53,6 +55,7 @@ function flushPendingText(entry) {
   };
 }
 
+// Debounced disk writes for high-frequency calls (e.g. from feedEvent).
 let savePending = false;
 let saveTimer = null;
 function saveSessions() {
@@ -67,6 +70,8 @@ function saveSessions() {
       sessionId: s.sessionId,
       history: s.history,
       allowedTools: s.allowedTools ?? null,
+      // Persist in-flight response so a crash/restart loses no visible output.
+      // Strip private _text/_tools — flushPendingText emits final blocks only.
       currentEntry: s.currentEntry ? flushPendingText(s.currentEntry) : null,
     }));
     fs.writeFileSync(DATA_FILE, JSON.stringify(data));
@@ -83,6 +88,9 @@ function saveSessionsSoon() {
   }, 500);
 }
 
+// Cancel any pending debounced save and write current state synchronously.
+// Called on process shutdown so the in-flight response isn't a few hundred ms
+// behind the wire when we get killed.
 function flushPendingSave() {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; savePending = false; }
   saveSessions();
@@ -105,7 +113,7 @@ function createSession(directory) {
     directory: absDir,
     createdAt: new Date(),
     lastActivity: new Date(),
-    sessionId: null,     // claude conversation ID (for --resume after process death)
+    sessionId: null,     // claude conversation ID (for --resume)
     history: [],
     streaming: false,
     currentEntry: null,
@@ -124,7 +132,7 @@ function listSessions() {
 }
 
 function deleteSession(id) {
-  teardownProcess(id);
+  cancelRunning(id);
   sessions.delete(id);
   saveSessions();
 }
@@ -132,121 +140,14 @@ function deleteSession(id) {
 function updatePermissions(sessionId, allowedTools) {
   const s = sessions.get(sessionId);
   if (!s) return;
-  s.allowedTools = allowedTools;
+  s.allowedTools = allowedTools; // null = all allowed; string[] = specific tools
   saveSessions();
-  // Permissions are passed as spawn args, so they only take effect on a fresh
-  // process. Tear down the current one; the next prompt will respawn it.
-  teardownProcess(sessionId, { cancelled: true });
-}
-
-// ── Long-lived claude process per session ────────────────────────────────────
-
-function buildSpawnArgs(session) {
-  const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
-
-  // `-p` mode (incl. stream-json) cannot return a tool_result, so any
-  // AskUserQuestion call hangs from Claude's perspective and it self-cancels
-  // with "質問キャンセルされました". Tell the model to ask in plain text instead.
-  args.push('--append-system-prompt',
-    'When you need to ask the user a question or offer choices, write the question as plain text in your reply and STOP your turn. List options as a numbered or bulleted list. Do NOT call the AskUserQuestion tool — this environment cannot return a tool result, so the question would silently fail.');
-
-  if (session.allowedTools === null) {
-    args.push('--dangerously-skip-permissions');
-  } else if (Array.isArray(session.allowedTools) && session.allowedTools.length > 0) {
-    args.push('--allowedTools', session.allowedTools.join(','));
-  }
-  // empty array = no tools allowed (no flag added)
-  if (session.sessionId) args.push('--resume', session.sessionId);
-  return args;
-}
-
-function ensureProcess(sessionId) {
-  const existing = processes.get(sessionId);
-  if (existing && !existing.exited) return existing;
-
-  const session = sessions.get(sessionId);
-  if (!session) throw new Error('Session not found');
-
-  const args = buildSpawnArgs(session);
-  const claudeBin = process.env.CLAUDE_PATH || 'claude';
-  const proc = spawn(claudeBin, args, { cwd: session.directory, env: { ...process.env } });
-
-  const ctx = { proc, buffer: '', exited: false, currentTurn: null };
-  processes.set(sessionId, ctx);
-  console.log(`[claude ${sessionId.slice(0, 8)}] spawned (pid=${proc.pid}, resume=${!!session.sessionId})`);
-
-  proc.stdout.on('data', (chunk) => {
-    ctx.buffer += chunk.toString();
-    const lines = ctx.buffer.split('\n');
-    ctx.buffer = lines.pop();
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let event;
-      try { event = JSON.parse(trimmed); }
-      catch { continue; }
-
-      // Capture claude's session id on init so we can --resume next time.
-      if (event.type === 'system' && event.subtype === 'init' && !session.sessionId) {
-        session.sessionId = event.session_id;
-        saveSessions();
-      }
-
-      if (ctx.currentTurn) ctx.currentTurn.push(event);
-    }
-  });
-
-  proc.stderr.on('data', (chunk) => {
-    const msg = chunk.toString().trim();
-    if (msg) console.error(`[claude ${sessionId.slice(0, 8)}] ${msg}`);
-  });
-
-  proc.on('exit', (code, signal) => {
-    ctx.exited = true;
-    if (ctx.currentTurn) {
-      // If we weren't already torn down (cancel/perm-update pushes cancelled
-      // before kill), surface the unexpected exit as an error.
-      if (signal !== 'SIGTERM' && code !== 0) {
-        ctx.currentTurn.push({ type: 'error', message: `claude exited (code=${code}, signal=${signal})` });
-      }
-      ctx.currentTurn.end();
-    }
-    if (processes.get(sessionId) === ctx) processes.delete(sessionId);
-    console.log(`[claude ${sessionId.slice(0, 8)}] exited (code=${code}, signal=${signal})`);
-  });
-
-  proc.on('error', (err) => {
-    console.error(`[claude ${sessionId.slice(0, 8)}] spawn error:`, err.message);
-    if (ctx.currentTurn) {
-      ctx.currentTurn.push({ type: 'error', message: err.message });
-      ctx.currentTurn.end();
-    }
-  });
-
-  return ctx;
-}
-
-// Force-kill the long-lived process and remove it from the map immediately so
-// the next prompt respawns a fresh one. Optionally push a cancelled event into
-// the in-flight turn so the client sees a clean termination.
-function teardownProcess(sessionId, { cancelled = false } = {}) {
-  const ctx = processes.get(sessionId);
-  if (!ctx) return false;
-  if (cancelled && ctx.currentTurn) ctx.currentTurn.push({ type: 'cancelled' });
-  processes.delete(sessionId);
-  ctx.exited = true;
-  try { ctx.proc.kill('SIGTERM'); } catch { /* already gone */ }
-  return true;
 }
 
 function cancelRunning(sessionId) {
-  const ctx = processes.get(sessionId);
-  if (!ctx || !ctx.currentTurn) return false;
-  return teardownProcess(sessionId, { cancelled: true });
-}
-
-function shutdownAllProcesses() {
-  for (const sid of Array.from(processes.keys())) teardownProcess(sid);
+  const proc = activeProcesses.get(sessionId);
+  if (proc) { proc.kill('SIGTERM'); activeProcesses.delete(sessionId); return true; }
+  return false;
 }
 
 // ── History helpers ──────────────────────────────────────────────────────────
@@ -287,6 +188,7 @@ function feedEvent(sessionId, event) {
 
         let toolBlock;
         if (block.name === 'AskUserQuestion') {
+          // Render as interactive choice widget
           toolBlock = {
             kind: 'ask',
             question: block.input?.question || '',
@@ -305,27 +207,19 @@ function feedEvent(sessionId, event) {
         e.blocks.push({ kind: 'thinking', text: block.thinking });
       }
     }
-  } else if (event.type === 'user') {
-    // Tool results arrive wrapped in synthetic "user" events.
-    for (const block of (event.message?.content || [])) {
-      if (block.type === 'tool_result') {
-        const toolBlock = e._tools[block.tool_use_id];
-        if (toolBlock) {
-          const c = block.content;
-          const r = typeof c === 'string' ? c : JSON.stringify(c, null, 2);
-          toolBlock.result = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
-        }
-      }
+  } else if (event.type === 'tool') {
+    const toolBlock = e._tools[event.tool_use_id];
+    if (toolBlock) {
+      const r = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
+      toolBlock.result = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
     }
   } else if (event.type === 'result') {
-    e.cost = event.total_cost_usd ?? null;
+    e.cost = event.cost_usd ?? null;
   } else if (event.type === 'cancelled') {
     e.cancelled = true;
-  } else if (event.type === 'error') {
-    if (e._text) { e.blocks.push({ kind: 'text', text: e._text }); e._text = ''; }
-    e.blocks.push({ kind: 'text', text: `[claude error] ${event.message}` });
   }
-  // Persist in-flight state debounced so a hard restart preserves partial output.
+  // Persist in-flight state so a hard restart (PM2 SIGKILL, crash) doesn't
+  // lose the partial response. Debounced to keep file I/O reasonable.
   saveSessionsSoon();
 }
 
@@ -339,6 +233,7 @@ function finalizeEntry(sessionId) {
   s.currentEntry = null;
   s.streaming = false;
   s.lastActivity = new Date();
+  // Cancel any debounced save — we're about to write fresh state synchronously.
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; savePending = false; }
   saveSessions();
 }
@@ -367,77 +262,88 @@ function toolTitle(name, input) {
   return JSON.stringify(input).slice(0, 80);
 }
 
-// ── runPrompt: write to long-lived process stdin, yield events as they arrive ─
-
-function createTurnQueue() {
-  const items = [];
-  const waiters = [];
-  let ended = false;
-  return {
-    push(item) {
-      if (ended) return;
-      if (waiters.length) waiters.shift()({ value: item, done: false });
-      else items.push(item);
-    },
-    end() {
-      if (ended) return;
-      ended = true;
-      while (waiters.length) waiters.shift()({ value: undefined, done: true });
-    },
-    [Symbol.asyncIterator]() {
-      return {
-        next: () => {
-          if (items.length) return Promise.resolve({ value: items.shift(), done: false });
-          if (ended) return Promise.resolve({ value: undefined, done: true });
-          return new Promise(r => waiters.push(r));
-        }
-      };
-    }
-  };
-}
+// ── runPrompt ────────────────────────────────────────────────────────────────
 
 async function* runPrompt(sessionId, promptText, imagePaths = []) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('Session not found');
 
-  const ctx = ensureProcess(sessionId);
-  if (ctx.currentTurn) throw new Error('A turn is already in flight for this session');
-
-  // Embed image paths in the user message text — claude's Read tool detects
-  // absolute paths inline. No proprietary "attachment" field is needed.
-  const content = imagePaths.length
+  // Claude Code reads images by detecting file paths in the prompt text itself.
+  // There is no --image flag; embedding absolute paths is the documented way
+  // to attach images in non-interactive (-p) mode.
+  const finalPrompt = imagePaths.length
     ? `${imagePaths.join('\n')}\n\n${promptText}`
     : promptText;
 
-  const userMsg = { type: 'user', message: { role: 'user', content } };
+  const args = ['-p', finalPrompt, '--output-format', 'stream-json', '--verbose'];
 
-  const queue = createTurnQueue();
-  ctx.currentTurn = queue;
+  // `-p` (non-interactive) mode cannot return a tool_result, so any
+  // AskUserQuestion call will hang from Claude's perspective and it'll
+  // self-cancel with "質問キャンセルされました". Tell the model to ask in
+  // plain text instead. We append this every turn so it survives --resume.
+  args.push('--append-system-prompt',
+    'When you need to ask the user a question or offer choices, write the question as plain text in your reply and STOP your turn. List options as a numbered or bulleted list. Do NOT call the AskUserQuestion tool — this environment cannot return a tool result, so the question would silently fail.');
+
+  if (session.allowedTools === null) {
+    // null = unrestricted
+    args.push('--dangerously-skip-permissions');
+  } else if (Array.isArray(session.allowedTools) && session.allowedTools.length > 0) {
+    args.push('--allowedTools', session.allowedTools.join(','));
+  }
+  // empty array = no tools allowed (no flag added)
+
+  if (session.sessionId) args.push('--resume', session.sessionId);
+
+  const claudeBin = process.env.CLAUDE_PATH || 'claude';
+  const proc = spawn(claudeBin, args, { cwd: session.directory, env: { ...process.env } });
+  activeProcesses.set(sessionId, proc);
+  proc.on('close', () => activeProcesses.delete(sessionId));
+
+  let buffer = '';
 
   try {
-    ctx.proc.stdin.write(JSON.stringify(userMsg) + '\n');
-  } catch (err) {
-    ctx.currentTurn = null;
-    throw err;
+    for await (const chunk of proc.stdout) {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const event = JSON.parse(trimmed);
+          if (event.type === 'system' && event.subtype === 'init' && !session.sessionId) {
+            session.sessionId = event.session_id;
+            saveSessions();
+          }
+          yield event;
+        } catch { /* skip non-JSON */ }
+      }
+    }
+  } catch { /* cancelled */ }
+
+  if (buffer.trim()) {
+    try { yield JSON.parse(buffer.trim()); } catch { /* ignore */ }
   }
 
-  try {
-    for await (const event of queue) {
-      yield event;
-      if (event.type === 'result' || event.type === 'cancelled' || event.type === 'error') break;
-    }
-  } finally {
-    if (ctx.currentTurn === queue) ctx.currentTurn = null;
+  let stderr = '';
+  for await (const chunk of proc.stderr) stderr += chunk.toString();
+  await new Promise(r => proc.on('close', r));
+
+  if (proc.signalCode === 'SIGTERM') {
+    yield { type: 'cancelled' };
+  } else if (proc.exitCode !== 0 && stderr) {
+    yield { type: 'error', message: stderr.trim() };
   }
 }
 
-// ── Init ─────────────────────────────────────────────────────────────────────
-
+// Load persisted sessions at startup
 loadSessions();
+
+function getActiveProcesses() { return activeProcesses; }
 
 module.exports = {
   createSession, getSession, listSessions, deleteSession,
   updatePermissions, cancelRunning, runPrompt,
   pushUserMessage, startAssistantEntry, feedEvent, finalizeEntry, getHistory,
-  flushPendingSave, shutdownAllProcesses,
+  getActiveProcesses, flushPendingSave,
 };
