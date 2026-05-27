@@ -25,6 +25,7 @@
 - 🔐 **GitHub OAuth** — single-user lockdown, no password to leak
 - 💬 **Streaming chat UI** with tool-use cards, thinking blocks, and per-turn cost
 - 📁 **Multi-project switcher** — open any subdirectory under `BASE_DIR`
+- 🧵 **Multiple sessions per project** — keep parallel conversations in the same repo and switch between them from the sidebar
 - 🔄 **Resume any session** via Claude's native `--resume`
 - 🛟 **Survive crashes** — in-flight responses are persisted to disk; reattach picks up where you left off
 - 🖼️ **Drag / paste images** straight into chat (uses Claude's prompt-path syntax — no proprietary attachment API)
@@ -171,6 +172,7 @@ Then `sudo certbot --apache -d claude.example.com`.
 | PWA | ✅ | ❓ | ✅ |
 | WebSocket auto-reconnect | ✅ | ❓ | ❓ |
 | Multi-project switcher | ✅ | ✅ | ✅ |
+| Multiple sessions per project | ✅ | ❓ | ✅ |
 | Bring-your-own auth | Drop-in via reverse proxy | Same | Same |
 | Read the whole source | **~1 hour** | A week | Several days |
 
