@@ -126,6 +126,34 @@
       letter-spacing: .05em;
       text-transform: uppercase;
     }
+    .proj-sess-count {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    /* Sessions modal */
+    .sess-modal { max-width: 480px; gap: 12px; }
+    .sess-modal h2 { display: flex; align-items: baseline; gap: 8px; }
+    .sess-modal h2 .dir { font-size: 12px; color: var(--text-muted); font-weight: 400; word-break: break-all; }
+    .sess-list { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+    .sess-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px; border-radius: var(--radius-sm);
+      background: var(--surface2); border: 1px solid var(--border);
+      cursor: pointer; transition: border-color .12s;
+    }
+    .sess-row:hover { border-color: var(--accent); }
+    .sess-row .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .sess-row.running .dot { background: var(--green); }
+    .sess-row .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+    .sess-row .when { font-size: 11px; color: var(--text-muted); flex-shrink: 0; }
+    .sess-new-row {
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 10px 12px; border-radius: var(--radius-sm);
+      background: transparent; border: 1px dashed var(--border);
+      cursor: pointer; color: var(--text-muted); font-size: 13px;
+      transition: all .12s;
+    }
+    .sess-new-row:hover { border-color: var(--accent); color: var(--accent); }
   </style>
 </head>
 <body class="page">
@@ -165,6 +193,18 @@
     </div>
   </div>
 
+  <!-- Sessions for a project modal -->
+  <div class="modal-overlay" id="sessOverlay">
+    <div class="modal sess-modal">
+      <h2><span id="sessModalName"></span><span class="dir" id="sessModalDir"></span></h2>
+      <div class="sess-list" id="sessModalList"></div>
+      <div class="sess-new-row" id="sessNewRow">+ Start new session</div>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="sessCancelBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- New project modal -->
   <div class="modal-overlay" id="modalOverlay">
     <div class="modal">
@@ -181,8 +221,8 @@
   <script>
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
 
-    // Active sessions from WS
-    let activeSessions = {};
+    // Sessions grouped by directory.
+    let sessionsByDir = {};
 
     ws.addEventListener('open', () => {
       ws.send(JSON.stringify({ type: 'list_sessions' }));
@@ -190,8 +230,14 @@
     ws.addEventListener('message', (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'sessions_list') {
-        activeSessions = {};
-        msg.sessions.forEach(s => { activeSessions[s.directory] = s; });
+        sessionsByDir = {};
+        for (const s of (msg.sessions || [])) {
+          if (!sessionsByDir[s.directory]) sessionsByDir[s.directory] = [];
+          sessionsByDir[s.directory].push(s);
+        }
+        for (const arr of Object.values(sessionsByDir)) {
+          arr.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
+        }
         refreshCards();
       }
       if (msg.type === 'session_created') {
@@ -228,25 +274,76 @@
         : 'No projects yet';
 
       projects.forEach(proj => {
-        const isActive = !!activeSessions[proj.path];
+        const sessList = sessionsByDir[proj.path] || [];
+        const anyRunning = sessList.some(s => s.streaming);
         const card = document.createElement('div');
-        card.className = `project-card${isActive ? ' active' : ''}`;
+        card.className = `project-card${anyRunning ? ' active' : ''}`;
+        const countLabel = sessList.length === 0 ? 'No sessions'
+                         : sessList.length === 1 ? '1 session'
+                         : `${sessList.length} sessions`;
         card.innerHTML = `
           <span class="proj-icon">📁</span>
           <span class="proj-name">${escHtml(proj.name)}</span>
+          <span class="proj-sess-count">${countLabel}</span>
           <span class="proj-status">Running</span>`;
-        card.addEventListener('click', () => openProject(proj.path, isActive ? activeSessions[proj.path].id : null));
+        card.addEventListener('click', () => openProject(proj));
         grid.insertBefore(card, document.getElementById('newCard'));
       });
     }
 
-    function openProject(directory, existingSessionId) {
-      if (existingSessionId) {
-        location.href = `/terminal?session=${existingSessionId}`;
-      } else {
-        ws.send(JSON.stringify({ type: 'create_session', directory }));
+    function openProject(proj) {
+      const list = sessionsByDir[proj.path] || [];
+      if (list.length === 0) {
+        // No sessions yet — preserve the one-click flow.
+        ws.send(JSON.stringify({ type: 'create_session', directory: proj.path }));
+        return;
       }
+      if (list.length === 1) {
+        location.href = `/terminal?session=${list[0].id}`;
+        return;
+      }
+      openSessionsModal(proj);
     }
+
+    function openSessionsModal(proj) {
+      const list = sessionsByDir[proj.path] || [];
+      document.getElementById('sessModalName').textContent = proj.name;
+      document.getElementById('sessModalDir').textContent = proj.path;
+      const ul = document.getElementById('sessModalList');
+      ul.innerHTML = '';
+      for (const s of list) {
+        const row = document.createElement('div');
+        row.className = `sess-row${s.streaming ? ' running' : ''}`;
+        const label = (s.preview && s.preview.trim()) ? s.preview : 'New session';
+        row.innerHTML = `
+          <span class="dot"></span>
+          <span class="label">${escHtml(label)}</span>
+          <span class="when">${formatWhen(s.lastActivity)}</span>`;
+        row.addEventListener('click', () => { location.href = `/terminal?session=${s.id}`; });
+        ul.appendChild(row);
+      }
+      document.getElementById('sessNewRow').onclick = () => {
+        ws.send(JSON.stringify({ type: 'create_session', directory: proj.path }));
+      };
+      document.getElementById('sessOverlay').classList.add('open');
+    }
+
+    function formatWhen(iso) {
+      if (!iso) return '';
+      const d = new Date(iso); const now = new Date();
+      const diff = (now - d) / 1000;
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+      if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+      return d.toLocaleDateString();
+    }
+
+    document.getElementById('sessCancelBtn').addEventListener('click', () => {
+      document.getElementById('sessOverlay').classList.remove('open');
+    });
+    document.getElementById('sessOverlay').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) e.currentTarget.classList.remove('open');
+    });
 
     // New project modal
     document.getElementById('newCard').addEventListener('click', () => {

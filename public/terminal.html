@@ -78,17 +78,42 @@
 
   /* ── Left: project list ── */
   .proj-list { flex: 1; overflow-y: auto; padding: 6px; }
-  .proj-item {
+  .proj-group { margin-bottom: 6px; }
+  .proj-group-head {
     display: flex; align-items: center; gap: 8px;
-    padding: 9px 10px; border-radius: var(--radius-sm); cursor: pointer;
+    padding: 8px 10px;
     font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
-    color: var(--text-muted); border: 1px solid transparent; transition: all .12s;
+    color: var(--text);
+    font-weight: 600;
   }
-  .proj-item:hover { background: var(--surface2); color: var(--text); }
-  .proj-item.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
-  .proj-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
-  .proj-item.running .proj-dot { background: var(--green); }
-  .proj-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-group-head .proj-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-new-btn-inline {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); width: 22px; height: 22px;
+    border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .proj-new-btn-inline:hover { color: var(--accent); border-color: var(--accent); }
+  .sess-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px 7px 22px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    transition: all .12s;
+  }
+  .sess-item:hover { background: var(--surface2); color: var(--text); }
+  .sess-item.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+  .sess-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+  .sess-item.running .sess-dot { background: var(--green); }
+  .sess-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-empty {
+    font-size: 11px; color: var(--text-muted); padding: 2px 10px 6px 22px;
+    font-style: italic;
+  }
   .proj-empty { padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
   .proj-new-area {
     padding: 8px; border-top: 1px solid var(--border); flex-shrink: 0;
@@ -1027,41 +1052,63 @@ function rerenderProjList() {
   const list = document.getElementById('projList');
   list.innerHTML = '';
 
-  // Index sessions by directory so we can mark which projects have one.
-  const sessByDir = {};
-  for (const s of _sessions) sessByDir[s.directory] = s;
-
-  // Only show projects whose folder still exists in BASE_DIR. Sessions whose
-  // directory no longer exists are intentionally hidden — they linger in
-  // sessions.json but aren't useful in the sidebar.
-  const items = [];
-  for (const p of _projects) {
-    items.push({ name: p.name, dir: p.path, session: sessByDir[p.path] || null });
+  // Group sessions by directory. Most-recent first within each folder.
+  const sessByDir = new Map();
+  for (const s of _sessions) {
+    if (!sessByDir.has(s.directory)) sessByDir.set(s.directory, []);
+    sessByDir.get(s.directory).push(s);
+  }
+  for (const arr of sessByDir.values()) {
+    arr.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
   }
 
-  if (!items.length) {
+  if (!_projects.length) {
     list.innerHTML = '<div class="proj-empty">No projects yet</div>';
     return;
   }
 
-  for (const it of items) {
-    const isActive = it.session && it.session.id === sessionId;
-    const el = document.createElement('div');
-    el.className = 'proj-item'
-      + (it.session && it.session.streaming ? ' running' : '')
-      + (isActive ? ' active' : '');
-    el.innerHTML = `<span class="proj-dot"></span><span class="proj-name" title="${escHtml(it.dir)}">${escHtml(it.name)}</span>`;
-    el.addEventListener('click', () => {
-      if (isActive) return;
-      if (it.session) {
-        location.href = `/terminal?session=${it.session.id}`;
-      } else {
-        // No active session for this project — create one. The server replies
-        // with `session_created` and we navigate there.
-        wsSend({ type: 'create_session', directory: it.dir });
-      }
+  for (const p of _projects) {
+    const sessions = sessByDir.get(p.path) || [];
+
+    const group = document.createElement('div');
+    group.className = 'proj-group';
+
+    const head = document.createElement('div');
+    head.className = 'proj-group-head';
+    head.innerHTML = `<span class="proj-name" title="${escHtml(p.path)}">${escHtml(p.name)}</span>`;
+    const newBtn = document.createElement('button');
+    newBtn.className = 'proj-new-btn-inline';
+    newBtn.title = 'New session in this folder';
+    newBtn.textContent = '+';
+    newBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      wsSend({ type: 'create_session', directory: p.path });
     });
-    list.appendChild(el);
+    head.appendChild(newBtn);
+    group.appendChild(head);
+
+    if (sessions.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'sess-empty';
+      empty.textContent = 'No sessions';
+      group.appendChild(empty);
+    } else {
+      for (const s of sessions) {
+        const isActive = s.id === sessionId;
+        const label = (s.preview && s.preview.trim()) ? s.preview : 'New session';
+        const item = document.createElement('div');
+        item.className = 'sess-item'
+          + (s.streaming ? ' running' : '')
+          + (isActive ? ' active' : '');
+        item.innerHTML = `<span class="sess-dot"></span><span class="sess-label">${escHtml(label)}</span>`;
+        item.addEventListener('click', () => {
+          if (isActive) return;
+          location.href = `/terminal?session=${s.id}`;
+        });
+        group.appendChild(item);
+      }
+    }
+    list.appendChild(group);
   }
 }
 

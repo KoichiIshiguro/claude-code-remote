@@ -133,9 +133,23 @@ function createSession(directory) {
 
 function getSession(id) { return sessions.get(id) || null; }
 
+function previewOf(s) {
+  for (const e of (s.history || [])) {
+    if (e.type === 'user' && e.text) return e.text.slice(0, 80);
+  }
+  return '';
+}
+
 function listSessions() {
-  return Array.from(sessions.values()).map(({ id, directory, createdAt, lastActivity, streaming, allowedTools, lastTokens }) => ({
-    id, directory, createdAt, lastActivity, streaming, allowedTools, lastTokens,
+  return Array.from(sessions.values()).map(s => ({
+    id: s.id,
+    directory: s.directory,
+    createdAt: s.createdAt,
+    lastActivity: s.lastActivity,
+    streaming: s.streaming,
+    allowedTools: s.allowedTools,
+    lastTokens: s.lastTokens,
+    preview: previewOf(s),
   }));
 }
 
