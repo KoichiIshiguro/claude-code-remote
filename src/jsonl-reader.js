@@ -6,10 +6,17 @@ const os = require('os');
 
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 
-// Claude CLI's encoding: every "/" in the absolute cwd becomes "-".
-// e.g. "/Volumes/sal-dev/foo" → "-Volumes-sal-dev-foo".
+// Claude CLI encodes every non-alphanumeric character of the absolute cwd to
+// a single "-". Verified empirically against existing jsonl directories:
+//   "/Volumes/sal-dev/foo"      → "-Volumes-sal-dev-foo"
+//   "/Volumes/sal-dev/foo_bar"  → "-Volumes-sal-dev-foo-bar"   (underscore)
+//   "/Users/.../Mobile Documents/com~apple~CloudDocs/..." → "...Mobile-Documents-com-apple-CloudDocs..."
+//   "/Volumes/名称未設定/HIKSEMI" → "-Volumes-------HIKSEMI"   (non-ASCII)
+// Only `/`-substitution was a long-standing bug: any folder containing `_`,
+// `.`, space, `~`, or non-ASCII pointed at a directory that did not exist,
+// so the session vanished from the sidebar.
 function encodedCwd(absPath) {
-  return absPath.replace(/\//g, '-');
+  return absPath.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function jsonlDirFor(directory) {
@@ -41,6 +48,30 @@ function listJsonlsForProject(directory) {
   return out;
 }
 
+// Slash-command plumbing that Claude CLI writes into the jsonl as fake
+// user events. They should never appear in the chat view: caveat banners,
+// the /<cmd> echo trio, captured stdout/stderr, and the synthetic
+// "Continue from where you left off." kickoff after /compact.
+function isMetaUserText(text) {
+  if (!text) return false;
+  const t = text.trim();
+  if (/^<local-command-(caveat|stdout|stderr)>/i.test(t)) return true;
+  if (/^<command-(name|message|args)>/i.test(t)) return true;
+  if (t === 'Continue from where you left off.') return true;
+  return false;
+}
+
+function extractUserText(message) {
+  if (!message) return '';
+  if (typeof message === 'string') return message;
+  if (typeof message.content === 'string') return message.content;
+  if (Array.isArray(message.content)) {
+    const b = message.content.find(c => c && c.type === 'text');
+    if (b) return b.text || '';
+  }
+  return '';
+}
+
 // Read up to maxBytes from the head of a jsonl and return the first user
 // prompt's text — used as a row preview in the restore modal and sidebar.
 function firstUserPreview(sessionId, directory, maxBytes = 65536) {
@@ -57,16 +88,9 @@ function firstUserPreview(sessionId, directory, maxBytes = 65536) {
       let e;
       try { e = JSON.parse(trimmed); } catch { continue; }
       if (e.type !== 'user') continue;
-      if (e.isCompactSummary) continue;
-      const msg = e.message;
-      let text = '';
-      if (typeof msg === 'string') text = msg;
-      else if (msg && typeof msg.content === 'string') text = msg.content;
-      else if (msg && Array.isArray(msg.content)) {
-        const b = msg.content.find(c => c && c.type === 'text');
-        if (b) text = b.text || '';
-      }
-      if (text) return text.slice(0, 120);
+      if (e.isMeta || e.isCompactSummary) continue;
+      const text = extractUserText(e.message);
+      if (text && !isMetaUserText(text)) return text.slice(0, 120);
     }
     return '';
   } catch {
@@ -125,7 +149,7 @@ function applyEventToBlocks(history, event) {
   const ts = event.timestamp ? Date.parse(event.timestamp) : Date.now();
 
   if (event.type === 'user') {
-    if (event.isCompactSummary) return history;
+    if (event.isMeta || event.isCompactSummary) return history;
     const content = event.message?.content;
 
     // Tool-result wrap: attach result to preceding assistant's tool block.
@@ -133,14 +157,9 @@ function applyEventToBlocks(history, event) {
       return attachToolResults(history, content);
     }
 
-    let text = '';
-    if (typeof content === 'string') {
-      text = content;
-    } else if (Array.isArray(content)) {
-      const b = content.find(c => c && c.type === 'text');
-      if (b) text = b.text || '';
-    }
+    const text = extractUserText(event.message);
     if (!text) return history;
+    if (isMetaUserText(text)) return history;
     return [...history, { type: 'user', text, ts }];
   }
 
