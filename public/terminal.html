@@ -372,6 +372,23 @@
   /* ── Main area ── */
   .chat-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-width: 0; }
 
+  /* Floating "jump to latest" button — shown while the user has scrolled up
+     and we're suppressing auto-follow on new stream output. */
+  .scroll-latest-btn {
+    position: absolute; right: 16px; bottom: 90px;
+    background: var(--accent); color: var(--bg); border: none;
+    border-radius: 999px; padding: 8px 14px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,.35);
+    display: none; z-index: 90;
+  }
+  .scroll-latest-btn.on { display: inline-flex; align-items: center; gap: 4px; }
+  .scroll-latest-btn:hover { opacity: .9; }
+  .scroll-latest-btn .count {
+    background: rgba(0,0,0,.18); border-radius: 99px;
+    padding: 1px 8px; font-size: 11px; margin-left: 2px;
+  }
+
   /* ── Top loader ── */
   .top-loader { position: absolute; top: 0; left: 0; right: 0; height: 3px; z-index: 10; overflow: hidden; pointer-events: none; }
   .top-loader::after { content: ''; display: block; width: 40%; height: 100%; background: linear-gradient(90deg, transparent, var(--accent), transparent); transform: translateX(-100%); }
@@ -540,6 +557,9 @@
   </div>
 
   <div class="chat-messages" id="messages"></div>
+  <button class="scroll-latest-btn" id="scrollLatestBtn" aria-label="最新の出力へ">
+    ↓ 最新へ<span class="count" id="scrollLatestCount" hidden></span>
+  </button>
 
   <div class="input-area">
     <div class="queue-list" id="queueList"></div>
@@ -840,7 +860,7 @@ function handleMessage(msg) {
       fbSessionRoot = dir;
       fbCurrentDir = dir;
       if (dir) loadDir(dir);
-      scrollToBottom();
+      scrollToBottomNow();
       break;
     }
     case 'stream_start':
@@ -1015,7 +1035,6 @@ function renderHistoryEntry(entry) {
     const m = createAssistantMessage();
     const c = m.querySelector('.assistant-content');
     renderBlocks(c, entry.blocks);
-    if (entry.cost != null) { const p = document.createElement('div'); p.className = 'usage-pill'; p.textContent = `$${entry.cost.toFixed(4)}`; c.appendChild(p); }
     if (entry.cancelled) appendCancelled();
     if (entry.interrupted) {
       const note = document.createElement('div');
@@ -1080,7 +1099,7 @@ function handleStreamEvent(event) {
       break;
     }
     case 'result':
-      if (event.total_cost_usd != null) { const p = document.createElement('div'); p.className = 'usage-pill'; p.textContent = `$${event.total_cost_usd.toFixed(4)}`; c.appendChild(p); }
+      // Intentionally drop the per-turn cost pill — distracting and not useful.
       break;
     case 'cancelled': finalizeText(); appendCancelled(); break;
   }
@@ -1157,7 +1176,8 @@ function appendUserMsg(text, images, queued) {
   const imgs = images?.length ? `<div class="img-previews">${images.map(u=>`<img src="${u}">`).join('')}</div>` : '';
   const lbl = queued ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">⏳ queued</div>` : '';
   m.innerHTML = `${lbl}${imgs}<div class="bubble">${escHtml(text)}</div>`;
-  document.getElementById('messages').appendChild(m); scrollToBottom();
+  // User just sent — always snap to bottom (forces auto-follow back on).
+  document.getElementById('messages').appendChild(m); scrollToBottomNow();
 }
 function appendError(text) {
   const m = document.createElement('div'); m.className = 'msg msg-error';
@@ -2081,7 +2101,55 @@ function savePerms() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,180)+'px'; }
-function scrollToBottom() { const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
+
+// Auto-follow state. We auto-scroll on new output only while the user is
+// near the bottom (within SCROLL_PIN_PX). If they scroll up to read, we
+// stop following and surface a "↓ 最新へ" button so they can jump back.
+const SCROLL_PIN_PX = 80;
+let _atBottom = true;
+let _missedSinceScrollUp = 0;
+function isAtBottom(m) {
+  return (m.scrollHeight - m.scrollTop - m.clientHeight) <= SCROLL_PIN_PX;
+}
+function updateScrollLatestBtn() {
+  const btn = document.getElementById('scrollLatestBtn');
+  if (!btn) return;
+  if (_atBottom) {
+    btn.classList.remove('on');
+    _missedSinceScrollUp = 0;
+  } else {
+    btn.classList.add('on');
+    const c = document.getElementById('scrollLatestCount');
+    if (_missedSinceScrollUp > 0) { c.hidden = false; c.textContent = _missedSinceScrollUp; }
+    else { c.hidden = true; c.textContent = ''; }
+  }
+}
+// Conditional scroll — only follows the bottom when the user is already there.
+function scrollToBottom() {
+  const m = document.getElementById('messages');
+  if (_atBottom) { m.scrollTop = m.scrollHeight; }
+  else { _missedSinceScrollUp++; updateScrollLatestBtn(); }
+}
+// Forced scroll — used when the user just performed an explicit action
+// (sent a prompt, loaded history) and we want to snap to the bottom.
+function scrollToBottomNow() {
+  const m = document.getElementById('messages');
+  m.scrollTop = m.scrollHeight;
+  _atBottom = true;
+  _missedSinceScrollUp = 0;
+  updateScrollLatestBtn();
+}
+(function wireScrollFollow() {
+  const m = document.getElementById('messages');
+  if (!m) return;
+  m.addEventListener('scroll', () => {
+    const ab = isAtBottom(m);
+    if (ab !== _atBottom) { _atBottom = ab; updateScrollLatestBtn(); }
+  }, { passive: true });
+  const btn = document.getElementById('scrollLatestBtn');
+  if (btn) btn.addEventListener('click', scrollToBottomNow);
+})();
+
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // Block tab close / reload while a file editor has unsaved changes.
