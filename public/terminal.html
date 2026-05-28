@@ -367,6 +367,7 @@
     <div class="working-chip" id="workingChip">
       <span class="dot-anim" id="dotAnim">●</span> Working
     </div>
+    <button class="hdr-btn" id="summaryBtn" title="このスレッドを要約" aria-label="Summarize thread">📋</button>
     <button class="hdr-btn" id="permBtn" title="Permissions" aria-label="Permissions">⚙</button>
     <button class="hdr-btn hdr-right-btn" id="rightBtn" title="Files" aria-label="Files">📁</button>
   </div>
@@ -428,6 +429,20 @@
     <div class="fb-loading">Loading…</div>
   </div>
 </aside>
+
+<!-- ── Summary Modal ── -->
+<div class="modal-overlay" id="summaryOverlay">
+  <div class="perm-modal" style="max-width:520px;">
+    <div class="perm-hdr">
+      <h3>スレッドの要約</h3>
+      <button class="side-close" id="summaryClose">×</button>
+    </div>
+    <div class="perm-body" id="summaryBody" style="white-space:pre-wrap;line-height:1.7;font-size:14px;">読み込み中…</div>
+    <div class="perm-ftr">
+      <button class="btn-save" id="summaryDismiss">OK</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Permissions Modal ── -->
 <div class="modal-overlay" id="permOverlay">
@@ -612,6 +627,12 @@ function handleMessage(msg) {
       break;
     case 'permissions_updated':
       if (msg.sessionId === sessionId) allowedTools = msg.allowedTools;
+      break;
+    case 'summary':
+      if (msg.sessionId === sessionId) showSummary(msg.text);
+      break;
+    case 'summary_error':
+      if (msg.sessionId === sessionId) showSummary('要約に失敗しました: ' + msg.message, true);
       break;
     case 'error':
       isStreaming = false; setStreamingUI(false); appendError(msg.message); break;
@@ -1258,6 +1279,30 @@ function getFileIcon(name) {
   const m = {js:'🟨',ts:'🔷',jsx:'🟨',tsx:'🔷',html:'🌐',css:'🎨',json:'📋',md:'📝',py:'🐍',sh:'⚙️',txt:'📄',png:'🖼',jpg:'🖼',jpeg:'🖼',gif:'🖼',svg:'🖼',pdf:'📕',zip:'🗜',env:'🔐',gitignore:'🙈'};
   return m[ext] || '📄';
 }
+
+// ── Summary modal ─────────────────────────────────────────────────────────────
+// クリック → モーダル表示 → サーバーが要約を返す (または前回キャッシュを返す) → 表示。
+// 履歴に変化がなければサーバー側で API は呼ばれないので連打しても課金されない。
+const summaryOverlay = document.getElementById('summaryOverlay');
+const summaryBody = document.getElementById('summaryBody');
+const summaryBtn = document.getElementById('summaryBtn');
+
+summaryBtn.addEventListener('click', requestSummary);
+document.getElementById('summaryClose').addEventListener('click', closeSummary);
+document.getElementById('summaryDismiss').addEventListener('click', closeSummary);
+summaryOverlay.addEventListener('click', e => { if (e.target === e.currentTarget) closeSummary(); });
+
+function requestSummary() {
+  summaryBody.textContent = '要約中…';
+  summaryBody.style.color = '';
+  summaryOverlay.classList.add('on');
+  wsSend({ type: 'request_summary', sessionId });
+}
+function showSummary(text, isError) {
+  summaryBody.textContent = text || '(空の応答)';
+  summaryBody.style.color = isError ? 'var(--yellow, #d29922)' : '';
+}
+function closeSummary() { summaryOverlay.classList.remove('on'); }
 
 // ── Permissions modal ─────────────────────────────────────────────────────────
 const permAll = document.getElementById('permAll');

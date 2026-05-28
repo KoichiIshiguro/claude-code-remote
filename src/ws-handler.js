@@ -4,7 +4,7 @@ const {
   createSession, getSession, listSessions, deleteSession,
   cancelRunning, runPrompt, updatePermissions,
   pushUserMessage, startAssistantEntry, feedEvent, finalizeEntry, getHistory,
-  shouldAutoCompact,
+  shouldAutoCompact, summarizeSession,
 } = require('./session-manager');
 const fs = require('fs');
 
@@ -94,6 +94,18 @@ function handleConnection(ws, req) {
       case 'cancel': {
         const { sessionId } = msg;
         cancelRunning(sessionId);
+        break;
+      }
+
+      case 'request_summary': {
+        const { sessionId } = msg;
+        if (!sessionId) { send(ws, { type: 'error', message: 'sessionId is required' }); return; }
+        try {
+          const text = await summarizeSession(sessionId);
+          send(ws, { type: 'summary', sessionId, text });
+        } catch (err) {
+          send(ws, { type: 'summary_error', sessionId, message: err.message });
+        }
         break;
       }
 

@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/KoichiIshiguro/claude-code-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/KoichiIshiguro/claude-code-remote/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Internal Use](https://img.shields.io/badge/license-PolyForm_Internal_Use-blue.svg)](LICENSE)
 [![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8?logo=pwa&logoColor=white)](#)
 [![~2000 LOC](https://img.shields.io/badge/code-~2000_LOC-lightgrey)](#)
 
@@ -175,13 +175,15 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 - [ ] Push notifications when long prompts finish
 - [ ] Multi-user via OAuth groups (probably never — that's not the design)
 
-PRs welcome for everything above (and pushback welcome on the last one).
+Roadmap items are tracked in [issues](https://github.com/KoichiIshiguro/claude-code-remote/issues). Feature requests and bug reports are welcome there.
 
 ---
 
 ## 🤝 Contributing
 
-This is a personal tool that grew into something shareable. PRs that **keep the LOC low and the dependency tree small** are very welcome. If you want to add a 5 MB chart library, please open an issue first.
+**Pull requests are not accepted.** This project is maintained as a single-author codebase. Please file issues for bugs and feature requests — they're read and triaged, just not merged from outside the repo.
+
+If you want a local development setup for your own use:
 
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
@@ -195,7 +197,18 @@ pnpm dev              # auto-restart on file change
 
 ## 📜 License
 
-MIT — see [LICENSE](LICENSE).
+**[PolyForm Internal Use 1.0.0](LICENSE)** — source-available for internal use only.
+
+You may:
+- Clone, build, run, and modify the software for your own internal business use (personal or company-internal)
+- Self-host it on any infrastructure you control
+
+You may not:
+- Distribute the software or any derivative work to third parties (modified or unmodified, free or paid)
+- Provide it as a hosted/managed service to third parties
+- Re-publish forks of this repository
+
+> **Versions v0.6.0 and earlier remain available under the MIT License.** The license change applies from the first commit following the v0.6.0 release.
 
 `claude` is Anthropic's commercial product and is not bundled with this repo. You need your own Claude account / API access.
 

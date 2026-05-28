@@ -178,6 +178,93 @@ function cancelRunning(sessionId) {
   return false;
 }
 
+// ── One-shot summarization ───────────────────────────────────────────────────
+// Spawns a fresh `claude -p` with the transcript embedded as plain text. The
+// long-lived process and our sessions.json are not touched at all. Claude CLI
+// will still create its own jsonl under ~/.claude/projects/ for this one-shot
+// run — that orphan is hidden by the UI (v0.4.1).
+
+// Full history → flat prompt. `claude -p` is a one-shot with no auto-compaction,
+// so whatever we hand over IS the entire context. We only truncate as a hard
+// safety net to stay well under the model window (~200k tokens). Tail is kept
+// because "今のフェーズ" needs recency; the head is dropped with a marker.
+const MAX_TRANSCRIPT_CHARS = 120_000;
+
+function buildTranscript(history) {
+  const parts = [];
+  for (const entry of history) {
+    if (entry.type === 'user') {
+      parts.push(`ユーザー: ${entry.text || ''}`);
+    } else if (entry.type === 'assistant') {
+      const text = (entry.blocks || []).map(b => {
+        if (b.kind === 'text') return b.text;
+        if (b.kind === 'tool') return `[ツール ${b.name}: ${b.title || ''}]`;
+        if (b.kind === 'ask') return `[質問: ${b.question || ''}]`;
+        return '';
+      }).filter(Boolean).join('\n');
+      if (text) parts.push(`アシスタント: ${text}`);
+    }
+  }
+  let joined = parts.join('\n\n');
+  if (joined.length > MAX_TRANSCRIPT_CHARS) {
+    joined = '…(序盤省略)\n\n' + joined.slice(-MAX_TRANSCRIPT_CHARS);
+  }
+  return joined;
+}
+
+function summarizeSession(sessionId) {
+  return new Promise((resolve, reject) => {
+    const s = sessions.get(sessionId);
+    if (!s) return reject(new Error('Session not found'));
+    if (!s.history || !s.history.length) {
+      return reject(new Error('まだ要約する会話がありません'));
+    }
+
+    // Cache: 履歴が増えていなければ前回の要約をそのまま返す (API呼ばない)。
+    // 永続化しない — サーバー再起動で消えても問題ない一時キャッシュ。
+    if (s._cachedSummary && s._cachedSummary.atLength === s.history.length) {
+      return resolve(s._cachedSummary.text);
+    }
+
+    const transcript = buildTranscript(s.history);
+    const prompt =
+      'あなたは会話履歴を要約するアシスタントです。ツールは一切使わないでください。' +
+      '以下はこのスレッドのこれまでの全やりとりです。これを読んで、' +
+      '「このスレッドがこれまで何をしてきたか」「今まさに何のフェーズにあるか」を、' +
+      '日本語で300字程度にまとめてください。前置きや見出しは不要、本文のみを出力してください。\n\n' +
+      '# 会話履歴\n' + transcript;
+
+    const claudeBin = process.env.CLAUDE_PATH || 'claude';
+    // Haiku 4.5: 短文要約はこれで十分すぎる品質。Opus/Sonnet 比で大幅に安い。
+    const proc = spawn(claudeBin, ['-p', '--model', 'claude-haiku-4-5-20251001', prompt], {
+      cwd: s.directory,
+      env: { ...process.env },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    const killTimer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 90 * 1000);
+
+    proc.on('close', (code) => {
+      clearTimeout(killTimer);
+      if (code === 0) {
+        const text = stdout.trim();
+        s._cachedSummary = { text, atLength: s.history.length };
+        resolve(text);
+      } else {
+        reject(new Error(stderr.trim() || `claude exited with code ${code}`));
+      }
+    });
+    proc.on('error', (err) => {
+      clearTimeout(killTimer);
+      reject(err);
+    });
+  });
+}
+
 // ── History helpers ──────────────────────────────────────────────────────────
 
 function pushUserMessage(sessionId, text, imageCount) {
@@ -393,4 +480,5 @@ module.exports = {
   pushUserMessage, startAssistantEntry, feedEvent, finalizeEntry, getHistory,
   getActiveProcesses, flushPendingSave,
   shouldAutoCompact, AUTO_COMPACT_THRESHOLD,
+  summarizeSession,
 };
