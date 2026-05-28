@@ -956,6 +956,9 @@ function handleMessage(msg) {
         location.href = next ? `/terminal?session=${next.id}` : '/app';
       }
       break;
+    case 'ask_user_question_intercepted':
+      if (msg.sessionId === sessionId) appendAskUserQuestionBanner(msg.questions || []);
+      break;
     case 'permissions_updated':
       if (msg.sessionId === sessionId) allowedTools = msg.allowedTools;
       break;
@@ -1186,6 +1189,36 @@ function appendCancelled() {
   const m = document.createElement('div'); m.className = 'msg msg-cancelled';
   m.innerHTML = `<div class="bubble">■ Stopped by user</div>`;
   document.getElementById('messages').appendChild(m); scrollToBottom();
+}
+
+// AskUserQuestion arrived. Render the question(s) Claude wanted to ask, and
+// let the user know to re-send with the answer included. The model is
+// already SIGTERMed server-side and a synthetic tool_result has been
+// appended to the jsonl so resume is clean.
+function appendAskUserQuestionBanner(questions) {
+  const m = document.createElement('div');
+  m.className = 'msg msg-error';
+  let listHtml = '';
+  if (Array.isArray(questions) && questions.length) {
+    listHtml = '<ul style="margin:8px 0 0 18px; padding:0;">' + questions.map(q => {
+      const head = escHtml(q.header || q.question || '(no question text)');
+      const body = q.question && q.header ? `<div style="font-size:12px; color:var(--text-muted); margin-top:2px;">${escHtml(q.question)}</div>` : '';
+      let opts = '';
+      if (Array.isArray(q.options) && q.options.length) {
+        opts = '<ol style="margin:4px 0 4px 18px; padding:0; font-size:12px;">' +
+          q.options.map(o => `<li>${escHtml(o.label || o.toString())}${o.description ? ` — <span style="color:var(--text-muted);">${escHtml(o.description)}</span>` : ''}</li>`).join('') +
+          '</ol>';
+      }
+      return `<li style="margin-bottom:6px;"><b>${head}</b>${body}${opts}</li>`;
+    }).join('') + '</ul>';
+  }
+  m.innerHTML = `<div class="bubble">
+    ⚠ Claude が対話モードでしか使えない質問ツールを呼び出したので中断しました。<br>
+    回答に必要な情報を含めて再送してください。
+    ${listHtml}
+  </div>`;
+  document.getElementById('messages').appendChild(m);
+  scrollToBottom();
 }
 function getToolTitle(name, input) {
   if (!input) return name;

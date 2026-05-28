@@ -229,9 +229,44 @@ function readHistory(sessionId, directory) {
   return { history, lastTokens, exists: true, cwdMismatch };
 }
 
+// Tail-scan the last `maxBytes` of a jsonl and return the LAST non-empty
+// parsed entry. Used when we need the uuid / parentUuid of the most recent
+// assistant turn (e.g. for the AskUserQuestion intercept that appends a
+// synthetic tool_result line).
+function readTailEntry(sessionId, directory, maxBytes = 65536) {
+  const p = jsonlPathFor(sessionId, directory);
+  let fd;
+  try {
+    const stat = fs.statSync(p);
+    if (stat.size === 0) return null;
+    const readSize = Math.min(stat.size, maxBytes);
+    const buf = Buffer.alloc(readSize);
+    fd = fs.openSync(p, 'r');
+    fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      try { return JSON.parse(t); } catch { continue; }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
+// Append a single jsonl entry. Newline added by us.
+function appendJsonlLine(sessionId, directory, entry) {
+  const p = jsonlPathFor(sessionId, directory);
+  fs.appendFileSync(p, JSON.stringify(entry) + '\n', 'utf8');
+}
+
 module.exports = {
   encodedCwd, jsonlDirFor, jsonlPathFor,
   listJsonlsForProject, firstUserPreview,
   applyEventToBlocks, readHistory, getLastTokens,
+  readTailEntry, appendJsonlLine,
   CLAUDE_PROJECTS_DIR,
 };

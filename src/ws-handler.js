@@ -449,6 +449,12 @@ function handleConnection(ws /*, req */) {
 
         broadcast(sessionId, { type: 'stream_start', sessionId });
 
+        // AskUserQuestion intercept state. The tool can't actually be answered
+        // in `-p` mode (no stdin channel for tool_result), so we surface the
+        // question to the user, cancel the stream, and write a synthetic
+        // tool_result into the jsonl so the next /resume isn't dangling.
+        let interceptedAUQ = null;
+
         try {
           for await (const event of sm.runPrompt({
             directory, prompt, imagePaths,
@@ -466,6 +472,25 @@ function handleConnection(ws /*, req */) {
               // target the now-defunct placeholder id.
               send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
             }
+
+            // Scan assistant events for AskUserQuestion. We let the event
+            // through to the client so the model's preceding text still
+            // renders, then schedule a cancel after a brief delay to give
+            // claude time to flush this assistant turn to its jsonl.
+            if (!interceptedAUQ && event.type === 'assistant') {
+              const content = event.message && event.message.content;
+              if (Array.isArray(content)) {
+                const auq = content.find(b => b && b.type === 'tool_use' && b.name === 'AskUserQuestion');
+                if (auq) {
+                  interceptedAUQ = {
+                    toolUseId: auq.id,
+                    questions: (auq.input && auq.input.questions) || [],
+                  };
+                  setTimeout(() => { try { procTracker.cancel(processKey); } catch {} }, 200);
+                }
+              }
+            }
+
             const bk = resolvedSessionId || sessionId;
             broadcast(bk, { type: 'stream_event', sessionId: resolvedSessionId || sessionId, event });
           }
@@ -475,6 +500,47 @@ function handleConnection(ws /*, req */) {
         } finally {
           for (const p of imagePaths) { try { fs.unlinkSync(p); } catch {} }
           const bk = resolvedSessionId || sessionId;
+
+          // AskUserQuestion follow-up: append a synthetic tool_result and tell
+          // the UI to render an explanatory banner. Best-effort — failures
+          // here don't poison the regular finalize path.
+          if (interceptedAUQ && (resolvedSessionId || sessionId)) {
+            const realSid = resolvedSessionId || sessionId;
+            try {
+              const tail = jsonlReader.readTailEntry(realSid, directory);
+              const parentUuid = tail && typeof tail.uuid === 'string' ? tail.uuid : null;
+              const { v4: uuidv4 } = require('uuid');
+              const entry = {
+                parentUuid,
+                sessionId: realSid,
+                type: 'user',
+                isMeta: false,
+                uuid: uuidv4(),
+                timestamp: new Date().toISOString(),
+                cwd: directory,
+                message: {
+                  role: 'user',
+                  content: [{
+                    type: 'tool_result',
+                    tool_use_id: interceptedAUQ.toolUseId,
+                    content: 'AskUserQuestion is unsupported in -p mode. The user will respond in plain text in the next prompt.',
+                    is_error: true,
+                  }],
+                },
+              };
+              jsonlReader.appendJsonlLine(realSid, directory, entry);
+            } catch (e) {
+              // Non-fatal — the resume will surface the dangling tool_use and
+              // claude will likely re-ask or error, which is informative enough.
+            }
+            broadcast(bk, {
+              type: 'ask_user_question_intercepted',
+              sessionId: realSid,
+              toolUseId: interceptedAUQ.toolUseId,
+              questions: interceptedAUQ.questions,
+            });
+          }
+
           broadcast(bk, { type: 'stream_end', sessionId: resolvedSessionId || sessionId });
           if (placeholder && pendingSessions.has(sessionId)) {
             placeholder.lastActivity = Date.now();
