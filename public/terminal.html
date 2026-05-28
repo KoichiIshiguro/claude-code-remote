@@ -176,7 +176,6 @@
   }
   /* Hide per-row buttons in delete-mode — single tap = remove */
   body.delete-mode .proj-restore-btn,
-  body.delete-mode .proj-remove-btn,
   body.delete-mode .proj-new-btn-inline,
   body.delete-mode .sess-menu-btn { display: none; }
   body.delete-mode .sess-item { pointer-events: none; opacity: .5; }
@@ -205,15 +204,6 @@
   }
   .proj-restore-btn:hover { color: var(--accent); border-color: var(--accent); }
   .proj-restore-btn.has-archives { color: var(--accent); }
-
-  /* Per-project × remove button — sits next to ↻ */
-  .proj-remove-btn {
-    background: transparent; border: 1px solid var(--border);
-    color: var(--text-muted); width: 22px; height: 22px;
-    border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1;
-    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-  }
-  .proj-remove-btn:hover { color: var(--red); border-color: var(--red); }
 
   /* Session-row ⋯ menu */
   .sess-item { position: relative; }
@@ -1593,16 +1583,6 @@ function rerenderProjList() {
       openRestoreModal(p);
     });
     head.appendChild(restoreBtn);
-
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'proj-remove-btn';
-    removeBtn.title = 'Remove this project from the sidebar (files stay on disk)';
-    removeBtn.textContent = '×';
-    removeBtn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      openRemoveProjectModal(p);
-    });
-    head.appendChild(removeBtn);
 
     const newBtn = document.createElement('button');
     newBtn.className = 'proj-new-btn-inline';
