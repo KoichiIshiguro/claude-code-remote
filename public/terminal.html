@@ -2306,28 +2306,30 @@ window.addEventListener('beforeunload', (ev) => {
   });
 })();
 
-// ── Mobile: swipe to open/close the left sidebar ──────────────────────────
-// Edge-swipe right from the left ~24px opens sideL. While sideL is open,
-// swipe-left anywhere closes it. We ignore the gesture if the user is
-// clearly scrolling vertically, dragging an image, or interacting with the
-// chat scroll container (which has its own swipe-y).
+// ── Mobile: swipe to open/close left & right sidebars ─────────────────────
+// Left edge → swipe-right opens sideL; sideL open + swipe-left → close.
+// Right edge → swipe-left opens sideR; sideR open + swipe-right → close.
+// Vertical-dominant gestures are ignored (the chat has its own y-scroll).
 (function setupSwipe() {
   const EDGE = 28, MIN_DX = 60, MAX_DY_RATIO = 0.6, MAX_T = 500;
-  let sx = 0, sy = 0, st = 0, tracking = false, fromEdge = false, fromOpenSide = false;
+  let sx = 0, sy = 0, st = 0, tracking = false, intent = null;
+  // intent: 'open-L' | 'open-R' | 'close-L' | 'close-R'
 
   function onStart(e) {
     if (!isMobile()) return;
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
-    const sideOpen = document.getElementById('sideL').classList.contains('open');
-    // start tracking if either: (a) finger lands within EDGE of left edge, OR
-    // (b) sideL is already open and we might be swiping left to close it.
-    if (t.clientX <= EDGE) { fromEdge = true; fromOpenSide = false; tracking = true; }
-    else if (sideOpen) { fromEdge = false; fromOpenSide = true; tracking = true; }
-    else return;
-    sx = t.clientX; sy = t.clientY; st = Date.now();
+    const sideL = document.getElementById('sideL').classList.contains('open');
+    const sideR = document.getElementById('sideR').classList.contains('open');
+    const w = window.innerWidth;
+    intent = null;
+    if (t.clientX <= EDGE) intent = 'open-L';
+    else if (t.clientX >= w - EDGE) intent = 'open-R';
+    else if (sideL) intent = 'close-L';
+    else if (sideR) intent = 'close-R';
+    if (!intent) return;
+    tracking = true; sx = t.clientX; sy = t.clientY; st = Date.now();
   }
-  function onMove() { /* nothing — decision is made on touchend */ }
   function onEnd(e) {
     if (!tracking) return;
     tracking = false;
@@ -2339,14 +2341,12 @@ window.addEventListener('beforeunload', (ev) => {
     if (dt > MAX_T) return;
     if (Math.abs(dx) < MIN_DX) return;
     if (dy / Math.max(1, Math.abs(dx)) > MAX_DY_RATIO) return; // it was a vertical scroll
-    if (fromEdge && dx > 0) {
-      openSide('sideL');
-    } else if (fromOpenSide && dx < 0) {
-      closeSide('sideL');
-    }
+    if (intent === 'open-L'  && dx > 0) openSide('sideL');
+    else if (intent === 'open-R'  && dx < 0) openSide('sideR');
+    else if (intent === 'close-L' && dx < 0) closeSide('sideL');
+    else if (intent === 'close-R' && dx > 0) closeSide('sideR');
   }
   document.addEventListener('touchstart', onStart, { passive: true });
-  document.addEventListener('touchmove', onMove, { passive: true });
   document.addEventListener('touchend', onEnd, { passive: true });
 })();
 
