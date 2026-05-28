@@ -40,14 +40,12 @@ jobs:
       - name: Verify server can start (3s smoke)
         env:
           PORT: 4123
-          SESSION_SECRET: ci-smoke-test-secret-do-not-deploy
-          ALLOWED_GITHUB_USER: ci
         run: |
           node server.js &
           PID=$!
           sleep 3
-          if curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4123/login | grep -q 200; then
-            echo "✓ server responded 200 on /login"
+          if curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4123/setup | grep -q 200; then
+            echo "✓ server responded 200 on /setup"
             kill $PID
           else
             echo "✗ server did not respond"
