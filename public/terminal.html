@@ -306,7 +306,29 @@
     font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text-muted);
   }
   .fv-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .fb-viewer-body { flex: 1; overflow: auto; padding: 10px 12px; }
+  .fv-edit-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); padding: 3px 9px; border-radius: 4px;
+    cursor: pointer; font-size: 11px; line-height: 1.3; flex-shrink: 0;
+  }
+  .fv-edit-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .fv-edit-btn.on { color: var(--accent); border-color: var(--accent); background: rgba(255,154,60,.08); }
+  .fb-viewer-body { flex: 1; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; }
+  .fv-editor {
+    flex: 1; min-height: 200px; resize: none;
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6;
+    outline: none; tab-size: 2; white-space: pre;
+  }
+  .fv-editor:focus { border-color: var(--accent); }
+  .fv-editor-actions {
+    display: flex; align-items: center; gap: 8px; padding: 8px 0 0;
+    flex-shrink: 0;
+  }
+  .fv-status { flex: 1; font-size: 12px; color: var(--text-muted); }
+  .fv-status.err { color: var(--red); }
+  .fv-status.ok { color: var(--green); }
   .fb-viewer-body pre {
     font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
     color: var(--text); white-space: pre; tab-size: 2; line-height: 1.6; margin: 0;
@@ -1808,6 +1830,8 @@ function pickAdjacentSession(removedId) {
 
 // ── File browser ──────────────────────────────────────────────────────────────
 async function loadDir(dir) {
+  if (!maybeDiscardEdits()) return;
+  _fvEditing = null; _fvDirty = false;
   fbCurrentDir = dir;
   const content = document.getElementById('fbContent');
   content.innerHTML = '<div class="fb-loading">Loading…</div>';
@@ -1833,7 +1857,20 @@ async function loadDir(dir) {
   } catch { content.innerHTML = '<div class="fb-empty">Failed to load</div>'; }
 }
 
+// Text-file editor state. _fvEditing is non-null while we're in edit mode;
+// _fvDirty tracks whether the textarea diverged from the loaded content.
+let _fvEditing = null;
+let _fvDirty = false;
+
+function maybeDiscardEdits() {
+  if (!_fvDirty) return true;
+  return confirm('保存していない変更があります。破棄しますか？');
+}
+
 async function viewFile(filePath, name) {
+  if (!maybeDiscardEdits()) return;
+  _fvEditing = null; _fvDirty = false;
+
   const content = document.getElementById('fbContent');
   const isMd    = /\.(md|markdown)$/i.test(name);
   const isImg   = /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i.test(name);
@@ -1845,7 +1882,12 @@ async function viewFile(filePath, name) {
   else if (isMd)  bodyInner = '<div class="fb-md md-text">Loading…</div>';
   else            bodyInner = '<pre>Loading…</pre>';
 
-  content.innerHTML = `<div class="fb-viewer"><div class="fb-viewer-hdr"><span class="fv-path">${escHtml(name)}</span><button class="side-close" id="fbBack">×</button></div><div class="fb-viewer-body">${bodyInner}</div></div>`;
+  // Header has an extra ✏️ slot for editable text/markdown files; we wire it
+  // up only after the content fetch confirms the file is editable.
+  const editBtnHtml = (!isImg && !isPdf)
+    ? '<button class="fv-edit-btn" id="fvEditBtn" hidden>✏️ 編集</button>'
+    : '';
+  content.innerHTML = `<div class="fb-viewer"><div class="fb-viewer-hdr"><span class="fv-path">${escHtml(name)}</span>${editBtnHtml}<button class="side-close" id="fbBack">×</button></div><div class="fb-viewer-body">${bodyInner}</div></div>`;
   content.querySelector('#fbBack').addEventListener('click', () => loadDir(fbCurrentDir));
 
   // Binary files go straight to /api/file/raw via <img> / <embed>.
@@ -1873,10 +1915,84 @@ async function viewFile(filePath, name) {
     } else {
       target.textContent = data.content || '(empty)';
     }
+    // Enable the edit button only for files the server marked editable and
+    // not truncated by the read-size cap.
+    if (data.editable && !data.truncated) {
+      const btn = content.querySelector('#fvEditBtn');
+      if (btn) {
+        btn.hidden = false;
+        btn.addEventListener('click', () => enterEditMode(filePath, name, data.content || '', isMd));
+      }
+    }
   } catch {
     const target = content.querySelector(isMd ? '.fb-md' : 'pre');
     target.textContent = 'Failed to load';
   }
+}
+
+function enterEditMode(filePath, name, original, wasMd) {
+  _fvEditing = { path: filePath, name, original, wasMd };
+  _fvDirty = false;
+  const body = document.querySelector('.fb-viewer-body');
+  if (!body) return;
+  body.innerHTML = `
+    <textarea class="fv-editor" id="fvEditor" spellcheck="false"></textarea>
+    <div class="fv-editor-actions">
+      <span class="fv-status" id="fvStatus"></span>
+      <button class="btn-ghost" id="fvCancel">破棄</button>
+      <button class="btn-save"  id="fvSave">保存</button>
+    </div>
+  `;
+  const ta = body.querySelector('#fvEditor');
+  ta.value = original;
+  ta.addEventListener('input', () => {
+    _fvDirty = (ta.value !== _fvEditing.original);
+    const st = document.getElementById('fvStatus');
+    if (st) { st.classList.remove('ok','err'); st.textContent = _fvDirty ? '未保存' : ''; }
+  });
+  // Ctrl/Cmd+S to save without leaving the textarea.
+  ta.addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') { ev.preventDefault(); saveEditing(); }
+  });
+  body.querySelector('#fvCancel').addEventListener('click', cancelEditing);
+  body.querySelector('#fvSave').addEventListener('click', saveEditing);
+  // Toggle the header button into "on" state for visual feedback.
+  const btn = document.getElementById('fvEditBtn');
+  if (btn) btn.classList.add('on');
+  ta.focus();
+}
+
+async function saveEditing() {
+  if (!_fvEditing) return;
+  const ta = document.getElementById('fvEditor');
+  const st = document.getElementById('fvStatus');
+  const btn = document.getElementById('fvSave');
+  const text = ta.value;
+  btn.disabled = true; st.classList.remove('ok','err'); st.textContent = '保存中…';
+  try {
+    const r = await fetch('/api/file/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _fvEditing.path, content: text }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    _fvEditing.original = text;
+    _fvDirty = false;
+    st.classList.add('ok'); st.textContent = '✓ 保存しました';
+    setTimeout(() => { if (st.textContent.startsWith('✓')) { st.textContent = ''; st.classList.remove('ok'); } }, 2200);
+  } catch (err) {
+    st.classList.add('err'); st.textContent = 'エラー: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function cancelEditing() {
+  if (_fvDirty && !confirm('保存していない変更を破棄しますか？')) return;
+  const e = _fvEditing;
+  _fvDirty = false; _fvEditing = null;
+  if (e) viewFile(e.path, e.name);
 }
 
 function renderBread(dir) {
@@ -1967,6 +2083,11 @@ function savePerms() {
 function autoResize(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,180)+'px'; }
 function scrollToBottom() { const m=document.getElementById('messages'); m.scrollTop=m.scrollHeight; }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Block tab close / reload while a file editor has unsaved changes.
+window.addEventListener('beforeunload', (ev) => {
+  if (_fvDirty) { ev.preventDefault(); ev.returnValue = ''; }
+});
 
 connect();
 </script>

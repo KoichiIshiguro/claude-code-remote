@@ -29,7 +29,9 @@ const wss = new WebSocketServer({ noServer: true });
 
 setupAuth(app);
 
-app.use(express.json());
+// 2 MB covers the 1 MB cap used by /api/file/write with comfortable headroom
+// for JSON wrapping. Setup, prompts, and other endpoints stay well below this.
+app.use(express.json({ limit: '2mb' }));
 
 // First-run gate: until an admin account exists, redirect HTML to /setup and
 // reject API calls with 503 (except setup-related endpoints and static assets).
@@ -358,6 +360,21 @@ app.get('/api/files', requireAuth, (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Extensions we refuse to load into the textarea editor — binary payloads in
+// a textarea is a footgun (garbled chars, lost bytes on save).
+const BINARY_EXTS = new Set([
+  'png','jpg','jpeg','gif','webp','bmp','ico','avif','heic',
+  'pdf','zip','gz','tar','tgz','7z','rar','bz2','xz',
+  'mp4','mp3','mov','avi','wav','m4a','webm','flac','ogg',
+  'exe','dll','so','dylib','class','jar','war','o','obj','wasm','pyc',
+  'doc','docx','xls','xlsx','ppt','pptx',
+]);
+function isBinaryExt(p) {
+  const ext = (p.split('.').pop() || '').toLowerCase();
+  return BINARY_EXTS.has(ext);
+}
+const FILE_READ_MAX = 1024 * 1024; // 1 MB
+
 app.get('/api/file', requireAuth, (req, res) => {
   const { path: filePath } = req.query;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
@@ -367,9 +384,42 @@ app.get('/api/file', requireAuth, (req, res) => {
   }
   try {
     const stat = fs.statSync(absPath);
-    if (stat.size > 512 * 1024) return res.json({ content: `[File too large: ${(stat.size/1024).toFixed(0)}KB]`, truncated: true });
+    if (stat.size > FILE_READ_MAX) return res.json({ content: `[File too large: ${(stat.size/1024).toFixed(0)}KB]`, truncated: true, size: stat.size });
     const content = fs.readFileSync(absPath, 'utf8');
-    res.json({ content, size: stat.size });
+    const editable = !isBinaryExt(absPath);
+    res.json({ content, size: stat.size, editable });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Plain-text write. Personal-use scope, so no optimistic-concurrency check —
+// trust the user not to fight Claude over the same file in the same instant.
+app.post('/api/file/write', requireAuth, (req, res) => {
+  const { path: filePath, content } = req.body || {};
+  if (!filePath || typeof content !== 'string') {
+    return res.status(400).json({ error: 'path and content are required' });
+  }
+  if (Buffer.byteLength(content, 'utf8') > FILE_READ_MAX) {
+    return res.status(413).json({ error: `Content exceeds ${(FILE_READ_MAX/1024).toFixed(0)} KB limit` });
+  }
+  const absPath = path.resolve(filePath);
+  if (!projectsStore.isAllowedPath(absPath)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  if (isBinaryExt(absPath)) {
+    return res.status(400).json({ error: 'Refusing to overwrite binary file as text' });
+  }
+  try {
+    const st = fs.lstatSync(absPath);
+    if (st.isSymbolicLink()) return res.status(400).json({ error: 'Refusing to write through symlink' });
+    if (st.isDirectory()) return res.status(400).json({ error: 'Path is a directory' });
+  } catch { /* file may not exist yet — that's fine */ }
+  try {
+    const dir = path.dirname(absPath);
+    const tmp = path.join(dir, `.${path.basename(absPath)}.tmp.${process.pid}.${Date.now()}`);
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, absPath);
+    const stat = fs.statSync(absPath);
+    res.json({ ok: true, size: stat.size });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
