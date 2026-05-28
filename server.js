@@ -500,11 +500,28 @@ app.post('/api/settings', requireAuth, (req, res) => {
 });
 
 // Page routes
-app.get('/', requireAuth, (req, res) => res.redirect('/app'));
-app.get('/app', requireAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'app.html')));
-app.get('/terminal', requireAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'terminal.html')));
+app.get('/', requireAuth, (req, res) => res.redirect('/terminal'));
+app.get('/terminal', requireAuth, (req, res) => {
+  // No session in URL → try to land the user on the most-recent visible jsonl.
+  // Falls through to the HTML (empty state, sidebar auto-opens) when none exist.
+  if (!req.query.session) {
+    try {
+      const archived = new Set(require('./src/archive-store').load());
+      const jsonlReader = require('./src/jsonl-reader');
+      let best = null;
+      for (const p of projectsStore.loadProjects()) {
+        for (const s of jsonlReader.listJsonlsForProject(p.path)) {
+          if (archived.has(s.sessionId)) continue;
+          if (!best || s.mtime > best.mtime) best = s;
+        }
+      }
+      if (best) return res.redirect(`/terminal?session=${best.sessionId}`);
+    } catch { /* fall through to empty state */ }
+  }
+  res.sendFile(path.join(__dirname, 'public', 'terminal.html'));
+});
 app.get('/login', (req, res) => {
-  if (req.session && req.session.user) return res.redirect('/app');
+  if (req.session && req.session.user) return res.redirect('/terminal');
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 

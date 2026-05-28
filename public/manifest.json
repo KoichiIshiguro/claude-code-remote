@@ -2,7 +2,7 @@
   "name": "Claude Code Remote",
   "short_name": "Claude",
   "description": "Control Claude Code from your phone",
-  "start_url": "/app",
+  "start_url": "/terminal",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",

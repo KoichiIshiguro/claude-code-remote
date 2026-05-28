@@ -56,7 +56,7 @@
             body: JSON.stringify({ username, password }),
           });
           if (r.ok) {
-            location.href = '/app';
+            location.href = '/terminal';
           } else {
             const j = await r.json().catch(() => ({}));
             errEl.textContent = j.error || 'Sign-in failed';

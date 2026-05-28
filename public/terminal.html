@@ -548,7 +548,6 @@
 <aside class="side side-left" id="sideL">
   <div class="side-hdr">
     <span>Projects</span>
-    <a href="/app" class="side-close" title="Open the full project picker" aria-label="All projects" style="text-decoration:none;font-size:14px;">⌂</a>
     <button class="side-close" id="sideL-close" aria-label="Close">×</button>
   </div>
   <div class="proj-list" id="projList"><div class="proj-empty">Loading…</div></div>
@@ -571,7 +570,6 @@
   <div class="reconnect-banner" id="reconnectBanner">Reconnecting…</div>
 
   <div class="chat-hdr">
-    <a href="/app" class="hdr-btn" id="homeBtn" title="All projects" aria-label="All projects" style="text-decoration:none;">🤖</a>
     <button class="hdr-btn hdr-left-btn" id="leftBtn" title="Projects" aria-label="Projects">☰</button>
     <span class="dir-label" id="dirLabel">Loading…</span>
     <span class="ctx-pill" id="ctxPill" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></span>
@@ -785,7 +783,25 @@
 })();
 
 const sessionId = new URLSearchParams(location.search).get('session');
-if (!sessionId) location.href = '/app';
+// No session → render an empty-state placeholder and auto-open the projects
+// sidebar so the user can pick one. Server's /terminal route already tries to
+// redirect to the most-recent jsonl, so we only reach here when zero sessions
+// exist (fresh setup, or every project just had its last session purged).
+if (!sessionId) {
+  document.addEventListener('DOMContentLoaded', () => {
+    const messages = document.getElementById('messages');
+    if (messages) {
+      messages.innerHTML =
+        '<div style="text-align:center;padding:60px 24px;color:var(--text-muted);line-height:1.7;">' +
+        'セッションがありません。<br>左の「+ 新規プロジェクト」からフォルダを追加し、' +
+        '<br>プロジェクト行の「+」ボタンで新規セッションを開始してください。' +
+        '</div>';
+    }
+    const inputArea = document.querySelector('.input-area');
+    if (inputArea) inputArea.style.display = 'none';
+    if (typeof openSide === 'function') openSide('sideL');
+  });
+}
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -997,7 +1013,7 @@ function handleMessage(msg) {
         // still reflects the pre-deletion order at this point (sessions_list
         // arrives in a subsequent frame).
         const next = pickAdjacentSession(sessionId);
-        location.href = next ? `/terminal?session=${next.id}` : '/app';
+        location.href = next ? `/terminal?session=${next.id}` : '/terminal';
       }
       break;
     case 'ask_user_question_intercepted':
@@ -1905,7 +1921,7 @@ document.getElementById('rpConfirm').addEventListener('click', () => {
   if (cur && cur.directory === target.path) {
     const flat = buildFlatSessionOrder().filter(s => s.directory !== target.path);
     const next = flat[0] || null;
-    location.href = next ? `/terminal?session=${next.id}` : '/app';
+    location.href = next ? `/terminal?session=${next.id}` : '/terminal';
   }
 });
 
@@ -2295,28 +2311,27 @@ window.addEventListener('beforeunload', (ev) => {
   if (_fvDirty) { ev.preventDefault(); ev.returnValue = ''; }
 });
 
-// ── Mobile: swipe to open/close left & right sidebars ─────────────────────
-// Left edge → swipe-right opens sideL; sideL open + swipe-left → close.
-// Right edge → swipe-left opens sideR; sideR open + swipe-right → close.
-// Vertical-dominant gestures are ignored (the chat has its own y-scroll).
+// ── Mobile: swipe on the bottom-nav to open/close left & right sidebars ───
+// Edge-swipe used to fight the browser's back gesture on iOS; we gave up
+// on that battle and moved the swipe surface entirely onto the bottom-nav
+// bar (Projects / Chat / Files). Treat it like tab-switching:
+//   swipe-right on nav → open sideL (Projects) ; if sideR open, close sideR
+//   swipe-left  on nav → open sideR (Files)    ; if sideL open, close sideL
+// Vertical-dominant gestures are ignored. If a swipe fires, we also swallow
+// the trailing synthetic click so the underlying nav button doesn't toggle.
 (function setupSwipe() {
-  const EDGE = 28, MIN_DX = 60, MAX_DY_RATIO = 0.6, MAX_T = 500;
-  let sx = 0, sy = 0, st = 0, tracking = false, intent = null;
-  // intent: 'open-L' | 'open-R' | 'close-L' | 'close-R'
+  const MIN_DX = 50, MAX_DY_RATIO = 0.6, MAX_T = 500;
+  let sx = 0, sy = 0, st = 0, tracking = false;
+  let swipeJustFired = false;
+
+  function nav() { return document.getElementById('bottomNav'); }
+  function inNav(target) { const n = nav(); return n && n.contains(target); }
 
   function onStart(e) {
     if (!isMobile()) return;
     if (e.touches.length !== 1) return;
+    if (!inNav(e.target)) return;
     const t = e.touches[0];
-    const sideL = document.getElementById('sideL').classList.contains('open');
-    const sideR = document.getElementById('sideR').classList.contains('open');
-    const w = window.innerWidth;
-    intent = null;
-    if (t.clientX <= EDGE) intent = 'open-L';
-    else if (t.clientX >= w - EDGE) intent = 'open-R';
-    else if (sideL) intent = 'close-L';
-    else if (sideR) intent = 'close-R';
-    if (!intent) return;
     tracking = true; sx = t.clientX; sy = t.clientY; st = Date.now();
   }
   function onEnd(e) {
@@ -2329,14 +2344,36 @@ window.addEventListener('beforeunload', (ev) => {
     const dt = Date.now() - st;
     if (dt > MAX_T) return;
     if (Math.abs(dx) < MIN_DX) return;
-    if (dy / Math.max(1, Math.abs(dx)) > MAX_DY_RATIO) return; // it was a vertical scroll
-    if (intent === 'open-L'  && dx > 0) openSide('sideL');
-    else if (intent === 'open-R'  && dx < 0) openSide('sideR');
-    else if (intent === 'close-L' && dx < 0) closeSide('sideL');
-    else if (intent === 'close-R' && dx > 0) closeSide('sideR');
+    if (dy / Math.max(1, Math.abs(dx)) > MAX_DY_RATIO) return; // vertical scroll
+
+    const sideL = document.getElementById('sideL').classList.contains('open');
+    const sideR = document.getElementById('sideR').classList.contains('open');
+    let acted = false;
+    if (dx > 0) {
+      // swipe-right: prefer closing right pane if open, else open left
+      if (sideR) { closeSide('sideR'); acted = true; }
+      else if (!sideL) { openSide('sideL'); acted = true; }
+    } else {
+      // swipe-left: prefer closing left pane if open, else open right
+      if (sideL) { closeSide('sideL'); acted = true; }
+      else if (!sideR) { openSide('sideR'); acted = true; }
+    }
+    if (acted) {
+      swipeJustFired = true;
+      setTimeout(() => { swipeJustFired = false; }, 350);
+    }
   }
   document.addEventListener('touchstart', onStart, { passive: true });
   document.addEventListener('touchend', onEnd, { passive: true });
+
+  // Swallow the synthetic click that follows the swipe so the nav button
+  // under the finger doesn't also toggle (Projects/Chat/Files).
+  document.addEventListener('click', (e) => {
+    if (swipeJustFired && inNav(e.target)) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
 })();
 
 connect();
