@@ -40,6 +40,9 @@
     .ts-help { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
     .ts-help a { color: var(--accent); }
 
+    .radio-row { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); cursor: pointer; }
+    .radio-row input[type="radio"] { width: 14px; height: 14px; accent-color: var(--accent); flex-shrink: 0; }
+    .field input:disabled { opacity: .5; cursor: not-allowed; }
     .submit-row { display: flex; justify-content: flex-end; }
     .err { color: var(--red); font-size: 13px; min-height: 18px; }
 
@@ -79,12 +82,22 @@
         </div>
 
         <div class="card" style="margin-top: 16px;">
-          <h2>Working folder</h2>
+          <h2>Access scope</h2>
           <div class="field">
-            <label for="baseDir">Where Claude will look for projects</label>
-            <input type="text" id="baseDir" name="baseDir" required>
-            <div class="chip-row" id="dirChips"></div>
-            <div class="hint">The folder will be created if it doesn't exist.</div>
+            <label class="radio-row">
+              <input type="radio" name="scope" value="full" checked>
+              <span>Full access (Tailscale-only mode)</span>
+            </label>
+            <div class="hint" style="margin-left: 22px; margin-top: -2px;">
+              The web UI can browse anywhere on this machine. Safe only behind Tailscale or another private network.
+            </div>
+            <label class="radio-row" style="margin-top: 10px;">
+              <input type="radio" name="scope" value="folder">
+              <span>Selected folder only</span>
+            </label>
+            <input type="text" id="accessRoot" name="accessRoot" placeholder="e.g. ~/projects" disabled style="margin-left: 22px; width: calc(100% - 22px);">
+            <div class="chip-row" id="dirChips" style="margin-left: 22px;"></div>
+            <div class="hint" style="margin-left: 22px;">The folder will be created if it doesn't exist. Anything outside it is hidden from the web UI.</div>
           </div>
         </div>
 
@@ -125,18 +138,27 @@
       } catch (e) {
         probe = { homedir: '/', tailscale: { ok: false, message: e.message }, port: 4000 };
       }
-      // Suggest base dirs
+      // Suggest folder paths for "Selected folder only".
       const home = probe.homedir || '';
       const suggestions = [home + '/projects', home + '/Documents/projects', home + '/Developer'];
-      document.getElementById('baseDir').value = suggestions[0];
+      const accessRootEl = document.getElementById('accessRoot');
+      accessRootEl.value = suggestions[0];
       const chipRow = document.getElementById('dirChips');
       suggestions.forEach(s => {
         const c = document.createElement('span');
         c.className = 'chip';
         c.textContent = s;
-        c.onclick = () => { document.getElementById('baseDir').value = s; };
+        c.onclick = () => { accessRootEl.value = s; };
         chipRow.appendChild(c);
       });
+      // Enable/disable the path input as the scope radio flips.
+      const radios = document.querySelectorAll('input[name="scope"]');
+      const syncDisabled = () => {
+        const folderMode = document.querySelector('input[name="scope"]:checked').value === 'folder';
+        accessRootEl.disabled = !folderMode;
+        if (folderMode) accessRootEl.focus();
+      };
+      radios.forEach(r => r.addEventListener('change', syncDisabled));
       // Tailscale UI
       const tsRow = document.getElementById('tsRow');
       const tsHelp = document.getElementById('tsHelp');
@@ -164,16 +186,23 @@
       const username = document.getElementById('username').value.trim();
       const password = document.getElementById('password').value;
       const password2 = document.getElementById('password2').value;
-      const baseDir = document.getElementById('baseDir').value.trim();
+      const scope = document.querySelector('input[name="scope"]:checked').value;
+      const accessRoot = scope === 'folder'
+        ? document.getElementById('accessRoot').value.trim()
+        : null;
       if (password !== password2) {
         err.textContent = 'Passwords do not match';
+        return;
+      }
+      if (scope === 'folder' && !accessRoot) {
+        err.textContent = 'Pick a folder or switch to Full access';
         return;
       }
       try {
         const r = await fetch('/api/setup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password, baseDir }),
+          body: JSON.stringify({ username, password, accessRoot }),
         });
         const j = await r.json();
         if (!r.ok) { err.textContent = j.error || 'Setup failed'; return; }
