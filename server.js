@@ -160,7 +160,7 @@ function sandboxedFsAllowed(absPath) {
 // Projects API. Now backed by data/projects.json instead of scanning a parent
 // dir. Returns the legacy shape for old clients: { projects: [{name, path}], base }.
 app.get('/api/projects', requireAuth, (req, res) => {
-  const projects = projectsStore.loadProjects().map(p => ({ name: p.name, path: p.path, id: p.id }));
+  const projects = projectsStore.loadProjects().map(p => ({ name: p.name, path: p.path, id: p.id, addedAt: p.addedAt }));
   res.json({ projects, base: projectsStore.getAccessRoot() });
 });
 

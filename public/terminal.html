@@ -177,6 +177,15 @@
   .proj-restore-btn:hover { color: var(--accent); border-color: var(--accent); }
   .proj-restore-btn.has-archives { color: var(--accent); }
 
+  /* Per-project × remove button — sits next to ↻ */
+  .proj-remove-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); width: 22px; height: 22px;
+    border-radius: 4px; cursor: pointer; font-size: 14px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .proj-remove-btn:hover { color: var(--red); border-color: var(--red); }
+
   /* Session-row ⋯ menu */
   .sess-item { position: relative; }
   .sess-menu-btn {
@@ -633,6 +642,27 @@
   </div>
 </div>
 
+<!-- ── Remove project (logical delete) confirmation ── -->
+<div class="modal-overlay" id="removeProjectOverlay">
+  <div class="perm-modal" style="max-width:480px;">
+    <div class="perm-hdr"><h3>プロジェクトを取り外す</h3><button class="side-close" id="rpClose">×</button></div>
+    <div class="perm-body" style="padding:14px 16px;">
+      <p style="margin-bottom:10px;">サイドバーから取り外しますか？</p>
+      <div style="background:var(--surface2); padding:8px 10px; border-radius:4px; font-family:'SF Mono',monospace; font-size:12px; word-break:break-all;">
+        <div id="rpName" style="font-weight:600; color:var(--text);"></div>
+        <div id="rpPath" style="color:var(--text-muted); margin-top:2px;"></div>
+      </div>
+      <p style="margin-top:12px; font-size:12px; color:var(--text-muted); line-height:1.5;">
+        ディスク上のフォルダや会話履歴 (jsonl) は残ります。同じパスを再登録すれば履歴は復元できます。
+      </p>
+    </div>
+    <div class="perm-ftr">
+      <button class="btn-ghost" id="rpCancel">キャンセル</button>
+      <button class="btn-save" id="rpConfirm" style="background:var(--red);">取り外す</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Permissions Modal ── -->
 <div class="modal-overlay" id="permOverlay">
   <div class="perm-modal">
@@ -894,9 +924,13 @@ function handleMessage(msg) {
         // (if any) reappears in the main sidebar.
         wsSend({ type: 'list_archived', projectPath: _restoreProject.path });
       }
-      if (msg.type === 'purge_ok' && msg.sessionId === sessionId) {
-        // The session we were viewing got physically deleted — bounce home.
-        location.href = '/app';
+      if ((msg.type === 'archive_ok' || msg.type === 'purge_ok') && msg.sessionId === sessionId) {
+        // The session we were viewing just disappeared. Jump to the adjacent
+        // session (above, else below) — across projects is fine. _sessions
+        // still reflects the pre-deletion order at this point (sessions_list
+        // arrives in a subsequent frame).
+        const next = pickAdjacentSession(sessionId);
+        location.href = next ? `/terminal?session=${next.id}` : '/app';
       }
       break;
     case 'permissions_updated':
@@ -1385,7 +1419,16 @@ function rerenderProjList() {
     return;
   }
 
-  for (const p of _projects) {
+  // Sort projects by the most recent session activity. Projects with no
+  // sessions fall back to addedAt (ISO string) — newest first either way.
+  const projectScore = (p) => {
+    const ss = sessByDir.get(p.path);
+    if (ss && ss.length) return new Date(ss[0].lastActivity).getTime();
+    return p.addedAt ? new Date(p.addedAt).getTime() : 0;
+  };
+  const orderedProjects = [..._projects].sort((a, b) => projectScore(b) - projectScore(a));
+
+  for (const p of orderedProjects) {
     const sessions = sessByDir.get(p.path) || [];
     const collapsed = _collapsedProjects.has(p.path);
 
@@ -1413,6 +1456,16 @@ function rerenderProjList() {
       openRestoreModal(p);
     });
     head.appendChild(restoreBtn);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'proj-remove-btn';
+    removeBtn.title = 'Remove this project from the sidebar (files stay on disk)';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openRemoveProjectModal(p);
+    });
+    head.appendChild(removeBtn);
 
     const newBtn = document.createElement('button');
     newBtn.className = 'proj-new-btn-inline';
@@ -1688,6 +1741,69 @@ function renderArchivedList(projectPath, sessions) {
 
   section('アーカイブ済み', archived);
   section('新しく見つかったセッション (TUI 由来など)', discovered);
+}
+
+// ── Remove project modal ──────────────────────────────────────────────────
+let _removeProjectTarget = null;
+function openRemoveProjectModal(project) {
+  _removeProjectTarget = project;
+  document.getElementById('rpName').textContent = project.name;
+  document.getElementById('rpPath').textContent = project.path;
+  document.getElementById('removeProjectOverlay').classList.add('on');
+}
+function closeRemoveProjectModal() {
+  _removeProjectTarget = null;
+  document.getElementById('removeProjectOverlay').classList.remove('on');
+}
+document.getElementById('rpClose').addEventListener('click', closeRemoveProjectModal);
+document.getElementById('rpCancel').addEventListener('click', closeRemoveProjectModal);
+document.getElementById('rpConfirm').addEventListener('click', () => {
+  if (!_removeProjectTarget) return;
+  const target = _removeProjectTarget;
+  closeRemoveProjectModal();
+  wsSend({ type: 'remove_project', id: target.id, path: target.path });
+  // If the currently-open session lives under this project, jump away — but
+  // exclude any session still belonging to the removed project from the
+  // candidate set, since those rows are about to disappear from the sidebar.
+  const cur = _sessions.find(s => s.id === sessionId);
+  if (cur && cur.directory === target.path) {
+    const flat = buildFlatSessionOrder().filter(s => s.directory !== target.path);
+    const next = flat[0] || null;
+    location.href = next ? `/terminal?session=${next.id}` : '/app';
+  }
+});
+
+// ── Adjacent-session picker ───────────────────────────────────────────────
+// Build the same flat ordering used by the sidebar (project order × session
+// order). Used to choose which session to open when the current one is
+// archived/purged/removed.
+function buildFlatSessionOrder() {
+  const sessByDir = new Map();
+  for (const s of _sessions) {
+    if (!sessByDir.has(s.directory)) sessByDir.set(s.directory, []);
+    sessByDir.get(s.directory).push(s);
+  }
+  for (const arr of sessByDir.values()) {
+    arr.sort((a, b) => new Date(b.lastActivity) - new Date(a.lastActivity));
+  }
+  const projectScore = (p) => {
+    const ss = sessByDir.get(p.path);
+    if (ss && ss.length) return new Date(ss[0].lastActivity).getTime();
+    return p.addedAt ? new Date(p.addedAt).getTime() : 0;
+  };
+  const orderedProjects = [..._projects].sort((a, b) => projectScore(b) - projectScore(a));
+  const flat = [];
+  for (const p of orderedProjects) {
+    for (const s of (sessByDir.get(p.path) || [])) flat.push(s);
+  }
+  return flat;
+}
+function pickAdjacentSession(removedId) {
+  const flat = buildFlatSessionOrder();
+  const idx = flat.findIndex(s => s.id === removedId);
+  if (idx < 0) return null;
+  // Above first; then below.
+  return flat[idx - 1] || flat[idx + 1] || null;
 }
 
 // ── File browser ──────────────────────────────────────────────────────────────
