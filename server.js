@@ -435,6 +435,32 @@ app.get('/api/file/raw', requireAuth, (req, res) => {
   });
 });
 
+// App-wide settings. Only autoCompactThreshold for now — null/0 disables.
+app.get('/api/settings', requireAuth, (req, res) => {
+  const cfg = require('./src/auth').loadConfig();
+  const sm = require('./src/session-manager');
+  res.json({
+    autoCompactThreshold: typeof cfg.autoCompactThreshold === 'number' ? cfg.autoCompactThreshold : null,
+    autoCompactDefault: sm.AUTO_COMPACT_DEFAULT,
+  });
+});
+app.post('/api/settings', requireAuth, (req, res) => {
+  const { autoCompactThreshold } = req.body || {};
+  const patch = {};
+  if (autoCompactThreshold === null) {
+    patch.autoCompactThreshold = null;
+  } else if (autoCompactThreshold === 0 || autoCompactThreshold === false) {
+    patch.autoCompactThreshold = 0; // explicit disable
+  } else if (typeof autoCompactThreshold === 'number' && Number.isFinite(autoCompactThreshold) && autoCompactThreshold > 0) {
+    patch.autoCompactThreshold = Math.floor(autoCompactThreshold);
+  } else if (autoCompactThreshold !== undefined) {
+    return res.status(400).json({ error: 'autoCompactThreshold must be a positive integer, 0 (disable), or null (default)' });
+  }
+  const { saveConfig } = require('./src/auth');
+  saveConfig(patch);
+  res.json({ ok: true });
+});
+
 // Page routes
 app.get('/', requireAuth, (req, res) => res.redirect('/app'));
 app.get('/app', requireAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'app.html')));

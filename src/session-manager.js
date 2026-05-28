@@ -12,8 +12,20 @@ const procTracker = require('./proc-tracker');
 const { jsonlPathFor, readHistory, getLastTokens } = require('./jsonl-reader');
 
 // Auto-compact threshold (input tokens incl. cache). 167k matches the TUI's
-// ~83.5% trigger on 200k-context models. Override via env if tuning caching.
-const AUTO_COMPACT_THRESHOLD = parseInt(process.env.CLAUDE_AUTO_COMPACT_THRESHOLD) || 167_000;
+// ~83.5% trigger on 200k-context models. Lookup order per call:
+//   1. data/config.json autoCompactThreshold (settable from the UI)
+//   2. CLAUDE_AUTO_COMPACT_THRESHOLD env var
+//   3. 167_000
+// A stored value of 0 (or any non-positive) disables auto-compact entirely.
+const AUTO_COMPACT_DEFAULT = 167_000;
+function getAutoCompactThreshold() {
+  try {
+    const cfg = require('./auth').loadConfig();
+    if (typeof cfg.autoCompactThreshold === 'number') return cfg.autoCompactThreshold;
+  } catch { /* config not readable yet */ }
+  const env = parseInt(process.env.CLAUDE_AUTO_COMPACT_THRESHOLD);
+  return Number.isFinite(env) && env > 0 ? env : AUTO_COMPACT_DEFAULT;
+}
 
 // Per-(sessionId) summary cache. Lost on restart — that's fine, regenerate.
 const summaryCache = new Map();
@@ -83,8 +95,10 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
 
 function shouldAutoCompact(sessionId, directory) {
   if (!sessionId || !directory) return false;
+  const threshold = getAutoCompactThreshold();
+  if (threshold <= 0) return false; // user disabled auto-compact
   const tokens = getLastTokens(sessionId, directory);
-  return tokens != null && tokens > AUTO_COMPACT_THRESHOLD;
+  return tokens != null && tokens > threshold;
 }
 
 function buildTranscript(history) {
@@ -176,5 +190,6 @@ module.exports = {
   shouldAutoCompact, summarizeSession,
   purgeSession,
   flushPendingSave,
-  AUTO_COMPACT_THRESHOLD,
+  getAutoCompactThreshold,
+  AUTO_COMPACT_DEFAULT,
 };

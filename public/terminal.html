@@ -547,12 +547,12 @@
     <a href="/app" class="hdr-btn" id="homeBtn" title="All projects" aria-label="All projects" style="text-decoration:none;">🤖</a>
     <button class="hdr-btn hdr-left-btn" id="leftBtn" title="Projects" aria-label="Projects">☰</button>
     <span class="dir-label" id="dirLabel">Loading…</span>
-    <span class="ctx-pill" id="ctxPill" title="Context size at last API call (auto-compact at 167k, matches TUI)"></span>
+    <span class="ctx-pill" id="ctxPill" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></span>
     <div class="working-chip" id="workingChip">
       <span class="dot-anim" id="dotAnim">●</span> Working
     </div>
     <button class="hdr-btn" id="summaryBtn" title="このスレッドを要約" aria-label="Summarize thread">📋</button>
-    <button class="hdr-btn" id="permBtn" title="Permissions" aria-label="Permissions">⚙</button>
+    <button class="hdr-btn" id="permBtn" title="設定" aria-label="設定">⚙</button>
     <button class="hdr-btn hdr-right-btn" id="rightBtn" title="Files" aria-label="Files">📁</button>
   </div>
 
@@ -567,7 +567,7 @@
     <div class="status-bar">
       <button class="btn-stop" id="cancelBtn">■ Stop</button>
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
-      <div class="ctx-meter" id="ctxMeter" title="Context size at last API call (auto-compact runs at 167k)"></div>
+      <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
     <div class="input-row">
       <textarea id="promptInput" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)" rows="3"></textarea>
@@ -709,50 +709,31 @@
 <div class="modal-overlay" id="permOverlay">
   <div class="perm-modal">
     <div class="perm-hdr">
-      <h3>Tool Permissions</h3>
+      <h3>設定</h3>
       <button class="side-close" id="permClose">×</button>
     </div>
     <div class="perm-body">
-      <label class="perm-all">
-        <input type="checkbox" id="permAll">
-        <div class="perm-all-text">
-          <b>All tools — unrestricted</b>
-          <small>Uses --dangerously-skip-permissions. Recommended for personal use.</small>
+      <div class="perm-group">
+        <div class="perm-group-title">Auto-compact しきい値</div>
+        <p style="font-size:12px; color:var(--text-muted); line-height:1.6; margin-bottom:8px;">
+          次のプロンプト送信前に input トークン数がこの値を超えていたら、自動で <code>/compact</code> を発火します。
+          TUI の 200k context での ~83.5% トリガーが <code>167000</code>。1M context 利用時は <code>835000</code> 等。
+        </p>
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+          <input type="number" id="autoCompactInput" min="0" step="1000"
+                 style="flex:1; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-family:'SF Mono',monospace; font-size:13px;">
+          <span style="font-size:12px; color:var(--text-muted);">tokens</span>
         </div>
-      </label>
-      <div id="permToolsWrap">
-        <div class="perm-group">
-          <div class="perm-group-title">Execute</div>
-          <label class="perm-row"><input type="checkbox" data-tool="Bash"><label>Bash <small>Shell commands</small></label></label>
-        </div>
-        <div class="perm-group">
-          <div class="perm-group-title">File Read</div>
-          <label class="perm-row"><input type="checkbox" data-tool="Read"><label>Read <small>Read files</small></label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="LS"><label>LS <small>List directory</small></label></label>
-        </div>
-        <div class="perm-group">
-          <div class="perm-group-title">File Write</div>
-          <label class="perm-row"><input type="checkbox" data-tool="Write"><label>Write <small>Create files</small></label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="Edit"><label>Edit <small>Edit files</small></label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="MultiEdit"><label>MultiEdit</label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="NotebookEdit"><label>NotebookEdit</label></label>
-        </div>
-        <div class="perm-group">
-          <div class="perm-group-title">Web</div>
-          <label class="perm-row"><input type="checkbox" data-tool="WebFetch"><label>WebFetch <small>Fetch URLs</small></label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="WebSearch"><label>WebSearch <small>Search</small></label></label>
-        </div>
-        <div class="perm-group">
-          <div class="perm-group-title">Tasks</div>
-          <label class="perm-row"><input type="checkbox" data-tool="Task"><label>Task <small>Sub-agents</small></label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="TodoRead"><label>TodoRead</label></label>
-          <label class="perm-row"><input type="checkbox" data-tool="TodoWrite"><label>TodoWrite</label></label>
-        </div>
+        <label class="perm-row" style="border:none; padding:4px 0;">
+          <input type="checkbox" id="autoCompactDisabled">
+          <label>自動 compact を無効化 <small>(0 と同じ)</small></label>
+        </label>
+        <p id="autoCompactHint" style="font-size:11px; color:var(--text-muted); margin-top:4px;"></p>
       </div>
     </div>
     <div class="perm-ftr">
-      <button class="btn-ghost" id="permCancel">Cancel</button>
-      <button class="btn-save" id="permSave">Save</button>
+      <button class="btn-ghost" id="permCancel">キャンセル</button>
+      <button class="btn-save" id="permSave">保存</button>
     </div>
   </div>
 </div>
@@ -1009,20 +990,37 @@ function updateCtxPill(tokens) {
     return;
   }
   const k = (tokens / 1000).toFixed(tokens >= 100_000 ? 0 : 1);
-  const cls = tokens > 167_000 ? 'hot' : tokens > 100_000 ? 'warn' : '';
+  // _autoCompactEffective: 0 = disabled, else current threshold. Set on connect
+  // via /api/settings; falls back to 167_000 until that fetch finishes.
+  const thr = (typeof _autoCompactEffective === 'number' && _autoCompactEffective > 0) ? _autoCompactEffective : 167_000;
+  const warnAt = Math.max(Math.floor(thr * 0.6), 60_000);
+  const cls = (_autoCompactEffective !== 0 && tokens > thr) ? 'hot' : tokens > warnAt ? 'warn' : '';
   if (pill) {
     pill.textContent = `${k}k`;
     pill.className = 'ctx-pill' + (cls ? ' ' + cls : '');
   }
   if (meter) {
     const pct = Math.round((tokens / 200_000) * 100);
-    const tail = tokens > 167_000 ? ' · auto-compacting next turn'
-               : tokens > 100_000 ? ` · ${pct}%`
+    const tail = (_autoCompactEffective !== 0 && tokens > thr) ? ' · auto-compacting next turn'
+               : tokens > warnAt ? ` · ${pct}%`
                : '';
     meter.textContent = `Context: ${k}k tokens${tail}`;
     meter.className = 'ctx-meter' + (cls ? ' ' + cls : '');
   }
 }
+
+// Effective auto-compact threshold (0 = disabled). Refreshed when the settings
+// modal saves. Until then we fall back to the documented default in updateCtx.
+let _autoCompactEffective = null;
+(async function loadEffectiveCompactThreshold() {
+  try {
+    const r = await fetch('/api/settings');
+    const data = await r.json();
+    if (data.autoCompactThreshold === 0) _autoCompactEffective = 0;
+    else if (typeof data.autoCompactThreshold === 'number') _autoCompactEffective = data.autoCompactThreshold;
+    else _autoCompactEffective = data.autoCompactDefault || 167_000;
+  } catch { /* leave null, falls back inside updateCtx */ }
+})();
 
 // ── History rendering ─────────────────────────────────────────────────────────
 function renderHistoryEntry(entry) {
@@ -2067,36 +2065,80 @@ function closeSummary() { summaryOverlay.classList.remove('on'); }
 
 // ── Permissions modal ─────────────────────────────────────────────────────────
 const permAll = document.getElementById('permAll');
-const permToolsWrap = document.getElementById('permToolsWrap');
+document.getElementById('permBtn').addEventListener('click', openSettingsModal);
+document.getElementById('permClose').addEventListener('click', closeSettingsModal);
+document.getElementById('permCancel').addEventListener('click', closeSettingsModal);
+document.getElementById('permSave').addEventListener('click', saveSettings);
+document.getElementById('permOverlay').addEventListener('click', e => { if(e.target===e.currentTarget) closeSettingsModal(); });
 
-document.getElementById('permBtn').addEventListener('click', openPermModal);
-document.getElementById('permClose').addEventListener('click', closePermModal);
-document.getElementById('permCancel').addEventListener('click', closePermModal);
-document.getElementById('permSave').addEventListener('click', savePerms);
-document.getElementById('permOverlay').addEventListener('click', e => { if(e.target===e.currentTarget) closePermModal(); });
-
-permAll.addEventListener('change', () => {
-  permToolsWrap.style.opacity = permAll.checked ? '.4' : '1';
-  permToolsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => cb.disabled = permAll.checked);
+// Disable checkbox greys out the numeric input.
+document.getElementById('autoCompactDisabled').addEventListener('change', () => {
+  const dis = document.getElementById('autoCompactDisabled').checked;
+  const inp = document.getElementById('autoCompactInput');
+  inp.disabled = dis; inp.style.opacity = dis ? '.5' : '1';
 });
 
-function openPermModal() {
-  if (allowedTools === null) {
-    permAll.checked = true;
-    permToolsWrap.style.opacity = '.4';
-    permToolsWrap.querySelectorAll('input[data-tool]').forEach(cb => { cb.checked=false; cb.disabled=true; });
-  } else {
-    permAll.checked = false;
-    permToolsWrap.style.opacity = '1';
-    permToolsWrap.querySelectorAll('input[data-tool]').forEach(cb => { cb.checked = allowedTools.includes(cb.dataset.tool); cb.disabled=false; });
+let _settingsDefault = 167000;
+async function openSettingsModal() {
+  try {
+    const r = await fetch('/api/settings');
+    const data = await r.json();
+    _settingsDefault = data.autoCompactDefault || 167000;
+    const inp = document.getElementById('autoCompactInput');
+    const cb  = document.getElementById('autoCompactDisabled');
+    const hint = document.getElementById('autoCompactHint');
+    const cur = data.autoCompactThreshold;
+    if (cur === null || cur === undefined) {
+      inp.value = _settingsDefault;
+      cb.checked = false; inp.disabled = false; inp.style.opacity = '1';
+      hint.textContent = `現在: デフォルト (${_settingsDefault.toLocaleString()})`;
+    } else if (cur === 0) {
+      inp.value = _settingsDefault;
+      cb.checked = true; inp.disabled = true; inp.style.opacity = '.5';
+      hint.textContent = '現在: 自動 compact 無効';
+    } else {
+      inp.value = cur;
+      cb.checked = false; inp.disabled = false; inp.style.opacity = '1';
+      hint.textContent = `現在: ${cur.toLocaleString()}`;
+    }
+  } catch (err) {
+    document.getElementById('autoCompactHint').textContent = 'Error: ' + err.message;
   }
   document.getElementById('permOverlay').classList.add('on');
 }
-function closePermModal() { document.getElementById('permOverlay').classList.remove('on'); }
-function savePerms() {
-  const newAllowed = permAll.checked ? null : Array.from(permToolsWrap.querySelectorAll('input[data-tool]:checked')).map(cb => cb.dataset.tool);
-  wsSend({type:'update_permissions',sessionId,allowedTools:newAllowed});
-  allowedTools = newAllowed; closePermModal();
+function closeSettingsModal() { document.getElementById('permOverlay').classList.remove('on'); }
+async function saveSettings() {
+  const btn = document.getElementById('permSave');
+  const hint = document.getElementById('autoCompactHint');
+  btn.disabled = true;
+  const disabled = document.getElementById('autoCompactDisabled').checked;
+  const raw = parseInt(document.getElementById('autoCompactInput').value, 10);
+  let payload;
+  if (disabled) payload = { autoCompactThreshold: 0 };
+  else if (!Number.isFinite(raw) || raw <= 0) {
+    hint.textContent = '正の整数か、無効化チェックを使ってください';
+    btn.disabled = false; return;
+  } else if (raw === _settingsDefault) payload = { autoCompactThreshold: null }; // back to default
+  else payload = { autoCompactThreshold: raw };
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${r.status}`);
+    }
+    // Refresh the cached threshold so the ctx-meter recomputes against the new value.
+    if (payload.autoCompactThreshold === null) _autoCompactEffective = _settingsDefault;
+    else _autoCompactEffective = payload.autoCompactThreshold;
+    closeSettingsModal();
+  } catch (err) {
+    hint.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
