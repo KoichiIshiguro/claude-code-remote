@@ -214,6 +214,56 @@
     font-size: 11px; color: var(--text-muted); font-family: 'SF Mono', monospace;
   }
 
+  /* Folder picker inside the add-folder modal */
+  .fp-bread {
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+    font-family: 'SF Mono', monospace; font-size: 11px;
+    color: var(--text-muted); display: flex; align-items: center;
+    flex-wrap: wrap; gap: 2px; min-height: 30px; max-height: 60px; overflow-y: auto;
+  }
+  .fp-bread .fb-seg { color: var(--accent); cursor: pointer; padding: 0 1px; }
+  .fp-bread .fb-seg:hover { text-decoration: underline; }
+  .fp-bread .fb-sep { color: var(--border); padding: 0 1px; }
+  .fp-list {
+    flex: 1 1 280px; overflow-y: auto; max-height: 320px; min-height: 200px;
+    background: var(--surface2);
+  }
+  .fp-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; cursor: pointer; user-select: none;
+    font-size: 13px; color: var(--text);
+  }
+  .fp-row:hover { background: var(--bg); }
+  .fp-row.disabled { opacity: .35; cursor: default; }
+  .fp-row .fp-ico { font-size: 14px; width: 18px; text-align: center; }
+  .fp-row .fp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'SF Mono', monospace; font-size: 12px; }
+  .fp-empty { padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 12px; }
+  .fp-new {
+    display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .fp-new input {
+    flex: 1; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); padding: 6px 10px;
+    font-size: 12px; outline: none; font-family: 'SF Mono', monospace;
+  }
+  .fp-new input:focus { border-color: var(--accent); }
+  .fp-new button {
+    background: transparent; border: 1px solid var(--accent); color: var(--accent);
+    border-radius: var(--radius-sm); padding: 6px 12px; cursor: pointer; font-size: 12px;
+  }
+  .fp-new button:hover { background: var(--accent); color: var(--bg); }
+
+  /* Clone streaming output area */
+  .clone-output {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 8px 10px;
+    font-family: 'SF Mono', monospace; font-size: 11px; color: var(--text-muted);
+    white-space: pre-wrap; max-height: 220px; overflow-y: auto;
+    margin-top: 8px;
+  }
+  .clone-output.hidden { display: none; }
+
   /* ── Right: file browser ── */
   .fb-bread {
     display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
@@ -522,19 +572,22 @@
   </div>
 </div>
 
-<!-- ── Add folder modal ── -->
+<!-- ── Add folder modal (file picker) ── -->
 <div class="modal-overlay" id="addFolderOverlay">
-  <div class="perm-modal" style="max-width:480px;">
+  <div class="perm-modal" style="max-width:600px;">
     <div class="perm-hdr"><h3>フォルダを追加</h3><button class="side-close" id="addFolderClose">×</button></div>
-    <div class="perm-body" style="padding:14px;display:flex;flex-direction:column;gap:10px;">
-      <label style="font-size:12px;color:var(--text-muted);">既存フォルダの絶対パスを入力してください</label>
-      <input id="addFolderPath" type="text" placeholder="/Users/you/path/to/project"
-        style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:'SF Mono',monospace;outline:none;">
-      <div id="addFolderError" style="color:var(--red);font-size:12px;min-height:14px;"></div>
+    <div class="perm-body" style="padding:0;display:flex;flex-direction:column;">
+      <div class="fp-bread" id="fpBread"></div>
+      <div class="fp-list" id="fpList"><div class="fp-empty">読み込み中…</div></div>
+      <div class="fp-new">
+        <input id="fpNewName" type="text" placeholder="新規フォルダ名 (任意)">
+        <button id="fpNewBtn">作成</button>
+      </div>
+      <div id="addFolderError" style="color:var(--red);font-size:12px;min-height:14px;padding:6px 12px 0;"></div>
     </div>
     <div class="perm-ftr">
       <button class="btn-ghost" id="addFolderCancel">Cancel</button>
-      <button class="btn-save" id="addFolderSubmit">Add</button>
+      <button class="btn-save" id="addFolderSubmit">このフォルダを追加</button>
     </div>
   </div>
 </div>
@@ -552,6 +605,7 @@
         style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:'SF Mono',monospace;outline:none;">
       <div id="cloneError" style="color:var(--red);font-size:12px;min-height:14px;"></div>
       <div id="cloneStatus" style="color:var(--text-muted);font-size:12px;min-height:14px;"></div>
+      <div class="clone-output hidden" id="cloneOutput"></div>
     </div>
     <div class="perm-ftr">
       <button class="btn-ghost" id="cloneCancel">Cancel</button>
@@ -765,6 +819,60 @@ function handleMessage(msg) {
     case 'archived_list':
       renderArchivedList(msg.projectPath, msg.sessions || []);
       break;
+    case 'dir_listing':
+      renderDirListing(msg);
+      break;
+    case 'folder_created':
+      // Navigate into the freshly-created folder so the user can add it
+      // (or keep nesting). Clear the new-name input.
+      document.getElementById('fpNewName').value = '';
+      fpNavigate(msg.path);
+      break;
+    case 'clone_started':
+      _cloneJobId = msg.jobId;
+      document.getElementById('cloneStatus').textContent = `Job ${msg.jobId.slice(0,8)} — cloning…`;
+      break;
+    case 'clone_state':
+      // Sent when we attach to a still-running job (e.g. after page reload)
+      if (msg.state) {
+        _cloneJobId = msg.state.jobId;
+        const out = document.getElementById('cloneOutput');
+        out.textContent = msg.state.output || '';
+        out.classList.remove('hidden');
+        document.getElementById('cloneStatus').textContent = `Job ${msg.state.jobId.slice(0,8)} — ${msg.state.status}`;
+        document.getElementById('cloneSubmit').disabled = (msg.state.status === 'running');
+      }
+      break;
+    case 'clone_output': {
+      if (msg.jobId !== _cloneJobId) break;
+      const out = document.getElementById('cloneOutput');
+      out.textContent += msg.text;
+      out.scrollTop = out.scrollHeight;
+      break;
+    }
+    case 'clone_done': {
+      if (msg.jobId !== _cloneJobId) break;
+      document.getElementById('cloneStatus').textContent = `✓ Cloned to ${msg.project.path}`;
+      document.getElementById('cloneError').textContent = '';
+      const btn = document.getElementById('cloneSubmit');
+      btn.disabled = false; btn.textContent = 'Clone';
+      refreshProjects();
+      setTimeout(() => document.getElementById('cloneOverlay').classList.remove('on'), 900);
+      break;
+    }
+    case 'clone_failed': {
+      const err = document.getElementById('cloneError');
+      err.textContent = msg.error || 'Clone failed';
+      document.getElementById('cloneStatus').textContent = '';
+      const btn = document.getElementById('cloneSubmit');
+      btn.disabled = false; btn.textContent = 'Clone';
+      break;
+    }
+    case 'project_added':
+      // Triggered by add_project (folder picker). Close the modal and refresh.
+      document.getElementById('addFolderOverlay').classList.remove('on');
+      refreshProjects();
+      break;
     case 'archive_ok':
     case 'restore_ok':
     case 'purge_ok':
@@ -793,7 +901,16 @@ function handleMessage(msg) {
       if (msg.sessionId === sessionId) showSummary('要約に失敗しました: ' + msg.message, true);
       break;
     case 'error':
-      isStreaming = false; setStreamingUI(false); appendError(msg.message); break;
+      // Route errors into the open modal's error slot when relevant; only
+      // bubble to the chat surface for actual stream-time errors.
+      if (document.getElementById('addFolderOverlay').classList.contains('on')) {
+        document.getElementById('addFolderError').textContent = msg.message;
+      } else if (document.getElementById('cloneOverlay').classList.contains('on')) {
+        document.getElementById('cloneError').textContent = msg.message;
+      } else {
+        isStreaming = false; setStreamingUI(false); appendError(msg.message);
+      }
+      break;
   }
 }
 
@@ -1339,10 +1456,11 @@ document.addEventListener('click', (ev) => {
 
 document.getElementById('puFolder').addEventListener('click', () => {
   closePullUp();
-  document.getElementById('addFolderPath').value = '';
   document.getElementById('addFolderError').textContent = '';
+  document.getElementById('fpNewName').value = '';
   document.getElementById('addFolderOverlay').classList.add('on');
-  setTimeout(() => document.getElementById('addFolderPath').focus(), 50);
+  // Browse from accessRoot or home — server resolves which.
+  fpNavigate(null);
 });
 
 document.getElementById('puClone').addEventListener('click', () => {
@@ -1351,31 +1469,91 @@ document.getElementById('puClone').addEventListener('click', () => {
   document.getElementById('cloneName').value = '';
   document.getElementById('cloneError').textContent = '';
   document.getElementById('cloneStatus').textContent = '';
+  const out = document.getElementById('cloneOutput');
+  out.textContent = ''; out.classList.add('hidden');
+  document.getElementById('cloneSubmit').disabled = false;
+  document.getElementById('cloneSubmit').textContent = 'Clone';
   document.getElementById('cloneOverlay').classList.add('on');
   setTimeout(() => document.getElementById('cloneUrl').focus(), 50);
 });
 
+// ── Folder picker (replaces the old absolute-path text input) ────────────
+let _fpCurrent = null;
 document.getElementById('addFolderClose').addEventListener('click', () => document.getElementById('addFolderOverlay').classList.remove('on'));
 document.getElementById('addFolderCancel').addEventListener('click', () => document.getElementById('addFolderOverlay').classList.remove('on'));
-document.getElementById('addFolderSubmit').addEventListener('click', addFolderSubmit);
-document.getElementById('addFolderPath').addEventListener('keydown', e => { if (e.key === 'Enter') addFolderSubmit(); });
-
-async function addFolderSubmit() {
-  const path = document.getElementById('addFolderPath').value.trim();
+document.getElementById('addFolderSubmit').addEventListener('click', () => {
   const err = document.getElementById('addFolderError');
-  if (!path) { err.textContent = 'Path required'; return; }
+  if (!_fpCurrent) { err.textContent = 'まず開いているフォルダを選択してください'; return; }
   err.textContent = '';
-  try {
-    const r = await fetch('/api/projects', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ path }),
-    });
-    const d = await r.json();
-    if (!r.ok) { err.textContent = d.error || 'Failed'; return; }
-    document.getElementById('addFolderOverlay').classList.remove('on');
-    await refreshProjects();
-  } catch (e) {
-    err.textContent = e.message;
+  wsSend({ type: 'add_project', path: _fpCurrent });
+});
+document.getElementById('fpNewBtn').addEventListener('click', () => {
+  const name = document.getElementById('fpNewName').value.trim();
+  const err = document.getElementById('addFolderError');
+  if (!name) { err.textContent = '新規フォルダ名を入力してください'; return; }
+  if (!_fpCurrent) { err.textContent = '親フォルダがありません'; return; }
+  err.textContent = '';
+  wsSend({ type: 'create_folder', parent: _fpCurrent, name });
+});
+
+function fpNavigate(path) {
+  document.getElementById('fpList').innerHTML = '<div class="fp-empty">読み込み中…</div>';
+  wsSend({ type: 'browse_dir', path });
+}
+
+function renderDirListing(msg) {
+  if (msg.error) {
+    document.getElementById('addFolderError').textContent = msg.error;
+    document.getElementById('fpList').innerHTML = `<div class="fp-empty">${escHtml(msg.error)}</div>`;
+    return;
+  }
+  _fpCurrent = msg.path;
+
+  // Breadcrumb
+  const bread = document.getElementById('fpBread');
+  bread.innerHTML = '';
+  const segs = msg.path.split('/').filter(Boolean);
+  // Always anchor at root "/"
+  const rootSeg = document.createElement('span');
+  rootSeg.className = 'fb-seg'; rootSeg.textContent = '/';
+  rootSeg.addEventListener('click', () => fpNavigate('/'));
+  bread.appendChild(rootSeg);
+  let acc = '';
+  segs.forEach((s, i) => {
+    acc += '/' + s;
+    if (i > 0) {
+      const sep = document.createElement('span'); sep.className = 'fb-sep'; sep.textContent = '/';
+      bread.appendChild(sep);
+    }
+    const segEl = document.createElement('span');
+    segEl.className = 'fb-seg'; segEl.textContent = s;
+    const target = acc;
+    segEl.addEventListener('click', () => fpNavigate(target));
+    bread.appendChild(segEl);
+  });
+
+  // Listing
+  const list = document.getElementById('fpList');
+  list.innerHTML = '';
+  // Parent link unless at root
+  if (msg.path !== '/' && msg.parent) {
+    const up = document.createElement('div');
+    up.className = 'fp-row';
+    up.innerHTML = '<span class="fp-ico">⬆︎</span><span class="fp-name">..</span>';
+    up.addEventListener('click', () => fpNavigate(msg.parent));
+    list.appendChild(up);
+  }
+  const dirs = (msg.items || []).filter(i => i.isDir && !i.hidden);
+  if (!dirs.length) {
+    const e = document.createElement('div'); e.className = 'fp-empty'; e.textContent = '(サブフォルダなし)';
+    list.appendChild(e);
+  }
+  for (const it of dirs) {
+    const row = document.createElement('div');
+    row.className = 'fp-row';
+    row.innerHTML = `<span class="fp-ico">📁</span><span class="fp-name">${escHtml(it.name)}</span>`;
+    row.addEventListener('click', () => fpNavigate(msg.path.replace(/\/+$/, '') + '/' + it.name));
+    list.appendChild(row);
   }
 }
 
@@ -1384,31 +1562,21 @@ document.getElementById('cloneCancel').addEventListener('click', () => document.
 document.getElementById('cloneSubmit').addEventListener('click', cloneSubmit);
 document.getElementById('cloneUrl').addEventListener('keydown', e => { if (e.key === 'Enter') cloneSubmit(); });
 
-async function cloneSubmit() {
+let _cloneJobId = null;
+function cloneSubmit() {
   const url = document.getElementById('cloneUrl').value.trim();
   const name = document.getElementById('cloneName').value.trim() || undefined;
   const err = document.getElementById('cloneError');
   const status = document.getElementById('cloneStatus');
+  const out = document.getElementById('cloneOutput');
   const btn = document.getElementById('cloneSubmit');
   if (!url) { err.textContent = 'URL required'; return; }
   err.textContent = '';
-  status.textContent = 'Cloning…';
-  btn.disabled = true;
-  try {
-    const r = await fetch('/api/projects/clone', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ url, name }),
-    });
-    const d = await r.json();
-    if (!r.ok) { err.textContent = d.error || 'Failed'; status.textContent = ''; return; }
-    status.textContent = `Cloned to ${d.path}`;
-    setTimeout(() => document.getElementById('cloneOverlay').classList.remove('on'), 600);
-    await refreshProjects();
-  } catch (e) {
-    err.textContent = e.message; status.textContent = '';
-  } finally {
-    btn.disabled = false;
-  }
+  out.textContent = ''; out.classList.remove('hidden');
+  status.textContent = '起動中…';
+  btn.disabled = true; btn.textContent = 'Cloning…';
+  _cloneJobId = null;
+  wsSend({ type: 'clone_start', url, name });
 }
 
 // ── Session ⋯ menu (archive / purge) ───────────────────────────────────────
