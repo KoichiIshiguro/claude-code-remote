@@ -51,16 +51,19 @@
   .side-resize-handle:hover { background: rgba(255,154,60,.12); border-left-color: var(--accent); }
   .side-resize-handle.resizing { background: rgba(255,154,60,.25); border-left-color: var(--accent); }
 
-  /* Mobile: transform-based drawers, full screen width */
+  /* Mobile: transform-based drawers, full screen width.
+     Stop above the bottom-nav so Projects/Chat/Files stay reachable. */
   @media (max-width: 767px) {
     .side {
-      position: fixed; top: 0; bottom: 0; width: 100vw; max-width: none;
+      position: fixed; top: 0; bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+      width: 100vw; max-width: none;
       z-index: 300; transition: transform .25s ease;
     }
     .side-left  { left: 0;  transform: translateX(-100%); }
     .side-right { right: 0; transform: translateX(100%); width: 100vw; }
     .side.open  { transform: translateX(0) !important; }
     .side-resize-handle { display: none; }
+    .backdrop { bottom: calc(52px + env(safe-area-inset-bottom, 0px)); }
   }
 
   .side-hdr {
@@ -1610,7 +1613,7 @@ function rerenderProjList() {
           + (isActive ? ' active' : '');
         item.innerHTML = `<span class="sess-dot"></span><span class="sess-label">${escHtml(label)}</span>`;
         item.addEventListener('click', () => {
-          if (isActive) return;
+          if (isActive) { closeSide('sideL'); return; }
           location.href = `/terminal?session=${s.id}`;
         });
 
