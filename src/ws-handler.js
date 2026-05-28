@@ -99,6 +99,7 @@ function listAllSessionsLegacy() {
     }
   }
   for (const [pid, entry] of pendingSessions) {
+    if (archived.has(pid)) continue;
     out.push(pendingToLegacyShape(pid, entry));
   }
   return out;
@@ -216,7 +217,10 @@ function handleConnection(ws /*, req */) {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
         procTracker.cancel(sid);
-        archiveStore.archive(sid);
+        // Pending placeholders are in-memory only — drop them outright
+        // instead of just archiving the placeholder string.
+        if (pendingSessions.has(sid)) pendingSessions.delete(sid);
+        else archiveStore.archive(sid);
         send(ws, { type: 'archive_ok', sessionId: sid });
         send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
         break;
@@ -233,6 +237,14 @@ function handleConnection(ws /*, req */) {
 
       case 'purge_session': {
         const sid = msg.sessionId;
+        // Pending placeholder: no jsonl exists yet, just drop the in-memory entry.
+        if (sid && pendingSessions.has(sid)) {
+          procTracker.cancel(sid);
+          pendingSessions.delete(sid);
+          send(ws, { type: 'purge_ok', sessionId: sid });
+          send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
+          break;
+        }
         const dir = msg.directory || findDirectoryForSessionId(sid);
         if (!sid || !dir) { send(ws, { type: 'error', message: 'sessionId and directory required' }); return; }
         sm.purgeSession(sid, dir);
@@ -449,6 +461,10 @@ function handleConnection(ws /*, req */) {
               rekeySubscribers(sessionId, resolvedSessionId);
               pendingSessions.delete(sessionId);
               send(ws, { type: 'session_assigned', placeholderId: sessionId, sessionId: resolvedSessionId });
+              // Refresh the sidebar so the placeholder row is replaced by the
+              // real session row — otherwise the user's first ⋯ menu would
+              // target the now-defunct placeholder id.
+              send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
             }
             const bk = resolvedSessionId || sessionId;
             broadcast(bk, { type: 'stream_event', sessionId: resolvedSessionId || sessionId, event });

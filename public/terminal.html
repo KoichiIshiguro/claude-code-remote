@@ -86,7 +86,15 @@
     color: var(--text);
     font-weight: 600;
   }
-  .proj-group-head .proj-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-group-head .proj-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; user-select: none; }
+  .proj-group-head .proj-name:hover { color: var(--accent); }
+  .proj-chevron {
+    display: inline-block; width: 12px; font-size: 10px; color: var(--text-muted);
+    transition: transform .15s; flex-shrink: 0;
+  }
+  .proj-group.collapsed .proj-chevron { transform: rotate(-90deg); }
+  .proj-group.collapsed .sess-item,
+  .proj-group.collapsed .sess-empty { display: none; }
   .proj-new-btn-inline {
     background: transparent; border: 1px solid var(--border);
     color: var(--text-muted); width: 22px; height: 22px;
@@ -1343,6 +1351,20 @@ backdrop.addEventListener('click', () => setActiveNav('bnavChat'));
 // _projects comes from REST /api/projects, _sessions comes from WS list_sessions.
 let _projects = [];
 let _sessions = [];
+// Per-project collapsed state, persisted across reloads.
+const _collapsedProjects = (() => {
+  try { return new Set(JSON.parse(localStorage.getItem('collapsedProjects') || '[]')); }
+  catch { return new Set(); }
+})();
+function persistCollapsedProjects() {
+  try { localStorage.setItem('collapsedProjects', JSON.stringify([..._collapsedProjects])); } catch {}
+}
+function toggleProjectCollapse(projectPath) {
+  if (_collapsedProjects.has(projectPath)) _collapsedProjects.delete(projectPath);
+  else _collapsedProjects.add(projectPath);
+  persistCollapsedProjects();
+  rerenderProjList();
+}
 
 function rerenderProjList() {
   const list = document.getElementById('projList');
@@ -1365,13 +1387,22 @@ function rerenderProjList() {
 
   for (const p of _projects) {
     const sessions = sessByDir.get(p.path) || [];
+    const collapsed = _collapsedProjects.has(p.path);
 
     const group = document.createElement('div');
-    group.className = 'proj-group';
+    group.className = 'proj-group' + (collapsed ? ' collapsed' : '');
 
     const head = document.createElement('div');
     head.className = 'proj-group-head';
-    head.innerHTML = `<span class="proj-name" title="${escHtml(p.path)}">${escHtml(p.name)}</span>`;
+    head.innerHTML = `<span class="proj-chevron">▾</span><span class="proj-name" title="${escHtml(p.path)}">${escHtml(p.name)}</span>`;
+    head.querySelector('.proj-name').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleProjectCollapse(p.path);
+    });
+    head.querySelector('.proj-chevron').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      toggleProjectCollapse(p.path);
+    });
 
     const restoreBtn = document.createElement('button');
     restoreBtn.className = 'proj-restore-btn';
