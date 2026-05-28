@@ -625,6 +625,16 @@ function handleMessage(msg) {
     case 'session_created':
       location.href = `/terminal?session=${msg.session.id}`;
       break;
+    case 'session_assigned':
+      // A placeholder session created via create_session has just been
+      // assigned its real Claude session id by the CLI's init event.
+      // Swap our in-memory id and the URL so subsequent attach/send_prompt
+      // calls reach the right key without a page reload.
+      if (msg.placeholderId === sessionId) {
+        sessionId = msg.sessionId;
+        try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
+      }
+      break;
     case 'permissions_updated':
       if (msg.sessionId === sessionId) allowedTools = msg.allowedTools;
       break;

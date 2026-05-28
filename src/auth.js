@@ -19,9 +19,17 @@ function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 
+// Tmp + rename so a crash mid-write can't leave a half-flushed file.
 function writeJson(p, obj) {
   ensureDataDir();
-  fs.writeFileSync(p, JSON.stringify(obj, null, 2));
+  const tmp = `${p}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw e;
+  }
 }
 
 function loadOrCreateConfig() {

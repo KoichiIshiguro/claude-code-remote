@@ -76,6 +76,39 @@ function firstUserPreview(sessionId, directory, maxBytes = 65536) {
   }
 }
 
+// Cheap tail-scan: read the last `maxBytes` of a jsonl, walk lines backward,
+// return the input-token total from the most recent assistant event with usage.
+// Used by shouldAutoCompact() to avoid a full re-parse before every prompt.
+function getLastTokens(sessionId, directory, maxBytes = 65536) {
+  const p = jsonlPathFor(sessionId, directory);
+  let fd;
+  try {
+    const stat = fs.statSync(p);
+    if (stat.size === 0) return null;
+    const readSize = Math.min(stat.size, maxBytes);
+    const buf = Buffer.alloc(readSize);
+    fd = fs.openSync(p, 'r');
+    fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      let e; try { e = JSON.parse(t); } catch { continue; }
+      if (e.type === 'assistant' && e.message?.usage) {
+        const u = e.message.usage;
+        return (u.input_tokens || 0)
+             + (u.cache_read_input_tokens || 0)
+             + (u.cache_creation_input_tokens || 0);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
 function toolTitle(name, input) {
   if (!input) return name;
   if (name === 'Bash') return (input.command || '').split('\n')[0].slice(0, 80) || name;
@@ -199,6 +232,6 @@ function readHistory(sessionId, directory) {
 module.exports = {
   encodedCwd, jsonlDirFor, jsonlPathFor,
   listJsonlsForProject, firstUserPreview,
-  applyEventToBlocks, readHistory,
+  applyEventToBlocks, readHistory, getLastTokens,
   CLAUDE_PROJECTS_DIR,
 };

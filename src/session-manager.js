@@ -1,469 +1,70 @@
 'use strict';
 
+// Spawning and tracking `claude -p` streams. History is no longer persisted
+// here — it lives in Claude CLI's jsonl under ~/.claude/projects/, and is
+// rebuilt on demand by jsonl-reader. This module is thin on purpose.
+
 const { spawn } = require('child_process');
-const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { v4: uuidv4 } = require('uuid');
+const archiveStore = require('./archive-store');
+const procTracker = require('./proc-tracker');
+const { jsonlPathFor, readHistory, getLastTokens } = require('./jsonl-reader');
 
-const sessions = new Map();
-const activeProcesses = new Map(); // sessionId → child process
-
-const DATA_FILE = path.join(__dirname, '..', 'data', 'sessions.json');
-
-// Auto-compact threshold (input tokens incl. cache). Default 167k matches
-// the Claude Code TUI's ~83.5% trigger on 200k-context models. Override via
-// env if you tune cache strategy.
+// Auto-compact threshold (input tokens incl. cache). 167k matches the TUI's
+// ~83.5% trigger on 200k-context models. Override via env if tuning caching.
 const AUTO_COMPACT_THRESHOLD = parseInt(process.env.CLAUDE_AUTO_COMPACT_THRESHOLD) || 167_000;
 
-// ── Persistence ──────────────────────────────────────────────────────────────
-
-function loadSessions() {
-  try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf8');
-    const data = JSON.parse(raw);
-    for (const s of data) {
-      // If a session was streaming when we crashed/restarted, the child claude
-      // process is gone but the partial response on disk is still useful.
-      // Promote the interrupted currentEntry into history so the user can see
-      // what was produced before the interrupt, and offer a "continue" hint.
-      let history = s.history || [];
-      if (s.currentEntry) {
-        const flushed = flushPendingText(s.currentEntry);
-        flushed.interrupted = true;
-        history = [...history, flushed];
-      }
-      sessions.set(s.id, {
-        ...s,
-        history,
-        createdAt: new Date(s.createdAt),
-        lastActivity: new Date(s.lastActivity),
-        streaming: false,
-        currentEntry: null,
-        lastTokens: s.lastTokens ?? null,
-      });
-    }
-    console.log(`[sessions] Loaded ${data.length} session(s) from disk`);
-  } catch { /* first run or corrupted */ }
-}
-
-// Build a clean (serializable, no _text/_tools) copy of currentEntry, flushing
-// any in-progress text buffer into a final text block. Used for both persistence
-// and for getHistory snapshots.
-function flushPendingText(entry) {
-  const blocks = [...entry.blocks];
-  if (entry._text) blocks.push({ kind: 'text', text: entry._text });
-  return {
-    type: 'assistant',
-    blocks,
-    ts: entry.ts,
-    cancelled: entry.cancelled,
-    cost: entry.cost,
-  };
-}
-
-// Debounced disk writes for high-frequency calls (e.g. from feedEvent).
-let savePending = false;
-let saveTimer = null;
-function saveSessions() {
-  try {
-    const dir = path.dirname(DATA_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const data = Array.from(sessions.values()).map(s => ({
-      id: s.id,
-      directory: s.directory,
-      createdAt: s.createdAt,
-      lastActivity: s.lastActivity,
-      sessionId: s.sessionId,
-      history: s.history,
-      allowedTools: s.allowedTools ?? null,
-      lastTokens: s.lastTokens ?? null,
-      // Persist in-flight response so a crash/restart loses no visible output.
-      // Strip private _text/_tools — flushPendingText emits final blocks only.
-      currentEntry: s.currentEntry ? flushPendingText(s.currentEntry) : null,
-    }));
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data));
-  } catch (e) { console.error('[sessions] save failed:', e.message); }
-}
-
-function saveSessionsSoon() {
-  if (savePending) return;
-  savePending = true;
-  saveTimer = setTimeout(() => {
-    savePending = false;
-    saveTimer = null;
-    saveSessions();
-  }, 500);
-}
-
-// Cancel any pending debounced save and write current state synchronously.
-// Called on process shutdown so the in-flight response isn't a few hundred ms
-// behind the wire when we get killed.
-function flushPendingSave() {
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; savePending = false; }
-  saveSessions();
-}
-
-// ── Session CRUD ─────────────────────────────────────────────────────────────
-
-function createSession(directory) {
-  const absDir = path.resolve(directory);
-  if (!fs.existsSync(absDir)) throw new Error(`Directory does not exist: ${absDir}`);
-
-  const baseDir = process.env.BASE_DIR;
-  if (baseDir && !absDir.startsWith(path.resolve(baseDir))) {
-    throw new Error(`Directory is outside allowed base: ${baseDir}`);
-  }
-
-  const id = uuidv4();
-  sessions.set(id, {
-    id,
-    directory: absDir,
-    createdAt: new Date(),
-    lastActivity: new Date(),
-    sessionId: null,     // claude conversation ID (for --resume)
-    history: [],
-    streaming: false,
-    currentEntry: null,
-    allowedTools: null,  // null = dangerously-skip-permissions; array = --allowedTools
-    lastTokens: null,    // input_tokens + cache_* from most recent result event
-  });
-  saveSessions();
-  return sessions.get(id);
-}
-
-function getSession(id) { return sessions.get(id) || null; }
-
-function previewOf(s) {
-  for (const e of (s.history || [])) {
-    if (e.type === 'user' && e.text) return e.text.slice(0, 80);
-  }
-  return '';
-}
-
-function listSessions() {
-  return Array.from(sessions.values()).map(s => ({
-    id: s.id,
-    directory: s.directory,
-    createdAt: s.createdAt,
-    lastActivity: s.lastActivity,
-    streaming: s.streaming,
-    allowedTools: s.allowedTools,
-    lastTokens: s.lastTokens,
-    preview: previewOf(s),
-  }));
-}
-
-function shouldAutoCompact(sessionId) {
-  const s = sessions.get(sessionId);
-  if (!s || !s.lastTokens) return false;
-  return s.lastTokens > AUTO_COMPACT_THRESHOLD;
-}
-
-function deleteSession(id) {
-  cancelRunning(id);
-  sessions.delete(id);
-  saveSessions();
-}
-
-function updatePermissions(sessionId, allowedTools) {
-  const s = sessions.get(sessionId);
-  if (!s) return;
-  s.allowedTools = allowedTools; // null = all allowed; string[] = specific tools
-  saveSessions();
-}
-
-function cancelRunning(sessionId) {
-  const proc = activeProcesses.get(sessionId);
-  if (proc) { proc.kill('SIGTERM'); activeProcesses.delete(sessionId); return true; }
-  return false;
-}
-
-// ── One-shot summarization ───────────────────────────────────────────────────
-// Spawns a fresh `claude -p` with the transcript embedded as plain text. The
-// long-lived process and our sessions.json are not touched at all. Claude CLI
-// will still create its own jsonl under ~/.claude/projects/ for this one-shot
-// run — that orphan is hidden by the UI (v0.4.1).
-
-// Full history → flat prompt. `claude -p` is a one-shot with no auto-compaction,
-// so whatever we hand over IS the entire context. We only truncate as a hard
-// safety net to stay well under the model window (~200k tokens). Tail is kept
-// because "今のフェーズ" needs recency; the head is dropped with a marker.
+// Per-(sessionId) summary cache. Lost on restart — that's fine, regenerate.
+const summaryCache = new Map();
 const MAX_TRANSCRIPT_CHARS = 120_000;
 
-function buildTranscript(history) {
-  const parts = [];
-  for (const entry of history) {
-    if (entry.type === 'user') {
-      parts.push(`ユーザー: ${entry.text || ''}`);
-    } else if (entry.type === 'assistant') {
-      const text = (entry.blocks || []).map(b => {
-        if (b.kind === 'text') return b.text;
-        if (b.kind === 'tool') return `[ツール ${b.name}: ${b.title || ''}]`;
-        if (b.kind === 'ask') return `[質問: ${b.question || ''}]`;
-        return '';
-      }).filter(Boolean).join('\n');
-      if (text) parts.push(`アシスタント: ${text}`);
-    }
-  }
-  let joined = parts.join('\n\n');
-  if (joined.length > MAX_TRANSCRIPT_CHARS) {
-    joined = '…(序盤省略)\n\n' + joined.slice(-MAX_TRANSCRIPT_CHARS);
-  }
-  return joined;
-}
+function cancelRunning(key) { return procTracker.cancel(key); }
+function isRunning(key) { return procTracker.isRunning(key); }
 
-function summarizeSession(sessionId) {
-  return new Promise((resolve, reject) => {
-    const s = sessions.get(sessionId);
-    if (!s) return reject(new Error('Session not found'));
-    if (!s.history || !s.history.length) {
-      return reject(new Error('まだ要約する会話がありません'));
-    }
+// Async generator. Yields stream-json events from `claude -p`. Caller is
+// expected to inspect the `system/init` event to capture the assigned
+// session_id for sessions that were created here (resumeSessionId=null).
+async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId = null, processKey }) {
+  if (!directory) throw new Error('directory required');
+  if (!prompt) throw new Error('prompt required');
+  if (!processKey) throw new Error('processKey required');
 
-    // Cache: 履歴が増えていなければ前回の要約をそのまま返す (API呼ばない)。
-    // 永続化しない — サーバー再起動で消えても問題ない一時キャッシュ。
-    if (s._cachedSummary && s._cachedSummary.atLength === s.history.length) {
-      return resolve(s._cachedSummary.text);
-    }
-
-    const transcript = buildTranscript(s.history);
-    const systemPrompt =
-      'あなたは渡された会話履歴を読んで要約する専門アシスタントです。' +
-      '履歴の中身に応答したり、続きを書いたり、質問に答えたり、ツールを呼び出したりしてはいけません。' +
-      '出力は要約本文のみ。挨拶や前置きは一切書かないでください。';
-
-    const prompt =
-      '以下の "..." 内に会話履歴があります。これを日本語300字程度で要約してください。\n' +
-      '「このスレッドがこれまで何をしてきたか」「今まさに何のフェーズにあるか」を含めること。\n\n' +
-      '"' + transcript + '"\n\n' +
-      '上記 "..." 内の履歴を300字程度で要約してください。本文のみ出力。';
-
-    const claudeBin = process.env.CLAUDE_PATH || 'claude';
-    // Haiku 4.5: 短文要約はこれで十分すぎる品質。Opus/Sonnet 比で大幅に安い。
-    // cwd は tmpdir を使う — 元プロジェクトの CLAUDE.md を読み込ませないため。
-    const proc = spawn(claudeBin, [
-      '-p',
-      '--model', 'claude-haiku-4-5-20251001',
-      '--append-system-prompt', systemPrompt,
-      prompt,
-    ], {
-      cwd: os.tmpdir(),
-      env: { ...process.env },
-    });
-
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', d => { stdout += d.toString(); });
-    proc.stderr.on('data', d => { stderr += d.toString(); });
-
-    const killTimer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 90 * 1000);
-
-    proc.on('close', (code) => {
-      clearTimeout(killTimer);
-      if (code === 0) {
-        const text = stdout.trim();
-        s._cachedSummary = { text, atLength: s.history.length };
-        resolve(text);
-      } else {
-        reject(new Error(stderr.trim() || `claude exited with code ${code}`));
-      }
-    });
-    proc.on('error', (err) => {
-      clearTimeout(killTimer);
-      reject(err);
-    });
-  });
-}
-
-// ── History helpers ──────────────────────────────────────────────────────────
-
-function pushUserMessage(sessionId, text, imageCount) {
-  const s = sessions.get(sessionId);
-  if (!s) return;
-  s.history.push({ type: 'user', text, imageCount, ts: Date.now() });
-  saveSessions();
-}
-
-function startAssistantEntry(sessionId) {
-  const s = sessions.get(sessionId);
-  if (!s) return;
-  s.streaming = true;
-  s.currentEntry = {
-    type: 'assistant',
-    blocks: [],
-    _text: '',
-    _tools: {},
-    ts: Date.now(),
-    cancelled: false,
-    cost: null,
-  };
-}
-
-function feedEvent(sessionId, event) {
-  const s = sessions.get(sessionId);
-  if (!s || !s.currentEntry) return;
-  const e = s.currentEntry;
-
-  if (event.type === 'assistant') {
-    // Each assistant event is one API call's response. Its usage reflects the
-    // context size of THAT call — i.e. the actual prompt size sent to the
-    // model. Use this for context-size tracking (TUI uses the same metric for
-    // its /compact threshold). The result event's usage is a turn-aggregate
-    // across all tool round-trips and over-counts when a turn fires many calls.
-    if (event.message?.usage) {
-      const u = event.message.usage;
-      s.lastTokens = (u.input_tokens || 0)
-                   + (u.cache_read_input_tokens || 0)
-                   + (u.cache_creation_input_tokens || 0);
-    }
-    for (const block of (event.message?.content || [])) {
-      if (block.type === 'text') {
-        e._text += block.text;
-      } else if (block.type === 'tool_use') {
-        if (e._text) { e.blocks.push({ kind: 'text', text: e._text }); e._text = ''; }
-
-        let toolBlock;
-        if (block.name === 'AskUserQuestion') {
-          // Render as interactive choice widget
-          toolBlock = {
-            kind: 'ask',
-            question: block.input?.question || '',
-            options: block.input?.options || [],
-            toolId: block.id,
-            result: null,
-          };
-        } else {
-          const title = toolTitle(block.name, block.input);
-          toolBlock = { kind: 'tool', name: block.name, title, result: null };
-        }
-        e._tools[block.id] = toolBlock;
-        e.blocks.push(toolBlock);
-      } else if (block.type === 'thinking') {
-        if (e._text) { e.blocks.push({ kind: 'text', text: e._text }); e._text = ''; }
-        e.blocks.push({ kind: 'thinking', text: block.thinking });
-      }
-    }
-  } else if (event.type === 'user') {
-    // Tool results arrive wrapped in synthetic "user" events with tool_result
-    // content blocks, not as standalone "tool" events.
-    for (const block of (event.message?.content || [])) {
-      if (block.type === 'tool_result') {
-        const toolBlock = e._tools[block.tool_use_id];
-        if (toolBlock) {
-          const c = block.content;
-          const r = typeof c === 'string' ? c : JSON.stringify(c, null, 2);
-          toolBlock.result = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
-        }
-      }
-    }
-  } else if (event.type === 'result') {
-    e.cost = event.total_cost_usd ?? null;
-  } else if (event.type === 'cancelled') {
-    e.cancelled = true;
-  }
-  // Persist in-flight state so a hard restart (PM2 SIGKILL, crash) doesn't
-  // lose the partial response. Debounced to keep file I/O reasonable.
-  saveSessionsSoon();
-}
-
-function finalizeEntry(sessionId) {
-  const s = sessions.get(sessionId);
-  if (!s || !s.currentEntry) return;
-  const e = s.currentEntry;
-  if (e._text) { e.blocks.push({ kind: 'text', text: e._text }); }
-  delete e._text; delete e._tools;
-  s.history.push(e);
-  s.currentEntry = null;
-  s.streaming = false;
-  s.lastActivity = new Date();
-  // Cancel any debounced save — we're about to write fresh state synchronously.
-  if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; savePending = false; }
-  saveSessions();
-}
-
-function getHistory(sessionId) {
-  const s = sessions.get(sessionId);
-  if (!s) return null;
-  let current = null;
-  if (s.currentEntry) {
-    current = {
-      type: 'assistant',
-      blocks: JSON.parse(JSON.stringify(s.currentEntry.blocks)),
-      ts: s.currentEntry.ts,
-      cancelled: s.currentEntry.cancelled,
-      cost: s.currentEntry.cost,
-    };
-  }
-  return { history: s.history, streaming: s.streaming, currentEntry: current, allowedTools: s.allowedTools, lastTokens: s.lastTokens };
-}
-
-function toolTitle(name, input) {
-  if (!input) return name;
-  if (name === 'Bash') return (input.command || '').split('\n')[0].slice(0, 80) || name;
-  if (['Read', 'Write', 'Edit', 'MultiEdit'].includes(name)) return input.file_path || name;
-  if (name === 'LS') return input.path || name;
-  return JSON.stringify(input).slice(0, 80);
-}
-
-// ── runPrompt ────────────────────────────────────────────────────────────────
-
-async function* runPrompt(sessionId, promptText, imagePaths = []) {
-  const session = sessions.get(sessionId);
-  if (!session) throw new Error('Session not found');
-
-  // Claude Code reads images by detecting file paths in the prompt text itself.
-  // There is no --image flag; embedding absolute paths is the documented way
-  // to attach images in non-interactive (-p) mode.
   const finalPrompt = imagePaths.length
-    ? `${imagePaths.join('\n')}\n\n${promptText}`
-    : promptText;
+    ? `${imagePaths.join('\n')}\n\n${prompt}`
+    : prompt;
 
-  const args = ['-p', finalPrompt, '--output-format', 'stream-json', '--verbose'];
+  const args = [
+    '-p', finalPrompt,
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--dangerously-skip-permissions',
+  ];
 
-  // `-p` (non-interactive) mode cannot return a tool_result, so any
-  // AskUserQuestion call will hang from Claude's perspective and it'll
-  // self-cancel with "質問キャンセルされました". Tell the model to ask in
-  // plain text instead. We append this every turn so it survives --resume.
+  // -p (non-interactive) mode has no channel for tool-result return, so
+  // AskUserQuestion silently hangs. Tell the model to ask in plain text.
   args.push('--append-system-prompt',
     'When you need to ask the user a question or offer choices, write the question as plain text in your reply and STOP your turn. List options as a numbered or bulleted list. Do NOT call the AskUserQuestion tool — this environment cannot return a tool result, so the question would silently fail.');
 
-  if (session.allowedTools === null) {
-    // null = unrestricted
-    args.push('--dangerously-skip-permissions');
-  } else if (Array.isArray(session.allowedTools) && session.allowedTools.length > 0) {
-    args.push('--allowedTools', session.allowedTools.join(','));
-  }
-  // empty array = no tools allowed (no flag added)
-
-  if (session.sessionId) args.push('--resume', session.sessionId);
+  if (resumeSessionId) args.push('--resume', resumeSessionId);
 
   const claudeBin = process.env.CLAUDE_PATH || 'claude';
-  const proc = spawn(claudeBin, args, { cwd: session.directory, env: { ...process.env } });
-  activeProcesses.set(sessionId, proc);
-  proc.on('close', () => activeProcesses.delete(sessionId));
+  const proc = spawn(claudeBin, args, { cwd: directory, env: { ...process.env } });
+  procTracker.register(processKey, proc);
 
   let buffer = '';
-
   try {
     for await (const chunk of proc.stdout) {
       buffer += chunk.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop();
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          const event = JSON.parse(trimmed);
-          if (event.type === 'system' && event.subtype === 'init' && !session.sessionId) {
-            session.sessionId = event.session_id;
-            saveSessions();
-          }
-          yield event;
-        } catch { /* skip non-JSON */ }
+        const t = line.trim();
+        if (!t) continue;
+        try { yield JSON.parse(t); } catch { /* skip non-JSON */ }
       }
     }
-  } catch { /* cancelled */ }
+  } catch { /* SIGTERM/cancel */ }
 
   if (buffer.trim()) {
     try { yield JSON.parse(buffer.trim()); } catch { /* ignore */ }
@@ -480,16 +81,100 @@ async function* runPrompt(sessionId, promptText, imagePaths = []) {
   }
 }
 
-// Load persisted sessions at startup
-loadSessions();
+function shouldAutoCompact(sessionId, directory) {
+  if (!sessionId || !directory) return false;
+  const tokens = getLastTokens(sessionId, directory);
+  return tokens != null && tokens > AUTO_COMPACT_THRESHOLD;
+}
 
-function getActiveProcesses() { return activeProcesses; }
+function buildTranscript(history) {
+  const parts = [];
+  for (const e of history) {
+    if (e.type === 'user') {
+      parts.push(`ユーザー: ${e.text || ''}`);
+    } else if (e.type === 'assistant') {
+      const text = (e.blocks || []).map(b => {
+        if (b.kind === 'text') return b.text;
+        if (b.kind === 'tool') return `[ツール ${b.name}: ${b.title || ''}]`;
+        return '';
+      }).filter(Boolean).join('\n');
+      if (text) parts.push(`アシスタント: ${text}`);
+    }
+  }
+  let joined = parts.join('\n\n');
+  if (joined.length > MAX_TRANSCRIPT_CHARS) {
+    joined = '…(序盤省略)\n\n' + joined.slice(-MAX_TRANSCRIPT_CHARS);
+  }
+  return joined;
+}
+
+// One-shot summarization via a fresh `claude -p` aimed at /tmp so the
+// orphan jsonl doesn't pollute any registered project.
+function summarizeSession(sessionId, directory) {
+  return new Promise((resolve, reject) => {
+    const { history, exists } = readHistory(sessionId, directory);
+    if (!exists || !history.length) {
+      return reject(new Error('まだ要約する会話がありません'));
+    }
+
+    const cached = summaryCache.get(sessionId);
+    if (cached && cached.atLength === history.length) return resolve(cached.text);
+
+    const transcript = buildTranscript(history);
+    const systemPrompt =
+      'あなたは渡された会話履歴を読んで要約する専門アシスタントです。' +
+      '履歴の中身に応答したり、続きを書いたり、質問に答えたり、ツールを呼び出したりしてはいけません。' +
+      '出力は要約本文のみ。挨拶や前置きは一切書かないでください。';
+    const userPrompt =
+      '以下の "..." 内に会話履歴があります。これを日本語300字程度で要約してください。\n' +
+      '「このスレッドがこれまで何をしてきたか」「今まさに何のフェーズにあるか」を含めること。\n\n' +
+      '"' + transcript + '"\n\n' +
+      '上記 "..." 内の履歴を300字程度で要約してください。本文のみ出力。';
+
+    const claudeBin = process.env.CLAUDE_PATH || 'claude';
+    const proc = spawn(claudeBin, [
+      '-p',
+      '--model', 'claude-haiku-4-5-20251001',
+      '--append-system-prompt', systemPrompt,
+      userPrompt,
+    ], { cwd: os.tmpdir(), env: { ...process.env } });
+
+    let stdout = '', stderr = '';
+    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    const killTimer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 90_000);
+    proc.on('close', code => {
+      clearTimeout(killTimer);
+      if (code === 0) {
+        const text = stdout.trim();
+        summaryCache.set(sessionId, { text, atLength: history.length });
+        resolve(text);
+      } else {
+        reject(new Error(stderr.trim() || `claude exited with code ${code}`));
+      }
+    });
+    proc.on('error', err => { clearTimeout(killTimer); reject(err); });
+  });
+}
+
+// Physical delete: stop the running stream (if any), wait briefly, then
+// unlink the jsonl. Also clears any archive flag.
+function purgeSession(sessionId, directory) {
+  cancelRunning(sessionId);
+  try { fs.unlinkSync(jsonlPathFor(sessionId, directory)); } catch { /* may already be gone */ }
+  archiveStore.restore(sessionId);
+  summaryCache.delete(sessionId);
+}
+
+// No-op shim kept so existing shutdown handlers don't break; we no longer
+// persist any in-flight state (jsonl is canonical and already on disk).
+function flushPendingSave() { /* intentional no-op */ }
 
 module.exports = {
-  createSession, getSession, listSessions, deleteSession,
-  updatePermissions, cancelRunning, runPrompt,
-  pushUserMessage, startAssistantEntry, feedEvent, finalizeEntry, getHistory,
-  getActiveProcesses, flushPendingSave,
-  shouldAutoCompact, AUTO_COMPACT_THRESHOLD,
-  summarizeSession,
+  runPrompt, cancelRunning, isRunning,
+  shouldAutoCompact, summarizeSession,
+  purgeSession,
+  flushPendingSave,
+  AUTO_COMPACT_THRESHOLD,
 };
