@@ -4,12 +4,24 @@ require('dotenv').config();
 
 const http = require('http');
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const { execSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const multer = require('multer');
-const { setupAuth, requireAuth, authenticateUpgrade } = require('./src/auth');
+const {
+  setupAuth, requireAuth, authenticateUpgrade,
+  isSetupComplete, saveAdmin, saveConfig, loadConfig,
+} = require('./src/auth');
 const { handleConnection } = require('./src/ws-handler');
 const { flushPendingSave } = require('./src/session-manager');
+
+// Hydrate process.env from persisted config so values set during /setup take
+// effect for the running process without a restart, and survive across restarts
+// without needing a .env file.
+const _cfg = loadConfig();
+if (!process.env.BASE_DIR && _cfg.baseDir) process.env.BASE_DIR = _cfg.baseDir;
 
 const app = express();
 const server = http.createServer(app);
@@ -18,7 +30,86 @@ const wss = new WebSocketServer({ noServer: true });
 setupAuth(app);
 
 app.use(express.json());
+
+// First-run gate: until an admin account exists, redirect HTML traffic to /setup
+// and reject API calls with 503 (except setup-related endpoints and static assets).
+app.use((req, res, next) => {
+  if (isSetupComplete()) return next();
+  const allowed =
+    req.path === '/setup' ||
+    req.path === '/api/setup/probe' ||
+    req.path === '/api/setup' ||
+    req.path === '/style.css' ||
+    req.path === '/manifest.json' ||
+    req.path === '/sw.js' ||
+    req.path.startsWith('/icons/');
+  if (allowed) return next();
+  if (req.method === 'GET' && req.accepts('html')) return res.redirect('/setup');
+  return res.status(503).json({ error: 'Server not yet set up. Visit /setup' });
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Setup (first-run) endpoints ───────────────────────────────────────────────
+app.get('/setup', (req, res) => {
+  if (isSetupComplete()) return res.redirect('/login');
+  res.sendFile(path.join(__dirname, 'public', 'setup.html'));
+});
+
+app.get('/api/setup/probe', (req, res) => {
+  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
+  const homedir = os.homedir();
+  const port = parseInt(process.env.PORT, 10) || 4000;
+  let tailscale = { ok: false };
+  try {
+    const out = execSync('tailscale ip -4', { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const ip = out.split(/\s+/)[0];
+    if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) tailscale = { ok: true, ip };
+  } catch {}
+  res.json({ needsSetup: true, homedir, port, tailscale });
+});
+
+app.post('/api/setup', async (req, res) => {
+  if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
+  const { username, password, baseDir } = req.body || {};
+  if (!username || !/^[a-zA-Z0-9_.\-]{1,64}$/.test(username)) {
+    return res.status(400).json({ error: 'Invalid username (letters, digits, _.- only, max 64)' });
+  }
+  if (!password || password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+  if (!baseDir || typeof baseDir !== 'string') {
+    return res.status(400).json({ error: 'Working folder is required' });
+  }
+  let dir = baseDir.trim();
+  if (dir.startsWith('~')) dir = path.join(os.homedir(), dir.slice(1));
+  dir = path.resolve(dir);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return res.status(400).json({ error: `Could not create folder: ${e.message}` });
+  }
+  saveAdmin(username, password);
+  saveConfig({ baseDir: dir });
+  process.env.BASE_DIR = dir;
+
+  const port = parseInt(process.env.PORT, 10) || 4000;
+  let accessUrl = `http://localhost:${port}`;
+  try {
+    const out = execSync('tailscale ip -4', { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const ip = out.split(/\s+/)[0];
+    if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) accessUrl = `http://${ip}:${port}`;
+  } catch {}
+
+  let qrDataUrl = null;
+  try {
+    const QRCode = require('qrcode');
+    qrDataUrl = await QRCode.toDataURL(accessUrl, { margin: 1, width: 440 });
+  } catch (e) {
+    console.warn('[setup] qr generation skipped:', e.message);
+  }
+  res.json({ ok: true, accessUrl, qrDataUrl });
+});
 
 // File upload endpoint — images, text, PDFs, anything Claude can read.
 // Files are stored with a random name; original extension is preserved so
@@ -45,15 +136,14 @@ app.post('/upload', requireAuth, upload.array('images', 10), (req, res) => {
 // can check session validity before opening a WebSocket (which can't surface
 // the 401 from upgrade rejection in browsers).
 app.get('/api/auth/status', (req, res) => {
-  if (req.isAuthenticated && req.isAuthenticated()) {
-    res.json({ authenticated: true, user: req.user?.username || null });
+  if (req.session && req.session.user) {
+    res.json({ authenticated: true, user: req.session.user.username });
   } else {
     res.status(401).json({ authenticated: false });
   }
 });
 
 // Projects API (list/create subdirs under BASE_DIR)
-const fs = require('fs');
 app.get('/api/projects', requireAuth, (req, res) => {
   const base = process.env.BASE_DIR;
   if (!base) return res.json({ projects: [] });
@@ -303,7 +393,10 @@ app.get('/api/file/raw', requireAuth, (req, res) => {
 app.get('/', requireAuth, (req, res) => res.redirect('/app'));
 app.get('/app', requireAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'app.html')));
 app.get('/terminal', requireAuth, (req, res) => res.sendFile(path.join(__dirname, 'public', 'terminal.html')));
-app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
+app.get('/login', (req, res) => {
+  if (req.session && req.session.user) return res.redirect('/app');
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
 
 // Upgrade HTTP → WebSocket, with session-based auth check
 server.on('upgrade', (req, socket, head) => {

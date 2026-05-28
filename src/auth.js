@@ -1,26 +1,66 @@
 'use strict';
 
-const passport = require('passport');
-const GitHubStrategy = require('passport-github2').Strategy;
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const express = require('express');
 const session = require('express-session');
+const bcrypt = require('bcrypt');
 
-// Shared session middleware instance so WS upgrade handler can reuse it
+const DATA_DIR = path.join(__dirname, '..', 'data');
+const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
+const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function readJson(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+
+function writeJson(p, obj) {
+  ensureDataDir();
+  fs.writeFileSync(p, JSON.stringify(obj, null, 2));
+}
+
+function loadOrCreateConfig() {
+  const cfg = readJson(CONFIG_FILE) || {};
+  if (!cfg.sessionSecret) {
+    cfg.sessionSecret = crypto.randomBytes(32).toString('hex');
+    writeJson(CONFIG_FILE, cfg);
+  }
+  return cfg;
+}
+
+function loadConfig() {
+  return readJson(CONFIG_FILE) || {};
+}
+
+function saveConfig(patch) {
+  const cfg = { ...loadConfig(), ...patch };
+  writeJson(CONFIG_FILE, cfg);
+  return cfg;
+}
+
+function loadAdmin() {
+  return readJson(ADMIN_FILE);
+}
+
+function saveAdmin(username, password) {
+  const passwordHash = bcrypt.hashSync(password, 10);
+  writeJson(ADMIN_FILE, { username, passwordHash });
+}
+
+function isSetupComplete() {
+  return !!loadAdmin();
+}
+
 let sessionMiddleware;
-let passportMiddleware;
-let passportSession;
 
 function setupAuth(app) {
-  const allowedUser = process.env.ALLOWED_GITHUB_USER;
-
-  const sessionSecret = process.env.SESSION_SECRET;
-  if (!sessionSecret) {
-    throw new Error(
-      'SESSION_SECRET is required. Generate one with: openssl rand -hex 32'
-    );
-  }
-  if (!allowedUser) {
-    console.warn('[auth] ALLOWED_GITHUB_USER is not set — any GitHub user can sign in');
-  }
+  const cfg = loadOrCreateConfig();
+  const sessionSecret = process.env.SESSION_SECRET || cfg.sessionSecret;
 
   sessionMiddleware = session({
     secret: sessionSecret,
@@ -29,80 +69,61 @@ function setupAuth(app) {
     cookie: {
       secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      sameSite: 'lax',
     },
   });
-
-  passportMiddleware = passport.initialize();
-  passportSession = passport.session();
-
   app.use(sessionMiddleware);
-  app.use(passportMiddleware);
-  app.use(passportSession);
 
-  const clientID = process.env.GITHUB_CLIENT_ID;
-  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+  // Mirror req.session.user → req.user so existing handlers keep working.
+  app.use((req, res, next) => {
+    if (req.session && req.session.user) req.user = req.session.user;
+    next();
+  });
 
-  if (!clientID || !clientSecret) {
-    console.warn('[auth] GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET not set — OAuth disabled');
-  } else {
-    passport.use(new GitHubStrategy(
-      {
-        clientID,
-        clientSecret,
-        callbackURL: process.env.GITHUB_CALLBACK_URL,
-      },
-      (accessToken, refreshToken, profile, done) => {
-        console.log('[auth] GitHub login attempt:', profile.username, '/ allowed:', allowedUser);
-        if (allowedUser && profile.username !== allowedUser) {
-          return done(null, false, { message: 'Unauthorized user' });
-        }
-        return done(null, {
-          id: profile.id,
-          username: profile.username,
-          avatar: profile.photos?.[0]?.value,
-        });
-      }
-    ));
-  }
+  app.post('/auth/login', express.json(), (req, res) => {
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'username and password required' });
+    }
+    const admin = loadAdmin();
+    if (!admin) {
+      return res.status(503).json({ error: 'Server not set up. Visit /setup first.' });
+    }
+    if (admin.username !== username || !bcrypt.compareSync(password, admin.passwordHash)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    req.session.user = { username: admin.username };
+    res.json({ ok: true, username: admin.username });
+  });
 
-  passport.serializeUser((user, done) => done(null, user));
-  passport.deserializeUser((user, done) => done(null, user));
-
-  app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
-
-  app.get('/auth/github/callback',
-    passport.authenticate('github', { failureRedirect: '/login?error=unauthorized' }),
-    (req, res) => res.redirect('/app')
-  );
-
-  app.get('/auth/logout', (req, res) => {
-    req.logout(() => res.redirect('/login'));
+  app.post('/auth/logout', (req, res) => {
+    if (req.session) req.session.destroy(() => res.json({ ok: true }));
+    else res.json({ ok: true });
   });
 }
 
 function requireAuth(req, res, next) {
-  if (req.isAuthenticated()) return next();
-  res.redirect('/login');
+  if (req.session && req.session.user) return next();
+  if (req.accepts('html') && req.method === 'GET') return res.redirect('/login');
+  return res.status(401).json({ error: 'Unauthorized' });
 }
 
-/**
- * Apply session middleware to a raw HTTP upgrade request to load req.session,
- * then return whether the user is authenticated.
- */
 function authenticateUpgrade(req, cb) {
-  // Minimal response stub — session middleware only needs setHeader/getHeader
-  // when writing a new cookie. For upgrade requests we only need to read the session.
-  const stub = {
-    getHeader: () => undefined,
-    setHeader: () => {},
-    end: () => {},
-  };
+  const stub = { getHeader: () => undefined, setHeader: () => {}, end: () => {} };
   sessionMiddleware(req, stub, () => {
-    // Check for passport user stored in session
-    const authenticated = !!(req.session && req.session.passport && req.session.passport.user);
-    cb(authenticated);
+    cb(!!(req.session && req.session.user));
   });
 }
 
-module.exports = { setupAuth, requireAuth, authenticateUpgrade };
+module.exports = {
+  setupAuth,
+  requireAuth,
+  authenticateUpgrade,
+  isSetupComplete,
+  saveAdmin,
+  loadAdmin,
+  loadConfig,
+  saveConfig,
+  DATA_DIR,
+};

@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Claude Code Remote — Setup</title>
+  <meta name="theme-color" content="#0d1117">
+  <link rel="apple-touch-icon" href="/icons/icon.svg">
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .setup-wrap {
+      max-width: 520px; margin: 0 auto; padding: 32px 20px;
+      display: flex; flex-direction: column; gap: 24px;
+    }
+    .setup-header { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .setup-logo { width: 64px; height: 64px; border-radius: 16px; overflow: hidden; }
+    .setup-logo img { width: 100%; height: 100%; }
+    .setup-header h1 { font-size: 22px; font-weight: 600; }
+    .setup-header p { color: var(--text-muted); font-size: 14px; text-align: center; }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .card h2 { font-size: 14px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
+
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 13px; color: var(--text-muted); }
+    .field input { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); padding: 10px 12px; font-size: 14px; outline: none; width: 100%; font-family: inherit; }
+    .field input:focus { border-color: var(--accent); }
+    .field .hint { font-size: 12px; color: var(--text-muted); }
+
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; font-size: 12px; color: var(--text-muted); cursor: pointer; font-family: 'SF Mono', monospace; }
+    .chip:hover { color: var(--text); border-color: var(--accent); }
+
+    .ts-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+    .ts-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .ts-dot.on { background: var(--green); }
+    .ts-dot.off { background: var(--text-muted); }
+    .ts-ip { font-family: 'SF Mono', monospace; color: var(--text); }
+    .ts-help { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+    .ts-help a { color: var(--accent); }
+
+    .submit-row { display: flex; justify-content: flex-end; }
+    .err { color: var(--red); font-size: 13px; min-height: 18px; }
+
+    .success-card { text-align: center; }
+    .success-card .ok { font-size: 40px; }
+    .success-card .url { font-family: 'SF Mono', monospace; font-size: 16px; color: var(--accent); word-break: break-all; }
+    .success-card img.qr { width: 220px; height: 220px; background: #fff; border-radius: 8px; padding: 12px; margin: 12px auto; display: block; }
+    .success-card .btn { align-self: center; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="setup-wrap">
+    <div class="setup-header">
+      <div class="setup-logo"><img src="/icons/icon.svg" alt="Claude Code Remote"></div>
+      <h1>Welcome — let's set this up</h1>
+      <p>One-time setup. Takes about 30 seconds.</p>
+    </div>
+
+    <div id="formView">
+      <form id="setupForm" autocomplete="off">
+        <div class="card">
+          <h2>Account</h2>
+          <div class="field">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autocomplete="username">
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required minlength="6" autocomplete="new-password">
+            <div class="hint">At least 6 characters. Used to sign in from your phone.</div>
+          </div>
+          <div class="field">
+            <label for="password2">Confirm password</label>
+            <input type="password" id="password2" name="password2" required minlength="6" autocomplete="new-password">
+          </div>
+        </div>
+
+        <div class="card" style="margin-top: 16px;">
+          <h2>Working folder</h2>
+          <div class="field">
+            <label for="baseDir">Where Claude will look for projects</label>
+            <input type="text" id="baseDir" name="baseDir" required>
+            <div class="chip-row" id="dirChips"></div>
+            <div class="hint">The folder will be created if it doesn't exist.</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top: 16px;">
+          <h2>Tailscale</h2>
+          <div class="ts-row" id="tsRow">
+            <div class="ts-dot off"></div>
+            <div>Detecting…</div>
+          </div>
+          <div class="ts-help" id="tsHelp"></div>
+        </div>
+
+        <div class="err" id="setupError" style="margin-top: 12px;"></div>
+        <div class="submit-row" style="margin-top: 16px;">
+          <button type="submit" class="btn btn-primary">Start</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="successView" class="hidden">
+      <div class="card success-card">
+        <div class="ok">✅</div>
+        <h2 style="font-size: 18px; color: var(--text); text-transform: none; letter-spacing: 0; margin-bottom: 4px;">All set</h2>
+        <p style="color: var(--text-muted); font-size: 14px;">Open this URL on your phone (while on the same Tailscale network):</p>
+        <div class="url" id="successUrl"></div>
+        <img class="qr" id="successQr" alt="QR code">
+        <a href="/login" class="btn btn-primary">Sign in</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let probe = null;
+    async function init() {
+      try {
+        const r = await fetch('/api/setup/probe');
+        probe = await r.json();
+      } catch (e) {
+        probe = { homedir: '/', tailscale: { ok: false, message: e.message }, port: 4000 };
+      }
+      // Suggest base dirs
+      const home = probe.homedir || '';
+      const suggestions = [home + '/projects', home + '/Documents/projects', home + '/Developer'];
+      document.getElementById('baseDir').value = suggestions[0];
+      const chipRow = document.getElementById('dirChips');
+      suggestions.forEach(s => {
+        const c = document.createElement('span');
+        c.className = 'chip';
+        c.textContent = s;
+        c.onclick = () => { document.getElementById('baseDir').value = s; };
+        chipRow.appendChild(c);
+      });
+      // Tailscale UI
+      const tsRow = document.getElementById('tsRow');
+      const tsHelp = document.getElementById('tsHelp');
+      tsRow.innerHTML = '';
+      const dot = document.createElement('div');
+      dot.className = 'ts-dot ' + (probe.tailscale.ok ? 'on' : 'off');
+      tsRow.appendChild(dot);
+      const txt = document.createElement('div');
+      if (probe.tailscale.ok) {
+        txt.innerHTML = `Connected — your phone can reach this PC at <span class="ts-ip">${probe.tailscale.ip}:${probe.port}</span>`;
+        tsHelp.textContent = '';
+      } else {
+        txt.textContent = 'Tailscale not detected on this machine';
+        tsHelp.innerHTML = 'No Tailscale? Install it and sign in, then come back. ' +
+          '<a href="https://tailscale.com/download" target="_blank">tailscale.com/download</a>. ' +
+          'You can still finish setup now — Tailscale can be added later.';
+      }
+      tsRow.appendChild(txt);
+    }
+
+    document.getElementById('setupForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const err = document.getElementById('setupError');
+      err.textContent = '';
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const password2 = document.getElementById('password2').value;
+      const baseDir = document.getElementById('baseDir').value.trim();
+      if (password !== password2) {
+        err.textContent = 'Passwords do not match';
+        return;
+      }
+      try {
+        const r = await fetch('/api/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, baseDir }),
+        });
+        const j = await r.json();
+        if (!r.ok) { err.textContent = j.error || 'Setup failed'; return; }
+        // Success: swap views
+        document.getElementById('formView').classList.add('hidden');
+        const sv = document.getElementById('successView');
+        sv.classList.remove('hidden');
+        document.getElementById('successUrl').textContent = j.accessUrl;
+        if (j.qrDataUrl) document.getElementById('successQr').src = j.qrDataUrl;
+        else document.getElementById('successQr').remove();
+      } catch (e) {
+        err.textContent = e.message;
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

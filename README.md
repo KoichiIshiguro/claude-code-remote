@@ -22,7 +22,7 @@
 
 ## ✨ Features
 
-- 🔐 **GitHub OAuth** — single-user lockdown, no password to leak
+- 🔐 **Tailscale-first auth** — local ID/PW set up via browser on first run; designed to sit behind your private Tailscale network, not on the open web
 - 💬 **Streaming chat UI** with tool-use cards, thinking blocks, and per-turn cost
 - 📁 **Multi-project switcher** — open any subdirectory under `BASE_DIR`
 - 🧵 **Multiple sessions per project** — keep parallel conversations in the same repo and switch between them from the sidebar
@@ -51,110 +51,62 @@
 
 ---
 
-## 🚀 Quick Start — let Claude set it up for you
+## 🚀 Quick Start — one script, then a browser
 
-You already have `claude` installed and logged in. Why type commands?
+### macOS / Linux
 
 ```bash
-git clone https://github.com/KoichiIshiguro/claude-code-remote.git
-cd claude-code-remote
-claude "Read setup.md and set this up. Stop and ask whenever you need input."
+curl -fsSL https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.sh | bash
 ```
 
-That's the whole installer. Claude will:
+### Windows 10/11
 
-1. Check Node / npm (or pnpm) / `claude` are present
-2. Run `pnpm install` (or `npm install`)
-3. Walk you through creating the GitHub OAuth App on github.com
-4. Generate a `SESSION_SECRET`
-5. Write a reviewed `.env`
-6. Smoke-test, then optionally wire up PM2 / systemd / Apache + Let's Encrypt
+Download [`install.bat`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.bat) + [`install.ps1`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.ps1) into the same folder, then double-click `install.bat`.
 
-If it gets interrupted, re-run the same command — `setup.md` is **idempotent and resumable**.
+The installer will:
 
-> Yes, this README is for the tool you're setting up. We dogfood it daily.
+1. Install **Node.js, git, Claude CLI, Tailscale** (only the missing ones)
+2. Clone this repo into `~/claude-code-remote` and run `npm install`
+3. Start the server in the background
+4. Open your browser to `http://localhost:4000/setup`
+
+In the browser you pick a username, password, and working folder — then you're done. Sign in on your phone via the Tailscale IP it shows you.
+
+You'll still need to sign in to **Claude** (`claude` then `/login` in the TUI) and **Tailscale** (their app) one time each — those are external services that require their own browser auth.
 
 <details>
 <summary><strong>Prefer manual setup?</strong> (click to expand)</summary>
 
-### 1. Clone & install
+### 1. Install prerequisites
+
+- **Node.js ≥ 18**, **git**, **[Claude CLI](https://docs.claude.com/en/docs/claude-code/quickstart)** signed in with your Pro/Max account
+- (Optional but recommended) **[Tailscale](https://tailscale.com/download)** so you can reach the server from your phone
+
+### 2. Clone & install
 
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-pnpm install   # or: npm install / yarn — they all work
+npm install
 ```
 
-> The committed lockfile is `pnpm-lock.yaml`. `npm` and `yarn` will resolve from
-> `package.json` and Just Work — you only lose strict version pinning.
-
-### 2. Install the Claude CLI
-
-This server **shells out** to the real `claude` binary — install and log in first:
+### 3. Run it
 
 ```bash
-# https://docs.claude.com/en/docs/claude-code/quickstart
-claude --version
-claude auth
+npm start
 ```
 
-### 3. Create a GitHub OAuth App
+Open `http://localhost:4000` — you'll be redirected to `/setup`, the first-run wizard. Pick a username, password, and working folder. Done.
 
-[github.com/settings/developers](https://github.com/settings/developers) → **New OAuth App**
+After setup, sign in from your phone at `http://<tailscale-ip>:4000` (the wizard shows you the URL + a QR code).
 
-- **Homepage URL**: `https://your-domain.example`
-- **Authorization callback URL**: `https://your-domain.example/auth/github/callback`
+### (Optional) Run on boot
 
-### 4. Configure `.env`
+If you want the server to come up automatically when the machine restarts, wire it up with launchd (macOS), systemd (Linux), or the Windows Task Scheduler — pointing at `node server.js` in this directory.
 
-```bash
-cp .env.example .env
-```
+### (Optional) Public HTTPS
 
-```env
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-GITHUB_CALLBACK_URL=https://your-domain.example/auth/github/callback
-SESSION_SECRET=$(openssl rand -hex 32)
-ALLOWED_GITHUB_USER=your-github-username
-PORT=4000
-BASE_DIR=/home/you/projects
-CLAUDE_PATH=/home/you/.local/bin/claude
-```
-
-### 5. Run it
-
-```bash
-pnpm start   # or: npm start
-# or for production:
-pm2 start server.js --name claude-code-remote && pm2 save
-```
-
-Visit `http://localhost:4000`.
-
-### 6. (Recommended) HTTPS via Apache + Let's Encrypt
-
-```apache
-<VirtualHost *:443>
-    ServerName claude.example.com
-    ProxyPreserveHost On
-
-    # WebSocket upgrade — must come before ProxyPass
-    RewriteEngine On
-    RewriteCond %{HTTP:Upgrade} websocket [NC]
-    RewriteCond %{HTTP:Connection} upgrade [NC]
-    RewriteRule /(.*) ws://127.0.0.1:4000/$1 [P,L]
-
-    ProxyPass / http://127.0.0.1:4000/
-    ProxyPassReverse / http://127.0.0.1:4000/
-    LimitRequestBody 26214400    # 25 MB for image uploads
-
-    SSLCertificateFile /etc/letsencrypt/live/claude.example.com/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/claude.example.com/privkey.pem
-</VirtualHost>
-```
-
-Then `sudo certbot --apache -d claude.example.com`.
+If you want to expose this on the open internet instead of Tailscale, **don't** — but if you must, terminate TLS in front (Apache / Caddy / nginx), add HTTP basic-auth at the proxy on top of the built-in ID/PW, and seriously consider switching `BASE_DIR` to a sandboxed subtree.
 
 </details>
 
@@ -165,7 +117,7 @@ Then `sudo certbot --apache -d claude.example.com`.
 | | **Claude Code Remote** | [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) | [d-kimuson/claude-code-viewer](https://github.com/d-kimuson/claude-code-viewer) |
 |---|---|---|---|
 | LOC | **~2,000** | 50k+ | 30k+ |
-| Auth | **GitHub OAuth** | None / token | Single password |
+| Auth | **Local ID/PW + Tailscale** | None / token | Single password |
 | Frontend | Vanilla JS (no build step) | React + Vite | React + Vite |
 | In-flight response persistence | **✅** | ❌ | ❌ |
 | Image paste | ✅ | ❓ | ✅ |
@@ -194,7 +146,7 @@ Then `sudo certbot --apache -d claude.example.com`.
                                │ (this repo)      │
                                │ • Express        │
                                │ • ws             │
-                               │ • passport       │
+                               │ • bcrypt session │
                                └────────┬─────────┘
                                         │ spawn() per prompt
                                         ▼
@@ -218,27 +170,26 @@ Then `sudo certbot --apache -d claude.example.com`.
 
 ## 🔧 Configuration Reference
 
-| Env var | Required | Description |
-|---|---|---|
-| `GITHUB_CLIENT_ID` | ✅ | From your GitHub OAuth App |
-| `GITHUB_CLIENT_SECRET` | ✅ | From your GitHub OAuth App |
-| `GITHUB_CALLBACK_URL` | ✅ | Must match the OAuth App exactly |
-| `SESSION_SECRET` | ✅ | Long random string (`openssl rand -hex 32`) |
-| `ALLOWED_GITHUB_USER` | | Only this GitHub username can sign in. If unset, any GitHub user can — **not recommended** |
-| `PORT` | | Default `4000` |
-| `BASE_DIR` | | Root for the project picker (e.g. `/home/you/projects`) |
-| `CLAUDE_PATH` | | Absolute path to `claude` — set this under PM2 / systemd |
-| `CLAUDE_AUTO_COMPACT_THRESHOLD` | | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context Opus/Sonnet). Set higher (e.g. `835000`) if you're on a 1M-context tier |
-| `NODE_ENV` | | Set to `production` to enforce HTTPS-only cookies |
+All configuration is **optional** — the first-run wizard at `/setup` writes admin credentials and the working folder to `data/admin.json` and `data/config.json`, and the session secret is auto-generated. Use env vars only to override these defaults.
+
+| Env var | Description |
+|---|---|
+| `PORT` | HTTP port. Default `4000` |
+| `BASE_DIR` | Root for the project picker. Overrides the value chosen at `/setup` |
+| `CLAUDE_PATH` | Absolute path to `claude` — set when PATH isn't inherited (PM2 / systemd / launchd) |
+| `SESSION_SECRET` | Override the auto-generated one (useful for shared cookie domains across deployments) |
+| `CLAUDE_AUTO_COMPACT_THRESHOLD` | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context models). Set to e.g. `835000` for 1M tiers |
+| `NODE_ENV=production` | Enforce HTTPS-only session cookies. Only set when terminating TLS in front |
 
 ---
 
 ## 🛡️ Security Notes
 
-- **Single-user by design.** `ALLOWED_GITHUB_USER` is checked on every login. There is no multi-user mode and no admin panel — that's the entire security model.
-- **HTTPS is not optional in production.** OAuth tokens and session cookies fly in cleartext otherwise.
-- **`--dangerously-skip-permissions` is on by default** because this UI is your personal remote. If you expose it, you're trusting Claude with your filesystem. Restrict `BASE_DIR` to a safe subtree.
-- **Session store is in-memory** by default — PM2 reload logs you out. Swap to `connect-sqlite3` or `connect-redis` if that bothers you (one-line change in `src/auth.js`).
+- **Designed to live on Tailscale, not on the public internet.** A single bcrypt-hashed password (set at `/setup`, stored in `data/admin.json`) is not enough to survive sustained brute-force from the open web. Keep this on your private tailnet, or put HTTP basic-auth in front of it at the reverse proxy if you must expose it.
+- **HTTPS is still required for any non-Tailscale exposure.** Session cookies in cleartext are immediately game-over.
+- **`--dangerously-skip-permissions` is on by default** because this UI is your personal remote. If you expose it, you're trusting Claude with your filesystem — restrict `BASE_DIR` to a safe subtree.
+- **Single-user by design.** There is no multi-user mode and no admin panel. That is the entire security model.
+- **Session store is in-memory** — PM2 reload signs you out. Swap to `connect-sqlite3` or `connect-redis` if that bothers you (a few-line change in `src/auth.js`).
 
 ---
 

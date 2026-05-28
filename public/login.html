@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Claude Code Remote</title>
+  <title>Claude Code Remote — Sign in</title>
   <meta name="theme-color" content="#0d1117">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -15,25 +15,56 @@
   <style>
     .login-logo { width: 80px; height: 80px; border-radius: 20px; overflow: hidden; }
     .login-logo img { width: 100%; height: 100%; }
+    .login-form { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 320px; }
+    .login-form label { font-size: 13px; color: var(--text-muted); }
+    .login-form input { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); padding: 10px 12px; font-size: 15px; outline: none; width: 100%; }
+    .login-form input:focus { border-color: var(--accent); }
+    .login-form .field { display: flex; flex-direction: column; gap: 4px; }
+    .login-form .submit { padding: 12px; font-size: 15px; font-weight: 500; margin-top: 4px; }
+    .login-error { color: var(--red); font-size: 13px; min-height: 18px; text-align: center; }
   </style>
 </head>
 <body>
   <div class="login-wrap">
     <div class="login-logo"><img src="/icons/icon.svg" alt="Claude"></div>
     <h1>Claude Code Remote</h1>
-    <p>Control Claude Code on your server from any browser.</p>
-    <a href="/auth/github" class="btn btn-github">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>
-      Sign in with GitHub
-    </a>
+    <p>Sign in to control Claude Code from your browser.</p>
+    <form class="login-form" id="loginForm" autocomplete="on">
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+      </div>
+      <div class="login-error" id="loginError"></div>
+      <button type="submit" class="btn btn-primary submit">Sign in</button>
+    </form>
     <script>
-      const params = new URLSearchParams(location.search);
-      if (params.get('error') === 'unauthorized') {
-        const p = document.createElement('p');
-        p.style.color = '#f85149';
-        p.textContent = 'Access denied. This account is not authorized.';
-        document.querySelector('.login-wrap').appendChild(p);
-      }
+      const form = document.getElementById('loginForm');
+      const errEl = document.getElementById('loginError');
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errEl.textContent = '';
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        try {
+          const r = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+          });
+          if (r.ok) {
+            location.href = '/app';
+          } else {
+            const j = await r.json().catch(() => ({}));
+            errEl.textContent = j.error || 'Sign-in failed';
+          }
+        } catch (err) {
+          errEl.textContent = err.message;
+        }
+      });
     </script>
   </div>
 </body>

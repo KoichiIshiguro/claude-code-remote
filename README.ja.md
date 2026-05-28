@@ -22,7 +22,7 @@
 
 ## ✨ 機能
 
-- 🔐 **GitHub OAuth** — 単一ユーザーロック、漏洩するパスワードなし
+- 🔐 **Tailscale 前提の認証** — 初回起動時にブラウザで ID/PW を設定。公開ネットではなく**自分の Tailscale ネットワーク内**で運用する設計
 - 💬 **ストリーミング・チャット UI** — ツール使用カード、思考ブロック、ターン毎コスト表示
 - 📁 **マルチプロジェクト切替** — `BASE_DIR` 配下の任意サブディレクトリを開ける
 - 🧵 **プロジェクト毎にマルチセッション** — 同じリポジトリで並列の会話を保持し、サイドバーから切り替え可能
@@ -51,110 +51,62 @@
 
 ---
 
-## 🚀 クイックスタート — セットアップは Claude に任せる
+## 🚀 クイックスタート — スクリプト 1 本、その後はブラウザだけ
 
-`claude` は既にインストール済み・ログイン済みでしょう？ コマンドを手打ちする時代は終わりです。
+### macOS / Linux
 
 ```bash
-git clone https://github.com/KoichiIshiguro/claude-code-remote.git
-cd claude-code-remote
-claude "Read setup.md and set this up. Stop and ask whenever you need input."
+curl -fsSL https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.sh | bash
 ```
 
-これだけ。Claude が以下をやってくれます：
+### Windows 10/11
 
-1. Node / npm (または pnpm) / `claude` の存在確認
-2. `pnpm install`（または `npm install`）
-3. github.com 上での OAuth App 作成を対話的にガイド
-4. `SESSION_SECRET` を生成
-5. レビュー済みの `.env` を書き込み
-6. スモークテスト後、オプションで PM2 / systemd / Apache + Let's Encrypt を構成
+[`install.bat`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.bat) と [`install.ps1`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.ps1) を同じフォルダにダウンロードして、`install.bat` をダブルクリック。
 
-途中で中断されても、同じコマンドを再実行すれば OK — `setup.md` は **冪等・再開可能** に書かれています。
+インストーラがやること：
 
-> はい、この README はあなたがセットアップしようとしているツール本体です。私たちは毎日これを使っています。
+1. **Node.js / git / Claude CLI / Tailscale** を必要なものだけインストール
+2. このリポジトリを `~/claude-code-remote` にクローンし `npm install`
+3. サーバーをバックグラウンド起動
+4. ブラウザで `http://localhost:4000/setup` を開く
+
+ブラウザ画面でユーザー名・パスワード・作業フォルダを設定すれば完了。表示される Tailscale IP をスマホからアクセスして使えます。
+
+ただし **Claude** （`claude` を叩き TUI 内で `/login`）と **Tailscale**（公式アプリ）には**初回 1 回ずつブラウザログインが必要**です。これは各社のサインインフロー上、自動化不可能な部分です。
 
 <details>
 <summary><strong>手動セットアップ派の方はこちら</strong>（クリックで展開）</summary>
 
-### 1. クローン & インストール
+### 1. 前提ソフト
+
+- **Node.js ≥ 18**、**git**、**[Claude CLI](https://docs.claude.com/en/docs/claude-code/quickstart)**（Pro / Max でログイン済み）
+- （推奨）**[Tailscale](https://tailscale.com/download)** — スマホから自宅 PC に届くため
+
+### 2. クローン & インストール
 
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
 cd claude-code-remote
-pnpm install   # または npm install / yarn でも OK
+npm install
 ```
 
-> リポジトリには `pnpm-lock.yaml` のみコミット。`npm` / `yarn` でも `package.json`
-> から解決して動作しますが、厳密なバージョン固定は失われます。
-
-### 2. Claude CLI のインストール
-
-このサーバーは実際の `claude` バイナリを spawn します。先にインストール・ログインしてください：
+### 3. 起動
 
 ```bash
-# https://docs.claude.com/en/docs/claude-code/quickstart
-claude --version
-claude auth
+npm start
 ```
 
-### 3. GitHub OAuth App の作成
+`http://localhost:4000` を開く → `/setup` に自動リダイレクトされる初回ウィザードでユーザー名・パスワード・作業フォルダを設定すれば完了。
 
-[github.com/settings/developers](https://github.com/settings/developers) → **New OAuth App**
+セットアップ後、スマホからは `http://<Tailscale-IP>:4000` でアクセス（ウィザード画面に URL と QR コードが表示されます）。
 
-- **Homepage URL**: `https://your-domain.example`
-- **Authorization callback URL**: `https://your-domain.example/auth/github/callback`
+### （任意）起動時に自動実行
 
-### 4. `.env` 設定
+PC の電源 ON で自動起動させたい場合は、launchd（macOS）、systemd（Linux）、Windows タスクスケジューラなどでこのディレクトリの `node server.js` を指定して登録してください。
 
-```bash
-cp .env.example .env
-```
+### （任意）公開 HTTPS 化
 
-```env
-GITHUB_CLIENT_ID=...
-GITHUB_CLIENT_SECRET=...
-GITHUB_CALLBACK_URL=https://your-domain.example/auth/github/callback
-SESSION_SECRET=$(openssl rand -hex 32)
-ALLOWED_GITHUB_USER=your-github-username
-PORT=4000
-BASE_DIR=/home/you/projects
-CLAUDE_PATH=/home/you/.local/bin/claude
-```
-
-### 5. 起動
-
-```bash
-pnpm start   # または npm start
-# 本番運用：
-pm2 start server.js --name claude-code-remote && pm2 save
-```
-
-`http://localhost:4000` を開いてください。
-
-### 6. （推奨）Apache + Let's Encrypt で HTTPS 化
-
-```apache
-<VirtualHost *:443>
-    ServerName claude.example.com
-    ProxyPreserveHost On
-
-    # WebSocket アップグレード — ProxyPass の前に置くこと
-    RewriteEngine On
-    RewriteCond %{HTTP:Upgrade} websocket [NC]
-    RewriteCond %{HTTP:Connection} upgrade [NC]
-    RewriteRule /(.*) ws://127.0.0.1:4000/$1 [P,L]
-
-    ProxyPass / http://127.0.0.1:4000/
-    ProxyPassReverse / http://127.0.0.1:4000/
-    LimitRequestBody 26214400    # 画像アップロード用 25 MB
-
-    SSLCertificateFile /etc/letsencrypt/live/claude.example.com/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/claude.example.com/privkey.pem
-</VirtualHost>
-```
-
-その後 `sudo certbot --apache -d claude.example.com`。
+Tailscale ではなくインターネット公開したい場合は **やめておく**のが安全ですが、どうしても必要なら：リバプロ（Apache / Caddy / nginx）で TLS 終端 → リバプロ側で HTTP basic-auth を本サーバの ID/PW の前段に追加 → `BASE_DIR` をサンドボックス的なサブツリーに限定。
 
 </details>
 
@@ -165,7 +117,7 @@ pm2 start server.js --name claude-code-remote && pm2 save
 | | **Claude Code Remote** | [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) | [d-kimuson/claude-code-viewer](https://github.com/d-kimuson/claude-code-viewer) |
 |---|---|---|---|
 | 行数 | **約 2,000** | 5 万行以上 | 3 万行以上 |
-| 認証 | **GitHub OAuth** | なし / トークン | パスワード単一 |
+| 認証 | **ローカル ID/PW + Tailscale** | なし / トークン | パスワード単一 |
 | フロントエンド | Vanilla JS（ビルド不要） | React + Vite | React + Vite |
 | 応答中の状態永続化 | **✅** | ❌ | ❌ |
 | 画像貼り付け | ✅ | ❓ | ✅ |
@@ -194,7 +146,7 @@ pm2 start server.js --name claude-code-remote && pm2 save
                                │ （本リポ）       │
                                │ • Express        │
                                │ • ws             │
-                               │ • passport       │
+                               │ • bcrypt session │
                                └────────┬─────────┘
                                         │ プロンプト毎に spawn()
                                         ▼
@@ -218,27 +170,26 @@ pm2 start server.js --name claude-code-remote && pm2 save
 
 ## 🔧 環境変数リファレンス
 
-| 変数 | 必須 | 説明 |
-|---|---|---|
-| `GITHUB_CLIENT_ID` | ✅ | GitHub OAuth App から |
-| `GITHUB_CLIENT_SECRET` | ✅ | GitHub OAuth App から |
-| `GITHUB_CALLBACK_URL` | ✅ | OAuth App の設定と完全一致させること |
-| `SESSION_SECRET` | ✅ | 長いランダム文字列（`openssl rand -hex 32`） |
-| `ALLOWED_GITHUB_USER` | | この GitHub ユーザー名のみログイン可。未設定だと誰でもログイン可 — **非推奨** |
-| `PORT` | | デフォルト `4000` |
-| `BASE_DIR` | | プロジェクトピッカーの起点（例 `/home/you/projects`） |
-| `CLAUDE_PATH` | | `claude` の絶対パス — PM2 / systemd 配下では必須 |
-| `CLAUDE_AUTO_COMPACT_THRESHOLD` | | 次プロンプト送信前に自動 `/compact` を発火する input トークン閾値。デフォルト `167000`（TUI の 200k context モデル ~83.5% トリガー相当）。1M context tier 利用時は `835000` 等に上げる |
-| `NODE_ENV` | | `production` に設定すると HTTPS-only クッキーになる |
+設定は基本 **すべて任意** です — 初回ウィザード `/setup` が `data/admin.json` と `data/config.json` に認証情報・作業フォルダを書き込み、`SESSION_SECRET` は自動生成されます。env 変数は **デフォルトを上書きしたいときだけ** 使ってください。
+
+| 変数 | 説明 |
+|---|---|
+| `PORT` | HTTP ポート。デフォルト `4000` |
+| `BASE_DIR` | プロジェクトピッカーの起点。`/setup` で設定した値を上書き |
+| `CLAUDE_PATH` | `claude` の絶対パス — PATH が継承されない環境（PM2 / systemd / launchd）で必要 |
+| `SESSION_SECRET` | 自動生成された値を上書き（複数デプロイで Cookie ドメインを共有したい場合などに） |
+| `CLAUDE_AUTO_COMPACT_THRESHOLD` | 次プロンプト送信前に自動 `/compact` を発火する input トークン閾値。デフォルト `167000`（TUI の 200k context モデル ~83.5% トリガー相当）。1M context tier 利用時は `835000` 等 |
+| `NODE_ENV=production` | HTTPS-only Cookie を強制。前段で TLS 終端しているときだけ設定 |
 
 ---
 
 ## 🛡️ セキュリティ注意
 
-- **単一ユーザー前提の設計。** `ALLOWED_GITHUB_USER` を毎ログイン検証。マルチユーザーモードも管理画面もない — これが全セキュリティモデル。
-- **本番では HTTPS 必須。** そうでないと OAuth トークンとセッションクッキーが平文で飛ぶ。
-- **`--dangerously-skip-permissions` がデフォルト ON。** これは自分用リモートだから。公開するなら、Claude にファイルシステムを預ける覚悟で `BASE_DIR` を安全なサブツリーに制限すること。
-- **セッションストアはメモリ。** PM2 reload でログアウトされます。気になるなら `connect-sqlite3` か `connect-redis` に差し替え（`src/auth.js` 1 行）。
+- **Tailscale 上での運用を前提に設計。** `/setup` で設定する bcrypt ハッシュ済みパスワード 1 本（`data/admin.json` 保存）では、公開ネットからのブルートフォースを長期的に防げません。**自分の tailnet 内**に置く、もしくはどうしても公開する場合はリバプロ側で HTTP basic-auth を本サーバの ID/PW の前段に重ねてください。
+- **Tailscale 外への公開時は HTTPS 必須。** セッションクッキー平文は即終了です。
+- **`--dangerously-skip-permissions` がデフォルト ON。** これは自分用リモートだから。公開するなら、Claude にファイルシステムを預ける覚悟で `BASE_DIR` を安全なサブツリーに限定。
+- **単一ユーザー前提の設計。** マルチユーザーモードも管理画面もない — これが全セキュリティモデル。
+- **セッションストアはメモリ。** PM2 reload でログアウトされます。気になるなら `connect-sqlite3` か `connect-redis` に差し替え（`src/auth.js` を数行）。
 
 ---
 
