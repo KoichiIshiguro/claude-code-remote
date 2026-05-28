@@ -773,6 +773,23 @@
 
 <script>
 'use strict';
+
+// ── Lock browser back/forward (runs first so it survives later script errors)
+// Push a thick buffer of sentinel entries so rapid back presses get absorbed,
+// then refill the buffer on popstate. Also re-pin on pageshow because iOS
+// Safari's BFCache restores the page without re-running module code.
+(function lockHistory() {
+  const PIN_DEPTH = 5;
+  function pin() {
+    for (let i = 0; i < PIN_DEPTH; i++) {
+      try { history.pushState({ _pinned: 1, t: Date.now() + i }, '', location.href); } catch {}
+    }
+  }
+  pin();
+  window.addEventListener('popstate', pin);
+  window.addEventListener('pageshow', (e) => { if (e.persisted) pin(); });
+})();
+
 const sessionId = new URLSearchParams(location.search).get('session');
 if (!sessionId) location.href = '/app';
 const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
@@ -2293,18 +2310,6 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 window.addEventListener('beforeunload', (ev) => {
   if (_fvDirty) { ev.preventDefault(); ev.returnValue = ''; }
 });
-
-// ── Lock browser back/forward ─────────────────────────────────────────────
-// The chat *is* the navigation; we don't want a phone gesture to leave the
-// page mid-prompt. Push a sentinel entry once, then re-push on popstate so
-// the user can never reach a previous history entry. Combined with the CSS
-// `overscroll-behavior-x: none` rule above, this kills iOS Safari's swipe-back.
-(function lockHistory() {
-  try { history.pushState({ _pinned: 1 }, '', location.href); } catch {}
-  window.addEventListener('popstate', () => {
-    try { history.pushState({ _pinned: 1 }, '', location.href); } catch {}
-  });
-})();
 
 // ── Mobile: swipe to open/close left & right sidebars ─────────────────────
 // Left edge → swipe-right opens sideL; sideL open + swipe-left → close.

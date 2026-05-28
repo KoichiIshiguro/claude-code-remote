@@ -219,6 +219,19 @@
   </div>
 
   <script>
+    // Pin history so browser back / iOS swipe-back can't leave the app.
+    (function lockHistory() {
+      const PIN_DEPTH = 5;
+      function pin() {
+        for (let i = 0; i < PIN_DEPTH; i++) {
+          try { history.pushState({ _pinned: 1, t: Date.now() + i }, '', location.href); } catch {}
+        }
+      }
+      pin();
+      window.addEventListener('popstate', pin);
+      window.addEventListener('pageshow', (e) => { if (e.persisted) pin(); });
+    })();
+
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
 
     // Sessions grouped by directory.
