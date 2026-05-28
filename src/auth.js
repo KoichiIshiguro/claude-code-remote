@@ -124,6 +124,15 @@ function authenticateUpgrade(req, cb) {
   });
 }
 
+// Remove the admin record. Next startup will gate every page on /setup so
+// the user can create a fresh username + password. Config + session secret
+// stay intact so existing browser sessions just get logged out.
+function resetAdmin() {
+  if (!fs.existsSync(ADMIN_FILE)) return { existed: false };
+  fs.unlinkSync(ADMIN_FILE);
+  return { existed: true };
+}
+
 module.exports = {
   setupAuth,
   requireAuth,
@@ -133,5 +142,7 @@ module.exports = {
   loadAdmin,
   loadConfig,
   saveConfig,
+  resetAdmin,
+  ADMIN_FILE,
   DATA_DIR,
 };

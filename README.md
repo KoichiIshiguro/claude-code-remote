@@ -76,6 +76,16 @@ Open `http://localhost:4000` — you'll be redirected to `/setup`, the first-run
 
 After setup, sign in from your phone at `http://<tailscale-ip>:4000` (the wizard shows you the URL + a QR code).
 
+### Forgot your username or password?
+
+There is no recovery email and no "forgot password" link by design (single-user, personal-use). To reset:
+
+```bash
+node server.js --reset-auth
+```
+
+This deletes `data/admin.json` and exits. The next `npm start` will redirect to `/setup` so you can pick a fresh username + password. Your `config.json`, project list, and conversation history (jsonl) are untouched.
+
 ### (Optional) Run on boot
 
 If you want the server to come up automatically when the machine restarts, wire it up with launchd (macOS), systemd (Linux), or the Windows Task Scheduler — pointing at `node server.js` in this directory.

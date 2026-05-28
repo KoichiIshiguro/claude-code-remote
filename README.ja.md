@@ -76,6 +76,16 @@ npm start
 
 セットアップ後、スマホからは `http://<Tailscale-IP>:4000` でアクセス（ウィザード画面に URL と QR コードが表示されます）。
 
+### ユーザー名・パスワードを忘れた時
+
+リカバリーメールも「パスワードを忘れた」リンクも意図的にありません（単一ユーザ・個人用前提）。リセットするには:
+
+```bash
+node server.js --reset-auth
+```
+
+`data/admin.json` を削除して終了します。次回の `npm start` で `/setup` にリダイレクトされ、新しいユーザー名・パスワードを再設定できます。`config.json`、プロジェクト一覧、会話履歴 (jsonl) はそのまま残ります。
+
 ### （任意）起動時に自動実行
 
 PC の電源 ON で自動起動させたい場合は、launchd（macOS）、systemd（Linux）、Windows タスクスケジューラなどでこのディレクトリの `node server.js` を指定して登録してください。

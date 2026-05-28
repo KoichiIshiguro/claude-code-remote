@@ -13,11 +13,26 @@ const multer = require('multer');
 const {
   setupAuth, requireAuth, authenticateUpgrade,
   isSetupComplete, saveAdmin, saveConfig, loadConfig,
+  resetAdmin, ADMIN_FILE,
 } = require('./src/auth');
 const { handleConnection } = require('./src/ws-handler');
 const { flushPendingSave } = require('./src/session-manager');
 const { migrateIfNeeded } = require('./src/migrate');
 const projectsStore = require('./src/projects-store');
+
+// One-shot CLI mode: `node server.js --reset-auth` wipes admin.json and
+// exits, forcing /setup on the next normal start so the user can pick a
+// fresh username/password if they forgot the old one.
+if (process.argv.includes('--reset-auth')) {
+  const { existed } = resetAdmin();
+  if (existed) {
+    console.log(`Removed ${ADMIN_FILE}.`);
+    console.log('Next `node server.js` will redirect to /setup. Config + projects are kept.');
+  } else {
+    console.log(`No admin record at ${ADMIN_FILE}. Nothing to reset.`);
+  }
+  process.exit(0);
+}
 
 // Migrate v1.1.x → v1.2 data layout (no-op once projects.json exists).
 // Must run before anything touches projects.json or sessions.json.
