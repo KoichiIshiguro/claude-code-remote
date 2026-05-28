@@ -17,6 +17,7 @@
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <style>
   /* ── 3-panel app shell ── */
+  html, body { overscroll-behavior-x: none; }
   .app-shell {
     display: flex; height: 100dvh; overflow: hidden; background: var(--bg);
   }
@@ -145,12 +146,40 @@
   .proj-new-hint { font-size: 11px; color: var(--text-muted); margin-top: 5px; padding: 0 2px; }
 
   /* Pull-up menu above the "+ 新規プロジェクト" button */
+  .proj-new-row { display: flex; gap: 6px; align-items: stretch; }
   .pullup-trigger {
-    width: 100%; padding: 9px 12px; background: var(--accent); color: var(--bg);
+    flex: 1; padding: 9px 12px; background: var(--accent); color: var(--bg);
     border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600;
     cursor: pointer; line-height: 1;
   }
   .pullup-trigger:hover { opacity: .9; }
+  .proj-delete-toggle {
+    background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+    padding: 0 12px; border-radius: var(--radius-sm); cursor: pointer; font-size: 14px;
+    line-height: 1; flex-shrink: 0;
+  }
+  .proj-delete-toggle:hover { color: var(--red); border-color: var(--red); }
+  body.delete-mode .proj-delete-toggle { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.08); }
+  /* Hint banner shown only while delete-mode is on */
+  .del-mode-hint {
+    display: none; margin-top: 8px; padding: 8px 10px; border-radius: 4px;
+    background: rgba(248,81,73,.08); border: 1px solid rgba(248,81,73,.35);
+    color: var(--red); font-size: 12px; line-height: 1.4;
+  }
+  body.delete-mode .del-mode-hint { display: block; }
+  /* Project rows turn red + clickable when delete-mode is on */
+  body.delete-mode .proj-group { outline: 1px solid rgba(248,81,73,.5); border-radius: 4px; }
+  body.delete-mode .proj-group-head { background: rgba(248,81,73,.10); cursor: pointer; }
+  body.delete-mode .proj-group-head:hover { background: rgba(248,81,73,.20); }
+  body.delete-mode .proj-group-head::after {
+    content: '×'; color: var(--red); font-size: 16px; margin-left: 6px;
+  }
+  /* Hide per-row buttons in delete-mode — single tap = remove */
+  body.delete-mode .proj-restore-btn,
+  body.delete-mode .proj-remove-btn,
+  body.delete-mode .proj-new-btn-inline,
+  body.delete-mode .sess-menu-btn { display: none; }
+  body.delete-mode .sess-item { pointer-events: none; opacity: .5; }
   .pullup-menu {
     position: absolute; bottom: calc(100% + 4px); left: 8px; right: 8px;
     background: var(--surface); border: 1px solid var(--border);
@@ -530,11 +559,15 @@
   </div>
   <div class="proj-list" id="projList"><div class="proj-empty">Loading…</div></div>
   <div class="proj-new-area" style="position:relative;">
-    <button class="pullup-trigger" id="newProjTrigger">+ 新規プロジェクト</button>
+    <div class="proj-new-row">
+      <button class="pullup-trigger" id="newProjTrigger">+ 新規プロジェクト</button>
+      <button class="proj-delete-toggle" id="projDeleteToggle" title="プロジェクトを取り外す" aria-label="Delete projects">🗑</button>
+    </div>
     <div class="pullup-menu" id="newProjMenu">
       <div class="pullup-item" id="puFolder"><span class="pi-icon">📁</span><span>フォルダを追加</span></div>
       <div class="pullup-item" id="puClone"><span class="pi-icon">🌐</span><span>Git clone</span></div>
     </div>
+    <div class="del-mode-hint" id="delModeHint">取り外したいプロジェクトをタップ。もう一度 🗑 で解除。</div>
   </div>
 </aside>
 
@@ -570,7 +603,7 @@
       <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
     <div class="input-row">
-      <textarea id="promptInput" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)" rows="3"></textarea>
+      <textarea id="promptInput" placeholder="Message Claude…" rows="3"></textarea>
       <div class="input-actions">
         <button class="btn-icon" id="imgBtn" title="Attach file" aria-label="Attach file">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1342,7 +1375,12 @@ function clearImgPreviews() { pendingImages = []; document.getElementById('image
 
 // ── Input events ──────────────────────────────────────────────────────────────
 document.getElementById('sendBtn').addEventListener('click', sendPrompt);
-document.getElementById('promptInput').addEventListener('keydown', e => { if(e.isComposing||e.keyCode===229) return; if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendPrompt();} });
+document.getElementById('promptInput').addEventListener('keydown', e => {
+  if (e.isComposing || e.keyCode === 229) return;
+  // Mobile: Enter inserts newline; only ↑ send button submits.
+  if (isMobile()) return;
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
+});
 document.getElementById('promptInput').addEventListener('input', e => autoResize(e.target));
 
 // ── Sidebar / panel open-close ────────────────────────────────────────────────
@@ -1511,11 +1549,19 @@ function rerenderProjList() {
     const head = document.createElement('div');
     head.className = 'proj-group-head';
     head.innerHTML = `<span class="proj-chevron">▾</span><span class="proj-name" title="${escHtml(p.path)}">${escHtml(p.name)}</span>`;
+    head.addEventListener('click', (ev) => {
+      if (document.body.classList.contains('delete-mode')) {
+        ev.stopPropagation();
+        openRemoveProjectModal(p);
+      }
+    });
     head.querySelector('.proj-name').addEventListener('click', (ev) => {
+      if (document.body.classList.contains('delete-mode')) return;
       ev.stopPropagation();
       toggleProjectCollapse(p.path);
     });
     head.querySelector('.proj-chevron').addEventListener('click', (ev) => {
+      if (document.body.classList.contains('delete-mode')) return;
       ev.stopPropagation();
       toggleProjectCollapse(p.path);
     });
@@ -1618,6 +1664,21 @@ document.getElementById('puFolder').addEventListener('click', () => {
   document.getElementById('addFolderOverlay').classList.add('on');
   // Browse from accessRoot or home — server resolves which.
   fpNavigate(null);
+});
+
+// Delete-mode toggle: 🗑 next to "+ 新規". Active state shown via body.delete-mode.
+const projDeleteToggle = document.getElementById('projDeleteToggle');
+function setDeleteMode(on) {
+  document.body.classList.toggle('delete-mode', !!on);
+  if (on) closePullUp();
+}
+projDeleteToggle.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  setDeleteMode(!document.body.classList.contains('delete-mode'));
+});
+// Esc exits delete-mode
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && document.body.classList.contains('delete-mode')) setDeleteMode(false);
 });
 
 document.getElementById('puClone').addEventListener('click', () => {
@@ -1834,6 +1895,7 @@ document.getElementById('rpConfirm').addEventListener('click', () => {
   if (!_removeProjectTarget) return;
   const target = _removeProjectTarget;
   closeRemoveProjectModal();
+  setDeleteMode(false);
   wsSend({ type: 'remove_project', id: target.id, path: target.path });
   // If the currently-open session lives under this project, jump away — but
   // exclude any session still belonging to the removed project from the
@@ -2231,6 +2293,62 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 window.addEventListener('beforeunload', (ev) => {
   if (_fvDirty) { ev.preventDefault(); ev.returnValue = ''; }
 });
+
+// ── Lock browser back/forward ─────────────────────────────────────────────
+// The chat *is* the navigation; we don't want a phone gesture to leave the
+// page mid-prompt. Push a sentinel entry once, then re-push on popstate so
+// the user can never reach a previous history entry. Combined with the CSS
+// `overscroll-behavior-x: none` rule above, this kills iOS Safari's swipe-back.
+(function lockHistory() {
+  try { history.pushState({ _pinned: 1 }, '', location.href); } catch {}
+  window.addEventListener('popstate', () => {
+    try { history.pushState({ _pinned: 1 }, '', location.href); } catch {}
+  });
+})();
+
+// ── Mobile: swipe to open/close the left sidebar ──────────────────────────
+// Edge-swipe right from the left ~24px opens sideL. While sideL is open,
+// swipe-left anywhere closes it. We ignore the gesture if the user is
+// clearly scrolling vertically, dragging an image, or interacting with the
+// chat scroll container (which has its own swipe-y).
+(function setupSwipe() {
+  const EDGE = 28, MIN_DX = 60, MAX_DY_RATIO = 0.6, MAX_T = 500;
+  let sx = 0, sy = 0, st = 0, tracking = false, fromEdge = false, fromOpenSide = false;
+
+  function onStart(e) {
+    if (!isMobile()) return;
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const sideOpen = document.getElementById('sideL').classList.contains('open');
+    // start tracking if either: (a) finger lands within EDGE of left edge, OR
+    // (b) sideL is already open and we might be swiping left to close it.
+    if (t.clientX <= EDGE) { fromEdge = true; fromOpenSide = false; tracking = true; }
+    else if (sideOpen) { fromEdge = false; fromOpenSide = true; tracking = true; }
+    else return;
+    sx = t.clientX; sy = t.clientY; st = Date.now();
+  }
+  function onMove() { /* nothing — decision is made on touchend */ }
+  function onEnd(e) {
+    if (!tracking) return;
+    tracking = false;
+    const t = (e.changedTouches && e.changedTouches[0]) || null;
+    if (!t) return;
+    const dx = t.clientX - sx;
+    const dy = Math.abs(t.clientY - sy);
+    const dt = Date.now() - st;
+    if (dt > MAX_T) return;
+    if (Math.abs(dx) < MIN_DX) return;
+    if (dy / Math.max(1, Math.abs(dx)) > MAX_DY_RATIO) return; // it was a vertical scroll
+    if (fromEdge && dx > 0) {
+      openSide('sideL');
+    } else if (fromOpenSide && dx < 0) {
+      closeSide('sideL');
+    }
+  }
+  document.addEventListener('touchstart', onStart, { passive: true });
+  document.addEventListener('touchmove', onMove, { passive: true });
+  document.addEventListener('touchend', onEnd, { passive: true });
+})();
 
 connect();
 </script>

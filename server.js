@@ -6,7 +6,7 @@ const http = require('http');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const multer = require('multer');
@@ -143,8 +143,31 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
 });
 
+// Claude's vision pipeline doesn't accept HEIC/HEIF — iPhone screenshots and
+// photos arrive in that format. Convert to JPEG synchronously here so the
+// path we hand back is something Claude can actually open.
+function convertHeicToJpeg(srcPath) {
+  const dst = srcPath.replace(/\.(heic|heif)$/i, '') + '.jpg';
+  const attempts = [
+    () => execFileSync('sips', ['-s', 'format', 'jpeg', srcPath, '--out', dst], { stdio: 'ignore', timeout: 30000 }),
+    () => execFileSync('heif-convert', ['-q', '90', srcPath, dst], { stdio: 'ignore', timeout: 30000 }),
+    () => execFileSync('magick', [srcPath, dst], { stdio: 'ignore', timeout: 30000 }),
+  ];
+  for (const run of attempts) {
+    try { run(); if (fs.existsSync(dst) && fs.statSync(dst).size > 0) { try { fs.unlinkSync(srcPath); } catch {} return dst; } } catch {}
+  }
+  return null;
+}
+
 app.post('/upload', requireAuth, upload.array('images', 10), (req, res) => {
-  const paths = req.files.map((f) => f.path);
+  const paths = req.files.map((f) => {
+    if (/\.(heic|heif)$/i.test(f.path)) {
+      const converted = convertHeicToJpeg(f.path);
+      if (converted) return converted;
+      console.warn(`[upload] HEIC conversion failed for ${f.path}; passing through`);
+    }
+    return f.path;
+  });
   res.json({ paths });
 });
 
