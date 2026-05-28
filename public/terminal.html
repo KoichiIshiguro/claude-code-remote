@@ -136,6 +136,84 @@
   .proj-new-btn:hover { opacity: .85; }
   .proj-new-hint { font-size: 11px; color: var(--text-muted); margin-top: 5px; padding: 0 2px; }
 
+  /* Pull-up menu above the "+ 新規プロジェクト" button */
+  .pullup-trigger {
+    width: 100%; padding: 9px 12px; background: var(--accent); color: var(--bg);
+    border: none; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600;
+    cursor: pointer; line-height: 1;
+  }
+  .pullup-trigger:hover { opacity: .9; }
+  .pullup-menu {
+    position: absolute; bottom: calc(100% + 4px); left: 8px; right: 8px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 4px; display: none;
+    box-shadow: 0 -6px 18px rgba(0,0,0,.35);
+    z-index: 60;
+  }
+  .pullup-menu.on { display: block; }
+  .pullup-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 10px; cursor: pointer; border-radius: 4px; font-size: 13px;
+    color: var(--text);
+  }
+  .pullup-item:hover { background: var(--surface2); }
+  .pullup-item .pi-icon { font-size: 15px; width: 18px; text-align: center; }
+
+  /* Per-project ↻ restore button — sits next to + */
+  .proj-restore-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); width: 22px; height: 22px;
+    border-radius: 4px; cursor: pointer; font-size: 12px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .proj-restore-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .proj-restore-btn.has-archives { color: var(--accent); }
+
+  /* Session-row ⋯ menu */
+  .sess-item { position: relative; }
+  .sess-menu-btn {
+    background: transparent; border: none; color: var(--text-muted);
+    width: 20px; height: 20px; font-size: 14px; cursor: pointer;
+    border-radius: 3px; flex-shrink: 0; opacity: 0;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+  }
+  .sess-item:hover .sess-menu-btn { opacity: .8; }
+  .sess-menu-btn:hover { background: var(--surface2); opacity: 1 !important; }
+  .sess-menu-popup {
+    position: absolute; right: 6px; top: 100%; margin-top: 2px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 4px; display: none; z-index: 70;
+    min-width: 140px; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  }
+  .sess-menu-popup.on { display: block; }
+  .sess-menu-popup .smi {
+    display: block; padding: 7px 10px; font-size: 12px;
+    color: var(--text); cursor: pointer; border-radius: 3px;
+  }
+  .sess-menu-popup .smi:hover { background: var(--surface2); }
+  .sess-menu-popup .smi.danger { color: var(--red); }
+
+  /* Restore modal listing rows */
+  .restore-section-title {
+    font-size: 11px; font-weight: 700; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .06em;
+    margin: 12px 4px 4px;
+  }
+  .restore-empty { padding: 10px; color: var(--text-muted); font-size: 12px; text-align: center; }
+  .restore-row {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 10px; border-radius: 4px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .restore-row:hover { background: var(--surface2); border-color: var(--border); }
+  .restore-row .rr-prev {
+    font-size: 13px; color: var(--text); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .restore-row .rr-meta {
+    font-size: 11px; color: var(--text-muted); font-family: 'SF Mono', monospace;
+  }
+
   /* ── Right: file browser ── */
   .fb-bread {
     display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
@@ -345,12 +423,12 @@
     <button class="side-close" id="sideL-close" aria-label="Close">×</button>
   </div>
   <div class="proj-list" id="projList"><div class="proj-empty">Loading…</div></div>
-  <div class="proj-new-area">
-    <div class="proj-new-row">
-      <input class="proj-new-input" id="projNameInput" placeholder="new-project" spellcheck="false" autocomplete="off">
-      <button class="proj-new-btn" id="projNewBtn" title="Create project">+</button>
+  <div class="proj-new-area" style="position:relative;">
+    <button class="pullup-trigger" id="newProjTrigger">+ 新規プロジェクト</button>
+    <div class="pullup-menu" id="newProjMenu">
+      <div class="pullup-item" id="puFolder"><span class="pi-icon">📁</span><span>フォルダを追加</span></div>
+      <div class="pullup-item" id="puClone"><span class="pi-icon">🌐</span><span>Git clone</span></div>
     </div>
-    <div class="proj-new-hint" id="projNewHint">Created under your project root.</div>
   </div>
 </aside>
 
@@ -440,6 +518,55 @@
     <div class="perm-body" id="summaryBody" style="white-space:pre-wrap;line-height:1.7;font-size:14px;">読み込み中…</div>
     <div class="perm-ftr">
       <button class="btn-save" id="summaryDismiss">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Add folder modal ── -->
+<div class="modal-overlay" id="addFolderOverlay">
+  <div class="perm-modal" style="max-width:480px;">
+    <div class="perm-hdr"><h3>フォルダを追加</h3><button class="side-close" id="addFolderClose">×</button></div>
+    <div class="perm-body" style="padding:14px;display:flex;flex-direction:column;gap:10px;">
+      <label style="font-size:12px;color:var(--text-muted);">既存フォルダの絶対パスを入力してください</label>
+      <input id="addFolderPath" type="text" placeholder="/Users/you/path/to/project"
+        style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:'SF Mono',monospace;outline:none;">
+      <div id="addFolderError" style="color:var(--red);font-size:12px;min-height:14px;"></div>
+    </div>
+    <div class="perm-ftr">
+      <button class="btn-ghost" id="addFolderCancel">Cancel</button>
+      <button class="btn-save" id="addFolderSubmit">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Git clone modal ── -->
+<div class="modal-overlay" id="cloneOverlay">
+  <div class="perm-modal" style="max-width:480px;">
+    <div class="perm-hdr"><h3>Git clone</h3><button class="side-close" id="cloneClose">×</button></div>
+    <div class="perm-body" style="padding:14px;display:flex;flex-direction:column;gap:10px;">
+      <label style="font-size:12px;color:var(--text-muted);">Repository URL (https / git / ssh)</label>
+      <input id="cloneUrl" type="text" placeholder="https://github.com/user/repo.git"
+        style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:'SF Mono',monospace;outline:none;">
+      <label style="font-size:12px;color:var(--text-muted);">Folder name (optional)</label>
+      <input id="cloneName" type="text" placeholder="derived from URL"
+        style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:'SF Mono',monospace;outline:none;">
+      <div id="cloneError" style="color:var(--red);font-size:12px;min-height:14px;"></div>
+      <div id="cloneStatus" style="color:var(--text-muted);font-size:12px;min-height:14px;"></div>
+    </div>
+    <div class="perm-ftr">
+      <button class="btn-ghost" id="cloneCancel">Cancel</button>
+      <button class="btn-save" id="cloneSubmit">Clone</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Restore modal ── -->
+<div class="modal-overlay" id="restoreOverlay">
+  <div class="perm-modal" style="max-width:560px;">
+    <div class="perm-hdr"><h3 id="restoreTitle">アーカイブ済みセッション</h3><button class="side-close" id="restoreClose">×</button></div>
+    <div class="perm-body" id="restoreBody" style="padding:10px;">読み込み中…</div>
+    <div class="perm-ftr">
+      <button class="btn-save" id="restoreDismiss">閉じる</button>
     </div>
   </div>
 </div>
@@ -633,6 +760,27 @@ function handleMessage(msg) {
       if (msg.placeholderId === sessionId) {
         sessionId = msg.sessionId;
         try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
+      }
+      break;
+    case 'archived_list':
+      renderArchivedList(msg.projectPath, msg.sessions || []);
+      break;
+    case 'archive_ok':
+    case 'restore_ok':
+    case 'purge_ok':
+    case 'project_added':
+    case 'project_removed':
+      // Server has already broadcast sessions_list right after each of these;
+      // also refresh project list if a project changed.
+      if (msg.type === 'project_added' || msg.type === 'project_removed') refreshProjects();
+      if (msg.type === 'restore_ok' && _restoreProject) {
+        // Re-fetch the archived view so the row disappears from "archived" and
+        // (if any) reappears in the main sidebar.
+        wsSend({ type: 'list_archived', projectPath: _restoreProject.path });
+      }
+      if (msg.type === 'purge_ok' && msg.sessionId === sessionId) {
+        // The session we were viewing got physically deleted — bounce home.
+        location.href = '/app';
       }
       break;
     case 'permissions_updated':
@@ -1082,8 +1230,8 @@ let _sessions = [];
 function rerenderProjList() {
   const list = document.getElementById('projList');
   list.innerHTML = '';
+  closeAllSessMenus();
 
-  // Group sessions by directory. Most-recent first within each folder.
   const sessByDir = new Map();
   for (const s of _sessions) {
     if (!sessByDir.has(s.directory)) sessByDir.set(s.directory, []);
@@ -1107,6 +1255,17 @@ function rerenderProjList() {
     const head = document.createElement('div');
     head.className = 'proj-group-head';
     head.innerHTML = `<span class="proj-name" title="${escHtml(p.path)}">${escHtml(p.name)}</span>`;
+
+    const restoreBtn = document.createElement('button');
+    restoreBtn.className = 'proj-restore-btn';
+    restoreBtn.title = 'Restore archived sessions for this folder';
+    restoreBtn.textContent = '↻';
+    restoreBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      openRestoreModal(p);
+    });
+    head.appendChild(restoreBtn);
+
     const newBtn = document.createElement('button');
     newBtn.className = 'proj-new-btn-inline';
     newBtn.title = 'New session in this folder';
@@ -1136,6 +1295,17 @@ function rerenderProjList() {
           if (isActive) return;
           location.href = `/terminal?session=${s.id}`;
         });
+
+        const menuBtn = document.createElement('button');
+        menuBtn.className = 'sess-menu-btn';
+        menuBtn.title = 'Session actions';
+        menuBtn.textContent = '⋯';
+        menuBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          toggleSessMenu(item, s);
+        });
+        item.appendChild(menuBtn);
+
         group.appendChild(item);
       }
     }
@@ -1143,8 +1313,8 @@ function rerenderProjList() {
   }
 }
 
-// Reload both lists. Sessions come via WS event handler (rerender there);
-// projects come over REST and we rerender immediately.
+// Reload both lists. Sessions come via WS; projects via REST (kept for now —
+// will switch to WS list_projects when REST endpoint is retired).
 async function refreshProjects() {
   wsSend({ type: 'list_sessions' });
   try {
@@ -1155,41 +1325,171 @@ async function refreshProjects() {
   rerenderProjList();
 }
 
-// ── New project ───────────────────────────────────────────────────────────────
-(async () => {
-  // Populate the hint with actual BASE_DIR from the server.
-  try {
-    const r = await fetch('/api/projects');
-    const d = await r.json();
-    const el = document.getElementById('projNewHint');
-    if (d.base) el.textContent = `Create under ${d.base}/`;
-    else el.textContent = 'Set BASE_DIR in .env to enable project creation.';
-  } catch {}
-})();
+// ── Pull-up menu: + 新規プロジェクト ──────────────────────────────────────────
+const newProjTrigger = document.getElementById('newProjTrigger');
+const newProjMenu = document.getElementById('newProjMenu');
+function closePullUp() { newProjMenu.classList.remove('on'); }
+newProjTrigger.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  newProjMenu.classList.toggle('on');
+});
+document.addEventListener('click', (ev) => {
+  if (!newProjMenu.contains(ev.target) && ev.target !== newProjTrigger) closePullUp();
+});
 
-async function createProject() {
-  const inp = document.getElementById('projNameInput');
-  const name = inp.value.trim();
-  if (!name) return;
-  const btn = document.getElementById('projNewBtn');
-  btn.disabled = true; btn.textContent = '…';
+document.getElementById('puFolder').addEventListener('click', () => {
+  closePullUp();
+  document.getElementById('addFolderPath').value = '';
+  document.getElementById('addFolderError').textContent = '';
+  document.getElementById('addFolderOverlay').classList.add('on');
+  setTimeout(() => document.getElementById('addFolderPath').focus(), 50);
+});
+
+document.getElementById('puClone').addEventListener('click', () => {
+  closePullUp();
+  document.getElementById('cloneUrl').value = '';
+  document.getElementById('cloneName').value = '';
+  document.getElementById('cloneError').textContent = '';
+  document.getElementById('cloneStatus').textContent = '';
+  document.getElementById('cloneOverlay').classList.add('on');
+  setTimeout(() => document.getElementById('cloneUrl').focus(), 50);
+});
+
+document.getElementById('addFolderClose').addEventListener('click', () => document.getElementById('addFolderOverlay').classList.remove('on'));
+document.getElementById('addFolderCancel').addEventListener('click', () => document.getElementById('addFolderOverlay').classList.remove('on'));
+document.getElementById('addFolderSubmit').addEventListener('click', addFolderSubmit);
+document.getElementById('addFolderPath').addEventListener('keydown', e => { if (e.key === 'Enter') addFolderSubmit(); });
+
+async function addFolderSubmit() {
+  const path = document.getElementById('addFolderPath').value.trim();
+  const err = document.getElementById('addFolderError');
+  if (!path) { err.textContent = 'Path required'; return; }
+  err.textContent = '';
   try {
     const r = await fetch('/api/projects', {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }),
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ path }),
     });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
-    inp.value = '';
-    // Create session and navigate
-    wsSend({ type: 'create_session', directory: d.path });
-  } catch (e) { alert('Failed: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = '+'; }
+    if (!r.ok) { err.textContent = d.error || 'Failed'; return; }
+    document.getElementById('addFolderOverlay').classList.remove('on');
+    await refreshProjects();
+  } catch (e) {
+    err.textContent = e.message;
+  }
 }
 
-document.getElementById('projNewBtn').addEventListener('click', createProject);
-document.getElementById('projNameInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') createProject();
-});
+document.getElementById('cloneClose').addEventListener('click', () => document.getElementById('cloneOverlay').classList.remove('on'));
+document.getElementById('cloneCancel').addEventListener('click', () => document.getElementById('cloneOverlay').classList.remove('on'));
+document.getElementById('cloneSubmit').addEventListener('click', cloneSubmit);
+document.getElementById('cloneUrl').addEventListener('keydown', e => { if (e.key === 'Enter') cloneSubmit(); });
+
+async function cloneSubmit() {
+  const url = document.getElementById('cloneUrl').value.trim();
+  const name = document.getElementById('cloneName').value.trim() || undefined;
+  const err = document.getElementById('cloneError');
+  const status = document.getElementById('cloneStatus');
+  const btn = document.getElementById('cloneSubmit');
+  if (!url) { err.textContent = 'URL required'; return; }
+  err.textContent = '';
+  status.textContent = 'Cloning…';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/projects/clone', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ url, name }),
+    });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || 'Failed'; status.textContent = ''; return; }
+    status.textContent = `Cloned to ${d.path}`;
+    setTimeout(() => document.getElementById('cloneOverlay').classList.remove('on'), 600);
+    await refreshProjects();
+  } catch (e) {
+    err.textContent = e.message; status.textContent = '';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Session ⋯ menu (archive / purge) ───────────────────────────────────────
+let _sessMenuOpen = null;
+function closeAllSessMenus() {
+  if (_sessMenuOpen) { _sessMenuOpen.remove(); _sessMenuOpen = null; }
+}
+function toggleSessMenu(itemEl, s) {
+  if (_sessMenuOpen && _sessMenuOpen._for === s.id) { closeAllSessMenus(); return; }
+  closeAllSessMenus();
+  const pop = document.createElement('div');
+  pop.className = 'sess-menu-popup on';
+  pop._for = s.id;
+  const archive = document.createElement('span');
+  archive.className = 'smi'; archive.textContent = 'アーカイブ (一覧から隠す)';
+  archive.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    wsSend({ type: 'archive_session', sessionId: s.id });
+    closeAllSessMenus();
+  });
+  const purge = document.createElement('span');
+  purge.className = 'smi danger'; purge.textContent = '完全削除 (jsonl も削除)';
+  purge.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    if (!confirm('会話履歴も Claude CLI 側から消えます。元に戻せません。')) return;
+    wsSend({ type: 'purge_session', sessionId: s.id, directory: s.directory });
+    closeAllSessMenus();
+  });
+  pop.appendChild(archive); pop.appendChild(purge);
+  itemEl.appendChild(pop);
+  _sessMenuOpen = pop;
+}
+document.addEventListener('click', () => closeAllSessMenus());
+
+// ── Restore modal ──────────────────────────────────────────────────────────
+let _restoreProject = null;
+function openRestoreModal(project) {
+  _restoreProject = project;
+  document.getElementById('restoreTitle').textContent = `${project.name} のアーカイブ済みセッション`;
+  document.getElementById('restoreBody').innerHTML = '<div class="restore-empty">読み込み中…</div>';
+  document.getElementById('restoreOverlay').classList.add('on');
+  wsSend({ type: 'list_archived', projectPath: project.path });
+}
+document.getElementById('restoreClose').addEventListener('click', () => document.getElementById('restoreOverlay').classList.remove('on'));
+document.getElementById('restoreDismiss').addEventListener('click', () => document.getElementById('restoreOverlay').classList.remove('on'));
+
+function renderArchivedList(projectPath, sessions) {
+  if (!_restoreProject || _restoreProject.path !== projectPath) return;
+  const body = document.getElementById('restoreBody');
+  body.innerHTML = '';
+  const archived = sessions.filter(s => s.archived);
+  const discovered = sessions.filter(s => !s.archived);
+
+  const section = (title, items) => {
+    const h = document.createElement('div');
+    h.className = 'restore-section-title';
+    h.textContent = title;
+    body.appendChild(h);
+    if (!items.length) {
+      const e = document.createElement('div');
+      e.className = 'restore-empty';
+      e.textContent = '(なし)';
+      body.appendChild(e);
+      return;
+    }
+    for (const s of items) {
+      const row = document.createElement('div');
+      row.className = 'restore-row';
+      const prev = (s.preview && s.preview.trim()) ? s.preview : '(no preview)';
+      row.innerHTML = `<div class="rr-prev">${escHtml(prev)}</div>` +
+                      `<div class="rr-meta">${new Date(s.mtime).toISOString().slice(0,16).replace('T',' ')} · ${s.sessionId.slice(0,8)}</div>`;
+      row.addEventListener('click', () => {
+        wsSend({ type: 'restore_session', sessionId: s.sessionId });
+      });
+      body.appendChild(row);
+    }
+  };
+
+  section('アーカイブ済み', archived);
+  section('新しく見つかったセッション (TUI 由来など)', discovered);
+}
 
 // ── File browser ──────────────────────────────────────────────────────────────
 async function loadDir(dir) {
