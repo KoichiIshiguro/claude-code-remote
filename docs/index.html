@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Claude Code Remote — スマホが、AI の作業場になる</title>
+  <meta name="description" content="古い PC を母艦に。企画書もプレゼンも事業計画も、スマホから Claude に作らせる。Claude Pro/Max サブスクで完結、追加課金なし。">
+  <meta name="theme-color" content="#0d1117">
+  <meta property="og:title" content="Claude Code Remote">
+  <meta property="og:description" content="スマホが、AI の作業場になる。古い PC を母艦に、企画書もコードも Claude に任せる。">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://github.com/KoichiIshiguro/claude-code-remote/raw/main/docs/social-preview.png">
+  <link rel="icon" href="https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/public/icons/icon.svg" type="image/svg+xml">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #1f242c;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #f97316;
+      --accent-dim: rgba(249, 115, 22, .15);
+      --green: #3fb950;
+      --radius: 12px;
+      --radius-sm: 8px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+    }
+    /* lang switch */
+    body.lang-ja .en { display: none !important; }
+    body.lang-en .ja { display: none !important; }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+    /* ── Header ── */
+    .site-hdr {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(13, 17, 23, .85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .site-hdr-inner {
+      display: flex; align-items: center; gap: 16px;
+      padding: 14px 24px;
+      max-width: 1080px; margin: 0 auto;
+    }
+    .site-logo {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 600; font-size: 15px; color: var(--text);
+    }
+    .site-logo img { width: 28px; height: 28px; }
+    .site-nav { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+    .site-nav a {
+      color: var(--text-muted); font-size: 13px; font-weight: 500;
+      text-decoration: none;
+    }
+    .site-nav a:hover { color: var(--text); }
+    .lang-switch {
+      display: flex; gap: 4px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+      padding: 3px;
+    }
+    .lang-switch button {
+      background: transparent; border: 0; color: var(--text-muted);
+      padding: 4px 10px; border-radius: 999px; cursor: pointer;
+      font-size: 12px; font-weight: 600;
+    }
+    .lang-switch button.active { background: var(--surface2); color: var(--text); }
+
+    /* ── Hero ── */
+    .hero { padding: 80px 0 60px; text-align: center; }
+    .hero h1 {
+      font-size: clamp(28px, 5.6vw, 52px);
+      font-weight: 800;
+      line-height: 1.2;
+      letter-spacing: -.02em;
+      margin-bottom: 22px;
+      background: linear-gradient(180deg, #fff 0%, #c8d0d8 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero .lead {
+      font-size: clamp(15px, 2.2vw, 19px);
+      color: var(--text-muted);
+      max-width: 680px; margin: 0 auto 36px;
+    }
+    .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 13px 24px; border-radius: var(--radius-sm);
+      font-weight: 600; font-size: 15px; cursor: pointer;
+      border: 1px solid transparent; transition: all .15s;
+      text-decoration: none;
+    }
+    .btn-primary {
+      background: var(--accent); color: #0d1117; border-color: var(--accent);
+    }
+    .btn-primary:hover { background: #fb923c; text-decoration: none; }
+    .btn-ghost {
+      background: transparent; color: var(--text); border-color: var(--border);
+    }
+    .btn-ghost:hover { background: var(--surface); text-decoration: none; }
+
+    .hero-mock {
+      margin: 60px auto 0;
+      max-width: 760px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 26px 26px 20px;
+      text-align: left;
+      box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .6);
+    }
+    .mock-prompt {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 14px 16px;
+      font-size: 14px; color: var(--text);
+      margin-bottom: 16px;
+    }
+    .mock-prompt::before { content: "▶ "; color: var(--accent); }
+    .mock-reply { color: var(--text-muted); font-size: 13.5px; line-height: 1.75; }
+    .mock-reply strong { color: var(--text); }
+    .mock-reply .file {
+      display: inline-block; background: var(--surface2); border: 1px solid var(--border);
+      padding: 3px 8px; border-radius: 4px; font-family: 'SF Mono', monospace;
+      font-size: 12px; color: var(--accent); margin: 4px 0;
+    }
+
+    /* ── Section ── */
+    section { padding: 80px 0; }
+    section.tight { padding: 48px 0; }
+    .section-eyebrow {
+      text-align: center;
+      font-size: 12px; font-weight: 700;
+      color: var(--accent);
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .section-title {
+      text-align: center;
+      font-size: clamp(24px, 4vw, 36px);
+      font-weight: 700;
+      letter-spacing: -.01em;
+      margin-bottom: 16px;
+    }
+    .section-lead {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 640px; margin: 0 auto 56px;
+    }
+
+    /* ── Use cases ── */
+    .use-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
+    .use-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+    }
+    .use-card .ico { font-size: 28px; margin-bottom: 14px; }
+    .use-card h3 { font-size: 15px; font-weight: 700; margin-bottom: 8px; color: var(--text); }
+    .use-card p { font-size: 13.5px; color: var(--text-muted); }
+
+    /* ── Setup paths ── */
+    .setup-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+    .setup-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px 28px;
+      display: flex; flex-direction: column;
+    }
+    .setup-card.featured {
+      border-color: var(--accent);
+      position: relative;
+    }
+    .setup-card.featured::before {
+      content: attr(data-badge);
+      position: absolute; top: -10px; left: 22px;
+      background: var(--accent); color: #0d1117;
+      font-size: 11px; font-weight: 700;
+      padding: 3px 10px; border-radius: 999px;
+      letter-spacing: .04em;
+    }
+    .setup-card h3 {
+      font-size: 18px; font-weight: 700; margin-bottom: 6px;
+    }
+    .setup-card .price {
+      font-size: 14px; color: var(--text-muted); margin-bottom: 18px;
+    }
+    .setup-card .price strong { color: var(--text); font-weight: 700; }
+    .setup-card ul {
+      list-style: none; flex: 1; margin-bottom: 22px;
+    }
+    .setup-card li {
+      font-size: 13.5px; color: var(--text-muted);
+      padding: 6px 0 6px 22px; position: relative;
+    }
+    .setup-card li::before {
+      content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 700;
+    }
+    .setup-card .btn { width: 100%; justify-content: center; }
+
+    /* ── VPS list ── */
+    .vps-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .vps-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 18px 20px;
+    }
+    .vps-card h4 { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+    .vps-card .vps-price { color: var(--accent); font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    .vps-card p { font-size: 12.5px; color: var(--text-muted); }
+
+    /* ── Comparison ── */
+    .compare-wrap { overflow-x: auto; }
+    .compare-tbl {
+      width: 100%; border-collapse: collapse; min-width: 600px;
+      background: var(--surface); border-radius: var(--radius); overflow: hidden;
+    }
+    .compare-tbl th, .compare-tbl td {
+      padding: 14px 18px; text-align: left; font-size: 13.5px;
+      border-bottom: 1px solid var(--border);
+    }
+    .compare-tbl thead th {
+      background: var(--surface2); font-weight: 700; color: var(--text); font-size: 13px;
+    }
+    .compare-tbl tbody td:first-child { color: var(--text-muted); }
+    .compare-tbl td.yes { color: var(--green); font-weight: 700; }
+    .compare-tbl td.no { color: var(--text-muted); }
+    .compare-tbl .col-us { background: rgba(249, 115, 22, .04); }
+
+    /* ── Requirements ── */
+    .req-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      max-width: 760px; margin: 0 auto;
+    }
+    .req-item {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 16px 18px;
+    }
+    .req-item .req-k { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+    .req-item .req-v { font-size: 14px; font-weight: 600; color: var(--text); }
+
+    /* ── Final CTA ── */
+    .final-cta {
+      text-align: center;
+      background: linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
+      border-top: 1px solid var(--border);
+      padding: 80px 24px;
+    }
+    .final-cta h2 {
+      font-size: clamp(22px, 3.6vw, 32px); font-weight: 700;
+      margin-bottom: 14px;
+    }
+    .final-cta p { color: var(--text-muted); margin-bottom: 28px; }
+
+    /* ── Footer ── */
+    footer {
+      padding: 30px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12.5px;
+      border-top: 1px solid var(--border);
+    }
+    footer a { color: var(--text-muted); }
+    footer a:hover { color: var(--text); }
+  </style>
+</head>
+<body class="lang-ja">
+
+<!-- ── Header ── -->
+<header class="site-hdr">
+  <div class="site-hdr-inner">
+    <a href="#" class="site-logo">
+      <img src="https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/public/icons/icon.svg" alt="">
+      <span>Claude Code Remote</span>
+    </a>
+    <nav class="site-nav">
+      <a href="#use" class="ja">使い方</a><a href="#use" class="en">Use cases</a>
+      <a href="#setup" class="ja">セットアップ</a><a href="#setup" class="en">Setup</a>
+      <a href="https://github.com/KoichiIshiguro/claude-code-remote" target="_blank" rel="noopener">GitHub</a>
+      <div class="lang-switch">
+        <button data-lang="ja" class="active">JA</button>
+        <button data-lang="en">EN</button>
+      </div>
+    </nav>
+  </div>
+</header>
+
+<!-- ── Hero ── -->
+<section class="hero">
+  <div class="container">
+    <h1 class="ja">企画書もプレゼンも、<br>スマホで AI に仕上げてもらう</h1>
+    <h1 class="en">Get presentations, plans, and prototypes<br>built on your phone — by AI</h1>
+
+    <p class="lead ja">古い PC を母艦に。通勤電車・打合せ後のカフェ・寝る前のベッドから、Claude に作業を任せる。<br>あなたの Claude Pro / Max サブスクで完結、月額追加なし。</p>
+    <p class="lead en">Turn an old laptop into your AI workstation. Send work to Claude from your phone — on the train, at a café, before bed.<br>Runs on your existing Claude Pro / Max subscription. No extra billing.</p>
+
+    <div class="hero-cta">
+      <a href="#setup" class="btn btn-primary">
+        <span class="ja">セットアップを見る</span><span class="en">See setup</span>
+      </a>
+      <a href="https://github.com/KoichiIshiguro/claude-code-remote" target="_blank" rel="noopener" class="btn btn-ghost">
+        <span class="ja">GitHub で見る</span><span class="en">View on GitHub</span>
+      </a>
+    </div>
+
+    <div class="hero-mock">
+      <div class="mock-prompt ja">来週の役員会向けの事業計画ドラフトを書いて。3章構成、各章 1500 字。</div>
+      <div class="mock-prompt en">Draft a business plan for next week's board meeting. 3 chapters, ~1500 words each.</div>
+      <div class="mock-reply ja">
+        承知しました。<strong>2026年Q3-Q4 事業計画</strong>を 3 章構成で生成します。<br><br>
+        <span class="file">📄 business-plan-2026-q3-q4.md</span> を作成しました (4,723 文字)<br>
+        <span class="file">📄 executive-summary.md</span> を作成しました (612 文字)<br><br>
+        各章の構成は次のとおりです: ①現状分析と KPI、②3 つの戦略オプション、③推奨アクションと予算...
+      </div>
+      <div class="mock-reply en">
+        Got it. Generating a <strong>Q3-Q4 2026 business plan</strong> in 3 chapters.<br><br>
+        <span class="file">📄 business-plan-2026-q3-q4.md</span> created (4,723 chars)<br>
+        <span class="file">📄 executive-summary.md</span> created (612 chars)<br><br>
+        Structure: 1) Current state & KPIs, 2) Three strategic options, 3) Recommended actions & budget...
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Use cases ── -->
+<section id="use" class="tight">
+  <div class="container">
+    <p class="section-eyebrow ja">こんな時に使う</p>
+    <p class="section-eyebrow en">When you'd use it</p>
+    <h2 class="section-title ja">PC を開けない瞬間こそ、AI の出番</h2>
+    <h2 class="section-title en">The moments you can't open a laptop are when AI shines</h2>
+    <p class="section-lead ja">スマホしか持ってない時間帯を、知的作業の時間に変える。</p>
+    <p class="section-lead en">Turn phone-only moments into productive work time.</p>
+
+    <div class="use-grid">
+      <div class="use-card">
+        <div class="ico">🚆</div>
+        <h3 class="ja">通勤電車で</h3><h3 class="en">On the commute</h3>
+        <p class="ja">来週の役員会議向け事業計画のドラフトを Claude に書かせる。降りる頃には章立てができてる。</p>
+        <p class="en">Have Claude draft next week's board presentation. By the time you get off the train, the outline is ready.</p>
+      </div>
+      <div class="use-card">
+        <div class="ico">☕</div>
+        <h3 class="ja">打合せ後のカフェで</h3><h3 class="en">Café after a meeting</h3>
+        <p class="ja">クライアント向け企画書の構成を Claude と一緒に練る。アイデアを口頭で投げて構造化してもらう。</p>
+        <p class="en">Work through a client proposal with Claude. Throw raw ideas in, get back structured drafts.</p>
+      </div>
+      <div class="use-card">
+        <div class="ico">🛏️</div>
+        <h3 class="ja">寝る前のベッドで</h3><h3 class="en">In bed before sleep</h3>
+        <p class="ja">明日のプレゼン資料の章立てを生成。朝起きて確認 → 修正だけで会議に間に合う。</p>
+        <p class="en">Generate tomorrow's slide deck outline. Review and tweak in the morning — done before the meeting.</p>
+      </div>
+      <div class="use-card">
+        <div class="ico">💡</div>
+        <h3 class="ja">移動中の思いつき</h3><h3 class="en">A sudden idea on the move</h3>
+        <p class="ja">ふと浮かんだサービス案を、その場でプロトタイプとして実装させる。コードも同じ場所で。</p>
+        <p class="en">A service idea pops up — have Claude build a prototype on the spot. Code works here too.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Comparison ── -->
+<section class="tight">
+  <div class="container">
+    <p class="section-eyebrow ja">他のツールと何が違う?</p>
+    <p class="section-eyebrow en">What makes it different</p>
+    <h2 class="section-title ja">サブスク内で完結、自由なファイル形式、データは自宅</h2>
+    <h2 class="section-title en">Subscription-only billing. Any file format. Data stays home.</h2>
+
+    <div class="compare-wrap">
+      <table class="compare-tbl">
+        <thead>
+          <tr>
+            <th></th>
+            <th class="col-us">Claude Code Remote</th>
+            <th>Lovable / Bolt / v0</th>
+            <th class="ja">公式 Claude アプリ</th><th class="en">Official Claude App</th>
+            <th>Notion AI / Copilot</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="ja">スマホから使える</td><td class="en">Use from your phone</td>
+            <td class="col-us yes">✓</td>
+            <td class="no">△</td>
+            <td class="yes">✓</td>
+            <td class="yes">✓</td>
+          </tr>
+          <tr>
+            <td class="ja">自由なファイル形式 (Word / Markdown / コード)</td><td class="en">Any file format (Word / Markdown / code)</td>
+            <td class="col-us yes">✓</td>
+            <td class="no">コード中心</td>
+            <td class="no">チャットのみ</td>
+            <td class="no">自社形式のみ</td>
+          </tr>
+          <tr>
+            <td class="ja">Claude Pro/Max サブスクで動く</td><td class="en">Runs on your Claude Pro/Max subscription</td>
+            <td class="col-us yes">✓</td>
+            <td class="no">月額別途</td>
+            <td class="yes">✓</td>
+            <td class="no">月額別途</td>
+          </tr>
+          <tr>
+            <td class="ja">データが自分のサーバに残る</td><td class="en">Data stays on your own server</td>
+            <td class="col-us yes">✓</td>
+            <td class="no">クラウド</td>
+            <td class="no">クラウド</td>
+            <td class="no">クラウド</td>
+          </tr>
+          <tr>
+            <td class="ja">追加課金ゼロ</td><td class="en">Zero additional billing</td>
+            <td class="col-us yes">✓</td>
+            <td class="no">$20〜/月</td>
+            <td class="yes">✓</td>
+            <td class="no">$10〜/月</td>
+          </tr>
+          <tr>
+            <td class="ja">OSS で改造可能</td><td class="en">OSS, fully hackable</td>
+            <td class="col-us yes">✓</td>
+            <td class="no">—</td>
+            <td class="no">—</td>
+            <td class="no">—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── Requirements ── -->
+<section class="tight">
+  <div class="container">
+    <p class="section-eyebrow ja">必要なもの</p>
+    <p class="section-eyebrow en">What you need</p>
+    <h2 class="section-title ja">10 年前のノート PC で十分</h2>
+    <h2 class="section-title en">A 10-year-old laptop is enough</h2>
+    <p class="section-lead ja">引き出しの奥に眠ってる古い MacBook / Windows / Linux ノート、Raspberry Pi でも動く。</p>
+    <p class="section-lead en">An old MacBook, Windows laptop, Linux box — even a Raspberry Pi works.</p>
+
+    <div class="req-grid">
+      <div class="req-item">
+        <div class="req-k ja">パソコン</div><div class="req-k en">Computer</div>
+        <div class="req-v ja">Node.js 18+ が動く<br>RAM 1GB / ストレージ 5GB</div>
+        <div class="req-v en">Anything that runs Node.js 18+<br>1GB RAM / 5GB storage</div>
+      </div>
+      <div class="req-item">
+        <div class="req-k ja">サブスク</div><div class="req-k en">Subscription</div>
+        <div class="req-v ja">Claude Pro ($20/月) または<br>Claude Max ($100〜/月)</div>
+        <div class="req-v en">Claude Pro ($20/mo) or<br>Claude Max ($100+/mo)</div>
+      </div>
+      <div class="req-item">
+        <div class="req-k ja">ネット</div><div class="req-k en">Network</div>
+        <div class="req-v ja">家庭の Wi-Fi で OK<br>(Tailscale 経由)</div>
+        <div class="req-v en">Home Wi-Fi is fine<br>(via Tailscale)</div>
+      </div>
+      <div class="req-item">
+        <div class="req-k ja">時間</div><div class="req-k en">Time</div>
+        <div class="req-v ja">セットアップ約 30 分<br>(自分でやる場合)</div>
+        <div class="req-v en">~30 min setup<br>(if you DIY)</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Setup paths ── -->
+<section id="setup">
+  <div class="container">
+    <p class="section-eyebrow ja">セットアップ</p>
+    <p class="section-eyebrow en">Setup</p>
+    <h2 class="section-title ja">2 つの始め方</h2>
+    <h2 class="section-title en">Two ways to get started</h2>
+    <p class="section-lead ja">技術に自信があれば自分で 30 分。面倒なら全部お任せください。</p>
+    <p class="section-lead en">Comfortable with the terminal? DIY in 30 minutes. Otherwise, we'll do it for you.</p>
+
+    <div class="setup-grid">
+      <div class="setup-card">
+        <h3 class="ja">🛠 自分でセットアップ</h3>
+        <h3 class="en">🛠 DIY Setup</h3>
+        <div class="price ja"><strong>無料</strong> · 約 30 分</div>
+        <div class="price en"><strong>Free</strong> · ~30 minutes</div>
+        <ul>
+          <li class="ja">Claude CLI のインストール</li><li class="en">Install Claude CLI</li>
+          <li class="ja">claude-code-remote をワンコマンドで起動</li><li class="en">One-command launch of claude-code-remote</li>
+          <li class="ja">Tailscale でスマホから繋ぐ</li><li class="en">Connect from phone via Tailscale</li>
+          <li class="ja">GitHub OAuth 設定 (ガイドあり)</li><li class="en">GitHub OAuth setup (guided)</li>
+        </ul>
+        <a href="setup-home-pc.ja.md" class="btn btn-ghost ja">ガイドを読む</a>
+        <a href="setup-home-pc.en.md" class="btn btn-ghost en">Read the guide</a>
+      </div>
+
+      <div class="setup-card featured" data-badge="EASY">
+        <h3 class="ja">🤝 セットアップ代行</h3>
+        <h3 class="en">🤝 Done-for-you Setup</h3>
+        <div class="price ja"><strong>¥39,800</strong> (税込) · 1 回完結</div>
+        <div class="price en"><strong>$299</strong> · One-time</div>
+        <ul>
+          <li class="ja">Zoom 30〜60 分でセットアップ完了</li><li class="en">30-60 min Zoom — done by the end</li>
+          <li class="ja">あなたのお手元 PC / VPS にインストール</li><li class="en">Installed on your PC / VPS</li>
+          <li class="ja">スマホからの動作確認まで一緒に</li><li class="en">We walk through phone access together</li>
+          <li class="ja">30 日メールサポート付き</li><li class="en">30-day email support included</li>
+        </ul>
+        <a href="mailto:ishiguro@saltybullet.com?subject=Claude%20Code%20Remote%20%E3%82%BB%E3%83%83%E3%83%88%E3%82%A2%E3%83%83%E3%83%97%E4%BB%A3%E8%A1%8C%E7%94%B3%E8%BE%BC&body=%E3%81%8A%E5%90%8D%E5%89%8D%3A%0A%E3%81%94%E5%B8%8C%E6%9C%9B%E6%97%A5%E6%99%82%20(%E7%AC%AC1%E5%B8%8C%E6%9C%9B)%3A%0A%E3%81%94%E5%B8%8C%E6%9C%9B%E6%97%A5%E6%99%82%20(%E7%AC%AC2%E5%B8%8C%E6%9C%9B)%3A%0A%E3%82%A4%E3%83%B3%E3%82%B9%E3%83%88%E3%83%BC%E3%83%AB%E5%85%88%3A%20%E2%98%90%E8%87%AA%E5%AE%85PC%20%E2%98%90VPS%20%E2%98%90%E6%9C%AA%E5%AE%9A%0AClaude%E3%82%B5%E3%83%96%E3%82%B9%E3%82%AF%3A%20%E2%98%90Pro%20%E2%98%90Max%20%E2%98%90%E6%9C%AA%E5%A5%91%E7%B4%84" class="btn btn-primary ja">メールで申し込む</a>
+        <a href="mailto:ishiguro@saltybullet.com?subject=Claude%20Code%20Remote%20Setup%20Service&body=Name%3A%0APreferred%20time%20(1st)%3A%0APreferred%20time%20(2nd)%3A%0AInstall%20target%3A%20%E2%98%90Home%20PC%20%E2%98%90VPS%20%E2%98%90Undecided%0AClaude%20subscription%3A%20%E2%98%90Pro%20%E2%98%90Max%20%E2%98%90Not%20yet" class="btn btn-primary en">Apply by email</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── VPS option ── -->
+<section class="tight">
+  <div class="container">
+    <p class="section-eyebrow ja">パソコンがない場合</p>
+    <p class="section-eyebrow en">No spare computer?</p>
+    <h2 class="section-title ja">VPS を月額数百円で借りる</h2>
+    <h2 class="section-title en">Rent a VPS for a few dollars a month</h2>
+    <p class="section-lead ja">古いパソコンが手元にないなら、有名どころの VPS を月数百円〜で借りる方法も。</p>
+    <p class="section-lead en">No old computer? Rent a cheap VPS from a major provider.</p>
+
+    <div class="vps-list">
+      <div class="vps-card">
+        <h4>AWS Lightsail</h4>
+        <div class="vps-price">$3.50〜 / mo</div>
+        <p class="ja">世界標準。Tokyo リージョン有。AWS 既存利用なら統合しやすい。</p>
+        <p class="en">Global standard, Tokyo region available. Best if you already use AWS.</p>
+      </div>
+      <div class="vps-card">
+        <h4 class="ja">さくらVPS</h4><h4 class="en">Sakura VPS</h4>
+        <div class="vps-price">¥600〜 / mo</div>
+        <p class="ja">国内最大手。領収書発行・法人契約対応。日本語サポート。</p>
+        <p class="en">Japan's largest provider. Invoicing and business contracts supported.</p>
+      </div>
+      <div class="vps-card">
+        <h4>Vultr</h4>
+        <div class="vps-price">$5〜 / mo</div>
+        <p class="ja">海外。UI がシンプル、東京リージョン有。クレカ即時開設。</p>
+        <p class="en">Simple UI, Tokyo region, instant credit-card signup.</p>
+      </div>
+    </div>
+
+    <p style="text-align:center; margin-top:32px;">
+      <a href="setup-vps.ja.md" class="btn btn-ghost ja">VPS セットアップガイド →</a>
+      <a href="setup-vps.en.md" class="btn btn-ghost en">VPS setup guide →</a>
+    </p>
+  </div>
+</section>
+
+<!-- ── Final CTA ── -->
+<section class="final-cta">
+  <h2 class="ja">スマホから AI に手を動かしてもらう生活を、今日から</h2>
+  <h2 class="en">Start delegating work to AI from your phone — today</h2>
+  <p class="ja">無料・OSS・サブスク内完結。週末のセットアップで、来週月曜から運用できる。</p>
+  <p class="en">Free, OSS, subscription-only billing. Set up over a weekend, use it from Monday on.</p>
+  <div class="hero-cta">
+    <a href="#setup" class="btn btn-primary">
+      <span class="ja">セットアップを見る</span><span class="en">See setup</span>
+    </a>
+    <a href="https://github.com/KoichiIshiguro/claude-code-remote" target="_blank" rel="noopener" class="btn btn-ghost">
+      <span class="ja">GitHub で見る</span><span class="en">View on GitHub</span>
+    </a>
+  </div>
+</section>
+
+<footer>
+  <p>
+    <span class="ja">© 2026 Claude Code Remote · MIT License · 「claude」は Anthropic の商標です</span>
+    <span class="en">© 2026 Claude Code Remote · MIT License · "Claude" is a trademark of Anthropic</span>
+  </p>
+  <p style="margin-top:6px;">
+    <a href="https://github.com/KoichiIshiguro/claude-code-remote" target="_blank" rel="noopener">GitHub</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/KoichiIshiguro/claude-code-remote/blob/main/README.md" target="_blank" rel="noopener">README</a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/KoichiIshiguro/claude-code-remote/issues" target="_blank" rel="noopener">Issues</a>
+  </p>
+</footer>
+
+<script>
+  // Language switcher with persistence.
+  const STORAGE = 'ccr-lp-lang';
+  const initial = localStorage.getItem(STORAGE) || (navigator.language.startsWith('ja') ? 'ja' : 'ja');
+  setLang(initial);
+
+  document.querySelectorAll('.lang-switch button').forEach(btn => {
+    btn.addEventListener('click', () => setLang(btn.dataset.lang));
+  });
+
+  function setLang(lang) {
+    document.body.classList.remove('lang-ja', 'lang-en');
+    document.body.classList.add('lang-' + lang);
+    document.documentElement.lang = lang;
+    localStorage.setItem(STORAGE, lang);
+    document.querySelectorAll('.lang-switch button').forEach(b => {
+      b.classList.toggle('active', b.dataset.lang === lang);
+    });
+  }
+</script>
+
+</body>
+</html>
