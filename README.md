@@ -51,31 +51,7 @@
 
 ---
 
-## 🚀 Quick Start — one script, then a browser
-
-### macOS / Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.sh | bash
-```
-
-### Windows 10/11
-
-Download [`install.bat`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.bat) + [`install.ps1`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.ps1) into the same folder, then double-click `install.bat`.
-
-The installer will:
-
-1. Install **Node.js, git, Claude CLI, Tailscale** (only the missing ones)
-2. Clone this repo into `~/claude-code-remote` and run `npm install`
-3. Start the server in the background
-4. Open your browser to `http://localhost:4000/setup`
-
-In the browser you pick a username, password, and working folder — then you're done. Sign in on your phone via the Tailscale IP it shows you.
-
-You'll still need to sign in to **Claude** (`claude` then `/login` in the TUI) and **Tailscale** (their app) one time each — those are external services that require their own browser auth.
-
-<details>
-<summary><strong>Prefer manual setup?</strong> (click to expand)</summary>
+## 🚀 Quick Start
 
 ### 1. Install prerequisites
 
@@ -107,8 +83,6 @@ If you want the server to come up automatically when the machine restarts, wire 
 ### (Optional) Public HTTPS
 
 If you want to expose this on the open internet instead of Tailscale, **don't** — but if you must, terminate TLS in front (Apache / Caddy / nginx), add HTTP basic-auth at the proxy on top of the built-in ID/PW, and seriously consider switching `BASE_DIR` to a sandboxed subtree.
-
-</details>
 
 ---
 

@@ -51,31 +51,7 @@
 
 ---
 
-## 🚀 クイックスタート — スクリプト 1 本、その後はブラウザだけ
-
-### macOS / Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.sh | bash
-```
-
-### Windows 10/11
-
-[`install.bat`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.bat) と [`install.ps1`](https://raw.githubusercontent.com/KoichiIshiguro/claude-code-remote/main/install.ps1) を同じフォルダにダウンロードして、`install.bat` をダブルクリック。
-
-インストーラがやること：
-
-1. **Node.js / git / Claude CLI / Tailscale** を必要なものだけインストール
-2. このリポジトリを `~/claude-code-remote` にクローンし `npm install`
-3. サーバーをバックグラウンド起動
-4. ブラウザで `http://localhost:4000/setup` を開く
-
-ブラウザ画面でユーザー名・パスワード・作業フォルダを設定すれば完了。表示される Tailscale IP をスマホからアクセスして使えます。
-
-ただし **Claude** （`claude` を叩き TUI 内で `/login`）と **Tailscale**（公式アプリ）には**初回 1 回ずつブラウザログインが必要**です。これは各社のサインインフロー上、自動化不可能な部分です。
-
-<details>
-<summary><strong>手動セットアップ派の方はこちら</strong>（クリックで展開）</summary>
+## 🚀 クイックスタート
 
 ### 1. 前提ソフト
 
@@ -107,8 +83,6 @@ PC の電源 ON で自動起動させたい場合は、launchd（macOS）、syst
 ### （任意）公開 HTTPS 化
 
 Tailscale ではなくインターネット公開したい場合は **やめておく**のが安全ですが、どうしても必要なら：リバプロ（Apache / Caddy / nginx）で TLS 終端 → リバプロ側で HTTP basic-auth を本サーバの ID/PW の前段に追加 → `BASE_DIR` をサンドボックス的なサブツリーに限定。
-
-</details>
 
 ---
 
