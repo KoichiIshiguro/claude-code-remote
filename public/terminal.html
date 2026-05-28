@@ -404,12 +404,13 @@
   /* Floating "jump to latest" button — shown while the user has scrolled up
      and we're suppressing auto-follow on new stream output. */
   .scroll-latest-btn {
-    position: absolute; right: 16px; bottom: 90px;
+    position: absolute; left: 50%; top: 0;
+    transform: translate(-50%, -50%);
     background: var(--accent); color: var(--bg); border: none;
-    border-radius: 999px; padding: 8px 14px;
+    border-radius: 999px; padding: 7px 14px;
     font-size: 13px; font-weight: 600; cursor: pointer;
     box-shadow: 0 4px 12px rgba(0,0,0,.35);
-    display: none; z-index: 90;
+    display: none; z-index: 90; white-space: nowrap;
   }
   .scroll-latest-btn.on { display: inline-flex; align-items: center; gap: 4px; }
   .scroll-latest-btn:hover { opacity: .9; }
@@ -590,11 +591,11 @@
   </div>
 
   <div class="chat-messages" id="messages"></div>
-  <button class="scroll-latest-btn" id="scrollLatestBtn" aria-label="最新の出力へ">
-    ↓ 最新へ<span class="count" id="scrollLatestCount" hidden></span>
-  </button>
 
   <div class="input-area">
+    <button class="scroll-latest-btn" id="scrollLatestBtn" aria-label="最新の出力へ">
+      ↓ 最新へ<span class="count" id="scrollLatestCount" hidden></span>
+    </button>
     <div class="queue-list" id="queueList"></div>
     <div class="image-previews" id="imagePreviews"></div>
     <div class="status-bar">
