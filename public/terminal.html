@@ -463,6 +463,12 @@
   .q-remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
   .q-remove:hover { color: var(--red); }
   .status-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; min-height: 28px; }
+  /* Small action pill in the status bar (e.g. /compact). */
+  .pill-btn { font-size: 11px; color: var(--text-muted); white-space: nowrap;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 3px 9px; cursor: pointer; line-height: 1.4; }
+  .pill-btn:hover { color: var(--text); border-color: var(--accent); }
+  .pill-btn:disabled { opacity: .4; cursor: default; }
   /* Model/effort pill — pushed to the right edge of the status bar, ctx-meter
      follows it. */
   .model-pill { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap;
@@ -599,6 +605,7 @@
     <div class="status-bar">
       <button class="btn-stop" id="cancelBtn">■ Stop</button>
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
+      <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
       <button class="model-pill" id="modelPill" title="モデル / 工数 (タップで設定)">既定</button>
       <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
@@ -1228,6 +1235,7 @@ function setStreamingUI(active) {
   document.getElementById('topLoader').classList.toggle('active', active);
   document.getElementById('workingChip').classList.toggle('on', active);
   document.getElementById('cancelBtn').classList.toggle('on', active || promptQueue.length > 0);
+  document.getElementById('compactBtn').disabled = active;
   document.getElementById('messages').classList.toggle('streaming-active', active);
   if (active) startDotAnim(); else if (!promptQueue.length) stopDotAnim();
   if (!active && !promptQueue.length) {
@@ -1365,6 +1373,15 @@ async function sendPrompt() {
 function dispatchPrompt(text, paths) { wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths}); }
 
 document.getElementById('cancelBtn').addEventListener('click', () => { wsSend({type:'cancel',sessionId}); promptQueue=[]; renderQueue(); });
+
+// /compact — summarize the conversation to shrink context. Routed through the
+// normal send_prompt path (the server treats it as a slash command, same as
+// auto-compact). No user bubble: it's a maintenance action, not a message.
+document.getElementById('compactBtn').addEventListener('click', () => {
+  if (isStreaming) return; // a turn is already running; let it finish
+  if (!sessionId) return;
+  dispatchPrompt('/compact', []);
+});
 
 function renderQueue() {
   const list = document.getElementById('queueList');
