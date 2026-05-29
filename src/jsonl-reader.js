@@ -143,6 +143,35 @@ function firstUserPreview(sessionId, directory, maxBytes = 65536) {
   }
 }
 
+// Tail-scan the last `maxBytes` of a jsonl and return the most recent
+// `ai-title` event's title. Claude CLI auto-generates these for every session
+// (TUI and `-p` alike) and refreshes them as the conversation evolves, so this
+// gives us a free, always-current display name for sidebar rows.
+function getLatestAiTitle(sessionId, directory, maxBytes = 65536) {
+  const p = jsonlPathFor(sessionId, directory);
+  let fd;
+  try {
+    const stat = fs.statSync(p);
+    if (stat.size === 0) return '';
+    const readSize = Math.min(stat.size, maxBytes);
+    const buf = Buffer.alloc(readSize);
+    fd = fs.openSync(p, 'r');
+    fs.readSync(fd, buf, 0, readSize, stat.size - readSize);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const t = lines[i].trim();
+      if (!t) continue;
+      let e; try { e = JSON.parse(t); } catch { continue; }
+      if (e.type === 'ai-title' && e.aiTitle) return String(e.aiTitle);
+    }
+    return '';
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch {}
+  }
+}
+
 // Cheap tail-scan: read the last `maxBytes` of a jsonl, walk lines backward,
 // return the input-token total from the most recent assistant event with usage.
 // Used by shouldAutoCompact() to avoid a full re-parse before every prompt.
@@ -327,7 +356,7 @@ function appendJsonlLine(sessionId, directory, entry) {
 
 module.exports = {
   encodedCwd, jsonlDirFor, jsonlPathFor,
-  listJsonlsForProject, firstUserPreview, ensurePickerVisible,
+  listJsonlsForProject, firstUserPreview, getLatestAiTitle, ensurePickerVisible,
   applyEventToBlocks, readHistory, getLastTokens,
   readTailEntry, appendJsonlLine,
   CLAUDE_PROJECTS_DIR,

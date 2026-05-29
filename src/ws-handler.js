@@ -71,6 +71,7 @@ function sessionToLegacyShape(s, projectPath) {
     streaming: procTracker.isRunning(s.sessionId),
     allowedTools: null,
     lastTokens: null,
+    aiTitle: jsonlReader.getLatestAiTitle(s.sessionId, projectPath),
     preview: jsonlReader.firstUserPreview(s.sessionId, projectPath),
   };
 }
@@ -166,6 +167,7 @@ function handleConnection(ws /*, req */) {
           sessionId: s.sessionId,
           mtime: s.mtime,
           archived: archived.has(s.sessionId),
+          aiTitle: jsonlReader.getLatestAiTitle(s.sessionId, projectPath),
           preview: jsonlReader.firstUserPreview(s.sessionId, projectPath),
         }));
         send(ws, { type: 'archived_list', projectPath, sessions });

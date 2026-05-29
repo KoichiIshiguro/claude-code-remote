@@ -547,6 +547,13 @@
     .hdr-left-btn, .hdr-right-btn { display: none; }
     /* Give input area bottom space so it's above safe area */
     .input-area { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+    /* Bump sidebar text ~1.5× — desktop sizes are too small for thumbs */
+    .side .proj-group-head { font-size: 18px; }
+    .side .sess-item       { font-size: 18px; padding: 10px 12px 10px 28px; }
+    .side .sess-empty      { font-size: 16px; }
+    .side .proj-chevron    { font-size: 14px; width: 14px; }
+    .side .restore-row .rr-prev { font-size: 18px; }
+    .side .restore-row .rr-meta { font-size: 14px; }
   }
 
   /* Desktop: hide bottom nav, show sidebar toggle buttons */
@@ -1721,7 +1728,9 @@ function rerenderProjList() {
     } else {
       for (const s of sessions) {
         const isActive = s.id === sessionId;
-        const label = (s.preview && s.preview.trim()) ? s.preview : 'New session';
+        const label = (s.aiTitle && s.aiTitle.trim())
+          ? s.aiTitle
+          : ((s.preview && s.preview.trim()) ? s.preview : 'New session');
         const item = document.createElement('div');
         item.className = 'sess-item'
           + (s.streaming ? ' running' : '')
@@ -1979,7 +1988,9 @@ function renderArchivedList(projectPath, sessions) {
     for (const s of items) {
       const row = document.createElement('div');
       row.className = 'restore-row';
-      const prev = (s.preview && s.preview.trim()) ? s.preview : '(no preview)';
+      const prev = (s.aiTitle && s.aiTitle.trim())
+        ? s.aiTitle
+        : ((s.preview && s.preview.trim()) ? s.preview : '(no preview)');
       row.innerHTML = `<div class="rr-prev">${escHtml(prev)}</div>` +
                       `<div class="rr-meta">${new Date(s.mtime).toISOString().slice(0,16).replace('T',' ')} · ${s.sessionId.slice(0,8)}</div>`;
       row.addEventListener('click', () => {
