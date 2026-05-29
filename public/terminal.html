@@ -965,7 +965,8 @@ let fbCurrentDir = '', fbSessionRoot = '';
 // File-manager state
 let fbTab = 'sandbox';            // 'sandbox' | 'all'
 let fbProjects = [];             // [{name, path}] — sandbox roots
-let fbAccessRoot = null;         // accessRoot for the '全体' tab (null = full disk → '/')
+let fbAccessRoot = null;         // accessRoot for the '全体' tab (null = full disk → home)
+let fbHome = '';                 // home dir — the '全体' tab's starting point when no accessRoot
 let fbSelectMode = false;        // multi-select toggle
 let fbSelection = new Set();     // selected absolute paths
 const FB_ROOTS = ' roots'; // sentinel: sandbox tab top level = list project roots
@@ -2240,6 +2241,7 @@ async function fbEnsureMeta() {
     const d = await r.json();
     fbProjects = (d.projects || []).map(p => ({ name: p.name, path: p.path }));
     fbAccessRoot = d.base || null;
+    if (d.home) fbHome = d.home;
   } catch { /* keep stale */ }
 }
 
@@ -2360,7 +2362,7 @@ async function fbSwitchTab(tab) {
     if (fbSessionRoot && fbInSandbox(fbSessionRoot)) loadDir(fbSessionRoot);
     else loadRootsView();
   } else {
-    loadDir(fbAccessRoot || '/');
+    loadDir(fbAccessRoot || fbHome || '/');
   }
 }
 
@@ -2611,8 +2613,8 @@ function renderBread(dir) {
     addSep(); addSeg(proj.name, proj.path);
     appendTail(proj.path, dir);
   } else {
-    const base = fbAccessRoot || '/';
-    addSeg(fbAccessRoot ? '🌐' : '/', base);
+    const base = fbAccessRoot || fbHome || '/';
+    addSeg(fbAccessRoot ? '🌐' : (fbHome ? '🏠' : '/'), base);
     appendTail(base, dir);
   }
 }
