@@ -8,6 +8,7 @@ const sm = require('./session-manager');
 const procTracker = require('./proc-tracker');
 const projectsStore = require('./projects-store');
 const archiveStore = require('./archive-store');
+const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
 const cloneJobs = require('./clone-jobs');
 
@@ -73,6 +74,7 @@ function sessionToLegacyShape(s, projectPath) {
     lastTokens: null,
     aiTitle: jsonlReader.getLatestAiTitle(s.sessionId, projectPath),
     preview: jsonlReader.firstUserPreview(s.sessionId, projectPath),
+    customName: nameStore.get(s.sessionId),
   };
 }
 
@@ -228,6 +230,15 @@ function handleConnection(ws /*, req */) {
         break;
       }
 
+      case 'rename_session': {
+        const sid = msg.sessionId;
+        if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
+        nameStore.set(sid, msg.name);
+        send(ws, { type: 'rename_ok', sessionId: sid, name: nameStore.get(sid) });
+        send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
+        break;
+      }
+
       case 'restore_session': {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
@@ -250,6 +261,7 @@ function handleConnection(ws /*, req */) {
         const dir = msg.directory || findDirectoryForSessionId(sid);
         if (!sid || !dir) { send(ws, { type: 'error', message: 'sessionId and directory required' }); return; }
         sm.purgeSession(sid, dir);
+        nameStore.remove(sid);
         send(ws, { type: 'purge_ok', sessionId: sid });
         send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
         break;

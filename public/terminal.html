@@ -212,11 +212,11 @@
   .sess-item { position: relative; }
   .sess-menu-btn {
     background: transparent; border: none; color: var(--text-muted);
-    width: 20px; height: 20px; font-size: 14px; cursor: pointer;
-    border-radius: 3px; flex-shrink: 0; opacity: 0;
+    width: 24px; height: 24px; font-size: 16px; cursor: pointer;
+    border-radius: 3px; flex-shrink: 0; opacity: .55;
     display: flex; align-items: center; justify-content: center; padding: 0;
   }
-  .sess-item:hover .sess-menu-btn { opacity: .8; }
+  .sess-item:hover .sess-menu-btn { opacity: .85; }
   .sess-menu-btn:hover { background: var(--surface2); opacity: 1 !important; }
   .sess-menu-popup {
     position: absolute; right: 6px; top: 100%; margin-top: 2px;
@@ -547,13 +547,6 @@
     .hdr-left-btn, .hdr-right-btn { display: none; }
     /* Give input area bottom space so it's above safe area */
     .input-area { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
-    /* Bump sidebar text ~1.5× — desktop sizes are too small for thumbs */
-    .side .proj-group-head { font-size: 18px; }
-    .side .sess-item       { font-size: 18px; padding: 10px 12px 10px 28px; }
-    .side .sess-empty      { font-size: 16px; }
-    .side .proj-chevron    { font-size: 14px; width: 14px; }
-    .side .restore-row .rr-prev { font-size: 18px; }
-    .side .restore-row .rr-meta { font-size: 14px; }
   }
 
   /* Desktop: hide bottom nav, show sidebar toggle buttons */
@@ -1734,9 +1727,11 @@ function rerenderProjList() {
     } else {
       for (const s of sessions) {
         const isActive = s.id === sessionId;
-        const label = (s.aiTitle && s.aiTitle.trim())
-          ? s.aiTitle
-          : ((s.preview && s.preview.trim()) ? s.preview : 'New session');
+        const label = (s.customName && s.customName.trim())
+          ? s.customName
+          : ((s.aiTitle && s.aiTitle.trim())
+            ? s.aiTitle
+            : ((s.preview && s.preview.trim()) ? s.preview : 'New session'));
         const item = document.createElement('div');
         item.className = 'sess-item'
           + (s.streaming ? ' running' : '')
@@ -1939,6 +1934,18 @@ function toggleSessMenu(itemEl, s) {
   const pop = document.createElement('div');
   pop.className = 'sess-menu-popup on';
   pop._for = s.id;
+  const rename = document.createElement('span');
+  rename.className = 'smi'; rename.textContent = '名前を変更';
+  rename.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    closeAllSessMenus();
+    const cur = (s.customName && s.customName.trim()) ? s.customName
+      : ((s.aiTitle && s.aiTitle.trim()) ? s.aiTitle
+        : ((s.preview && s.preview.trim()) ? s.preview : ''));
+    const next = prompt('セッション名（空欄で自動タイトルに戻す）', cur);
+    if (next === null) return;   // cancelled
+    wsSend({ type: 'rename_session', sessionId: s.id, name: next });
+  });
   const archive = document.createElement('span');
   archive.className = 'smi'; archive.textContent = 'アーカイブ (一覧から隠す)';
   archive.addEventListener('click', (ev) => {
@@ -1954,7 +1961,7 @@ function toggleSessMenu(itemEl, s) {
     wsSend({ type: 'purge_session', sessionId: s.id, directory: s.directory });
     closeAllSessMenus();
   });
-  pop.appendChild(archive); pop.appendChild(purge);
+  pop.appendChild(rename); pop.appendChild(archive); pop.appendChild(purge);
   itemEl.appendChild(pop);
   _sessMenuOpen = pop;
 }
