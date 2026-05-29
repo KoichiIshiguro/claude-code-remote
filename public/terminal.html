@@ -391,6 +391,59 @@
     padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 13px;
   }
 
+  /* File-manager: tabs (sandbox vs full disk) */
+  .fb-tabs {
+    display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .fb-tab {
+    flex: 1; text-align: center; padding: 8px 6px; cursor: pointer;
+    font-size: 12px; color: var(--text-muted); border-bottom: 2px solid transparent;
+    user-select: none;
+  }
+  .fb-tab:hover { color: var(--text); }
+  .fb-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* File-manager: toolbar (select toggle, new folder) */
+  .fb-toolbar {
+    display: flex; align-items: center; gap: 6px; padding: 5px 10px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .fb-tool-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+    padding: 4px 9px; border-radius: 4px; cursor: pointer; font-size: 11px; line-height: 1.3;
+  }
+  .fb-tool-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .fb-tool-btn.on { color: var(--accent); border-color: var(--accent); background: rgba(255,154,60,.08); }
+  .fb-tool-btn:disabled { opacity: .35; cursor: default; }
+  .fb-tool-spacer { flex: 1; }
+  .fb-tool-count { font-size: 11px; color: var(--text-muted); }
+
+  /* File-manager: per-row checkbox + selected state */
+  .fi-check {
+    width: 16px; height: 16px; flex-shrink: 0; display: none;
+    align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 4px; font-size: 11px; color: var(--bg);
+  }
+  body.fb-selecting .fi-check { display: flex; }
+  .fb-item.selected { background: var(--accent-dim); }
+  .fb-item.selected .fi-check { background: var(--accent); border-color: var(--accent); }
+
+  /* File-manager: bottom action bar (appears when ≥1 selected) */
+  .fb-actionbar {
+    display: none; flex-shrink: 0; gap: 6px; padding: 8px 10px;
+    border-top: 1px solid var(--border); background: var(--surface);
+    flex-wrap: wrap;
+  }
+  body.fb-selecting .fb-actionbar.has-sel { display: flex; }
+  .fb-act {
+    flex: 1; min-width: 64px; padding: 9px 8px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; border: 1px solid var(--border); background: var(--surface2);
+    color: var(--text); text-align: center;
+  }
+  .fb-act:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .fb-act:disabled { opacity: .35; cursor: default; }
+  .fb-act.danger:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
+
   /* ── Main area ── */
   .chat-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; min-width: 0; }
 
@@ -654,11 +707,43 @@
       <button class="side-close" id="sideR-close" aria-label="Close">×</button>
     </div>
   </div>
+  <div class="fb-tabs" id="fbTabs">
+    <div class="fb-tab on" data-tab="sandbox" id="fbTabSandbox">サンドボックス</div>
+    <div class="fb-tab" data-tab="all" id="fbTabAll">全体</div>
+  </div>
+  <div class="fb-toolbar" id="fbToolbar">
+    <button class="fb-tool-btn" id="fbSelectToggle" title="複数選択">☑︎ 選択</button>
+    <button class="fb-tool-btn" id="fbNewFolder" title="新規フォルダ">📁+ 新規</button>
+    <span class="fb-tool-spacer"></span>
+    <span class="fb-tool-count" id="fbSelCount"></span>
+  </div>
   <div class="fb-bread" id="fbBread"></div>
   <div id="fbContent" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
     <div class="fb-loading">Loading…</div>
   </div>
+  <div class="fb-actionbar" id="fbActionBar">
+    <button class="fb-act" id="fbActMove">移動</button>
+    <button class="fb-act" id="fbActCopy">コピー</button>
+    <button class="fb-act" id="fbActRename">名前変更</button>
+    <button class="fb-act danger" id="fbActDelete">削除</button>
+  </div>
 </aside>
+
+<!-- ── File-manager destination picker (move/copy → sandbox only) ── -->
+<div class="modal-overlay" id="fmDestOverlay">
+  <div class="perm-modal" style="max-width:600px;">
+    <div class="perm-hdr"><h3 id="fmDestTitle">移動先を選択</h3><button class="side-close" id="fmDestClose">×</button></div>
+    <div class="perm-body" style="padding:0;display:flex;flex-direction:column;">
+      <div class="fp-bread" id="fmDestBread"></div>
+      <div class="fp-list" id="fmDestList"><div class="fp-empty">読み込み中…</div></div>
+      <div id="fmDestError" style="color:var(--red);font-size:12px;min-height:14px;padding:6px 12px 0;"></div>
+    </div>
+    <div class="perm-ftr">
+      <button class="btn-ghost" id="fmDestCancel">Cancel</button>
+      <button class="btn-save" id="fmDestSubmit">ここに入れる</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── Summary Modal ── -->
 <div class="modal-overlay" id="summaryOverlay">
@@ -877,6 +962,19 @@ let currentAssistantEl = null, currentTextEl = null, streamingText = '';
 let currentToolEls = {}, promptQueue = [];
 let allowedTools = null;
 let fbCurrentDir = '', fbSessionRoot = '';
+// File-manager state
+let fbTab = 'sandbox';            // 'sandbox' | 'all'
+let fbProjects = [];             // [{name, path}] — sandbox roots
+let fbAccessRoot = null;         // accessRoot for the '全体' tab (null = full disk → '/')
+let fbSelectMode = false;        // multi-select toggle
+let fbSelection = new Set();     // selected absolute paths
+const FB_ROOTS = ' roots'; // sentinel: sandbox tab top level = list project roots
+
+// Is an absolute path inside any registered project (the writable sandbox)?
+function fbInSandbox(p) {
+  if (!p) return false;
+  return fbProjects.some(pr => p === pr.path || p.startsWith(pr.path + '/'));
+}
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 // Browser WebSocket API cannot expose the HTTP status code that the server
@@ -955,7 +1053,8 @@ function handleMessage(msg) {
       }
       fbSessionRoot = dir;
       fbCurrentDir = dir;
-      if (dir) loadDir(dir);
+      fbTab = 'sandbox';
+      if (dir) fbEnsureMeta().then(() => loadDir(dir));
       scrollToBottomNow();
       break;
     }
@@ -1602,6 +1701,58 @@ function toggleSide(id) {
 document.getElementById('leftBtn').addEventListener('click', () => { refreshProjects(); toggleSide('sideL'); });
 document.getElementById('rightBtn').addEventListener('click', () => toggleSide('sideR'));
 document.getElementById('fbRefresh').addEventListener('click', () => { if (fbCurrentDir) loadDir(fbCurrentDir); });
+
+// ── File-manager: tabs / toolbar / actions ────────────────────────────────
+document.getElementById('fbTabSandbox').addEventListener('click', () => fbSwitchTab('sandbox'));
+document.getElementById('fbTabAll').addEventListener('click', () => fbSwitchTab('all'));
+document.getElementById('fbSelectToggle').addEventListener('click', () => fbSetSelectMode(!fbSelectMode));
+
+document.getElementById('fbNewFolder').addEventListener('click', async () => {
+  if (!fbInSandbox(fbCurrentDir)) { alert('サンドボックス内のフォルダでのみ作成できます'); return; }
+  const name = prompt('新規フォルダ名');
+  if (!name) return;
+  const r = await fetch('/api/fs/mkdir', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent: fbCurrentDir, name }),
+  });
+  const d = await r.json();
+  if (!r.ok) { alert('作成失敗: ' + (d.error || r.status)); return; }
+  loadDir(fbCurrentDir);
+});
+
+document.getElementById('fbActDelete').addEventListener('click', async () => {
+  const paths = [...fbSelection];
+  if (!paths.length) return;
+  if (!confirm(`${paths.length} 件を完全に削除します。元に戻せません。`)) return;
+  const r = await fetch('/api/fs/delete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  });
+  const d = await r.json();
+  if (!r.ok) { alert('削除失敗: ' + (d.error || r.status)); return; }
+  fbClearSelection();
+  loadDir(fbCurrentDir);
+});
+
+document.getElementById('fbActRename').addEventListener('click', async () => {
+  const paths = [...fbSelection];
+  if (paths.length !== 1) return;
+  const cur = paths[0].split('/').pop();
+  const newName = prompt('新しい名前', cur);
+  if (!newName || newName === cur) return;
+  const r = await fetch('/api/fs/rename', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: paths[0], newName }),
+  });
+  const d = await r.json();
+  if (!r.ok) { alert('変更失敗: ' + (d.error || r.status)); return; }
+  fbClearSelection();
+  loadDir(fbCurrentDir);
+});
+
+document.getElementById('fbActMove').addEventListener('click', () => openDestPicker('move'));
+document.getElementById('fbActCopy').addEventListener('click', () => openDestPicker('copy'));
+
 document.getElementById('sideL-close').addEventListener('click', () => closeSide('sideL'));
 document.getElementById('sideR-close').addEventListener('click', () => closeSide('sideR'));
 backdrop.addEventListener('click', () => { closeSide('sideL'); closeSide('sideR'); });
@@ -2082,7 +2233,45 @@ function pickAdjacentSession(removedId) {
 }
 
 // ── File browser ──────────────────────────────────────────────────────────────
+// Fetch projects + accessRoot once (used by both FM tabs and the dest picker).
+async function fbEnsureMeta() {
+  try {
+    const r = await fetch('/api/projects');
+    const d = await r.json();
+    fbProjects = (d.projects || []).map(p => ({ name: p.name, path: p.path }));
+    fbAccessRoot = d.base || null;
+  } catch { /* keep stale */ }
+}
+
+// Sandbox tab top level: a virtual listing of registered project roots.
+async function loadRootsView() {
+  await fbEnsureMeta();
+  if (!maybeDiscardEdits()) return;
+  _fvEditing = null; _fvDirty = false;
+  fbCurrentDir = FB_ROOTS;
+  renderBread(FB_ROOTS);
+  const content = document.getElementById('fbContent');
+  const list = document.createElement('div');
+  list.className = 'fb-list'; list.style.flex = '1'; list.style.overflowY = 'auto';
+  if (!fbProjects.length) {
+    list.innerHTML = '<div class="fb-empty">プロジェクトが未登録です</div>';
+  } else {
+    for (const p of fbProjects) {
+      const el = document.createElement('div');
+      el.className = 'fb-item';
+      el.innerHTML = `<span class="fi-icon">📦</span><span class="fi-name">${escHtml(p.name)}</span>`;
+      el.title = p.path;
+      el.addEventListener('click', () => { if (!fbSelectMode) loadDir(p.path); });
+      el.addEventListener('dblclick', () => loadDir(p.path));
+      list.appendChild(el);
+    }
+  }
+  content.innerHTML = ''; content.appendChild(list);
+  fbSyncActionBar();
+}
+
 async function loadDir(dir) {
+  if (dir === FB_ROOTS) return loadRootsView();
   if (!maybeDiscardEdits()) return;
   _fvEditing = null; _fvDirty = false;
   fbCurrentDir = dir;
@@ -2096,19 +2285,168 @@ async function loadDir(dir) {
     const list = document.createElement('div'); list.className = 'fb-list'; list.style.flex = '1'; list.style.overflowY = 'auto';
     if (!data.items.length) { list.innerHTML = '<div class="fb-empty">Empty directory</div>'; }
     for (const item of data.items) {
-      const el = document.createElement('div');
-      el.className = 'fb-item' + (item.hidden ? ' fi-hidden' : '');
-      const icon = item.type === 'dir' ? '📁' : getFileIcon(item.name);
-      el.innerHTML = `<span class="fi-icon">${icon}</span><span class="fi-name">${escHtml(item.name)}</span>`;
       const fullPath = dir.replace(/\/+$/, '') + '/' + item.name;
-      if (item.type === 'dir') el.addEventListener('dblclick', () => loadDir(fullPath));
-      else el.addEventListener('dblclick', () => viewFile(fullPath, item.name));
-      el.title = `${item.type === 'dir' ? 'Folder' : 'File'}: ${item.name}\nDouble-click to ${item.type === 'dir' ? 'open' : 'view'}`;
+      const el = document.createElement('div');
+      el.className = 'fb-item' + (item.hidden ? ' fi-hidden' : '') + (fbSelection.has(fullPath) ? ' selected' : '');
+      el.dataset.path = fullPath;
+      const icon = item.type === 'dir' ? '📁' : getFileIcon(item.name);
+      el.innerHTML = `<span class="fi-check">✓</span><span class="fi-icon">${icon}</span><span class="fi-name">${escHtml(item.name)}</span>`;
+      el.addEventListener('click', () => {
+        if (fbSelectMode) { fbToggleSelect(fullPath, el); return; }
+        if (item.type === 'dir') loadDir(fullPath); else viewFile(fullPath, item.name);
+      });
+      // Double-click always navigates/opens, even mid-selection.
+      el.addEventListener('dblclick', () => {
+        if (item.type === 'dir') loadDir(fullPath); else viewFile(fullPath, item.name);
+      });
+      el.title = item.name;
       list.appendChild(el);
     }
     content.innerHTML = ''; content.appendChild(list);
+    fbSyncActionBar();
   } catch { content.innerHTML = '<div class="fb-empty">Failed to load</div>'; }
 }
+
+// ── File-manager: selection, tabs, toolbar, actions ──────────────────────
+function fbToggleSelect(p, el) {
+  if (fbSelection.has(p)) { fbSelection.delete(p); el.classList.remove('selected'); }
+  else { fbSelection.add(p); el.classList.add('selected'); }
+  fbSyncActionBar();
+}
+
+function fbClearSelection() {
+  fbSelection.clear();
+  document.querySelectorAll('#fbContent .fb-item.selected').forEach(e => e.classList.remove('selected'));
+  fbSyncActionBar();
+}
+
+// Enable/disable action buttons based on what's selected and where we are.
+function fbSyncActionBar() {
+  const bar = document.getElementById('fbActionBar');
+  const n = fbSelection.size;
+  bar.classList.toggle('has-sel', n > 0);
+  document.getElementById('fbSelCount').textContent = n ? `${n} 件選択` : '';
+  const sel = [...fbSelection];
+  const allInSandbox = n > 0 && sel.every(fbInSandbox);
+  // move/copy: always available when something's picked (dest is chosen in-sandbox).
+  document.getElementById('fbActMove').disabled = n === 0;
+  document.getElementById('fbActCopy').disabled = n === 0;
+  // delete: only sandbox files (can't touch outside). rename: exactly one, in-sandbox.
+  document.getElementById('fbActDelete').disabled = n === 0 || !allInSandbox;
+  document.getElementById('fbActRename').disabled = n !== 1 || !allInSandbox;
+  // new-folder only where the current dir is writable (in-sandbox).
+  document.getElementById('fbNewFolder').disabled = !(fbCurrentDir && fbCurrentDir !== FB_ROOTS && fbInSandbox(fbCurrentDir));
+}
+
+function fbSetSelectMode(on) {
+  fbSelectMode = !!on;
+  document.body.classList.toggle('fb-selecting', fbSelectMode);
+  document.getElementById('fbSelectToggle').classList.toggle('on', fbSelectMode);
+  if (!fbSelectMode) fbClearSelection();
+  fbSyncActionBar();
+}
+
+// Switch between サンドボックス / 全体 tabs.
+async function fbSwitchTab(tab) {
+  if (tab === fbTab) return;
+  if (!maybeDiscardEdits()) return;
+  fbTab = tab;
+  fbClearSelection();
+  document.getElementById('fbTabSandbox').classList.toggle('on', tab === 'sandbox');
+  document.getElementById('fbTabAll').classList.toggle('on', tab === 'all');
+  await fbEnsureMeta();
+  if (tab === 'sandbox') {
+    // Prefer the active session's project; else show all roots.
+    if (fbSessionRoot && fbInSandbox(fbSessionRoot)) loadDir(fbSessionRoot);
+    else loadRootsView();
+  } else {
+    loadDir(fbAccessRoot || '/');
+  }
+}
+
+// ── File-manager: move/copy destination picker (sandbox folders only) ──────
+let _destOp = null;       // 'move' | 'copy'
+let _destDir = null;      // currently-browsed dir (null = project-roots view)
+
+async function openDestPicker(op) {
+  if (!fbSelection.size) return;
+  _destOp = op; _destDir = null;
+  document.getElementById('fmDestTitle').textContent =
+    (op === 'move' ? '移動先' : 'コピー先') + 'を選択（サンドボックス内）';
+  document.getElementById('fmDestError').textContent = '';
+  document.getElementById('fmDestOverlay').classList.add('on');
+  await fbEnsureMeta();
+  destNavigate(null);
+}
+function closeDestPicker() { document.getElementById('fmDestOverlay').classList.remove('on'); }
+
+function renderDestBread() {
+  const bread = document.getElementById('fmDestBread'); bread.innerHTML = '';
+  const seg = (label, target) => {
+    const s = document.createElement('span'); s.className = 'fb-seg'; s.textContent = label;
+    s.addEventListener('click', () => destNavigate(target)); bread.appendChild(s);
+  };
+  const sep = () => { const x = document.createElement('span'); x.className = 'fb-sep'; x.textContent = '/'; bread.appendChild(x); };
+  seg('📦', null);
+  if (_destDir === null) return;
+  const proj = fbProjects.find(p => _destDir === p.path || _destDir.startsWith(p.path + '/'));
+  if (!proj) return;
+  sep(); seg(proj.name, proj.path);
+  let built = proj.path;
+  for (const s of _destDir.slice(proj.path.length).split('/').filter(Boolean)) {
+    built = built.replace(/\/+$/, '') + '/' + s;
+    sep(); seg(s, built);
+  }
+}
+
+async function destNavigate(dir) {
+  _destDir = dir;
+  renderDestBread();
+  const listEl = document.getElementById('fmDestList');
+  listEl.innerHTML = '<div class="fp-empty">読み込み中…</div>';
+  if (dir === null) {
+    listEl.innerHTML = '';
+    if (!fbProjects.length) { listEl.innerHTML = '<div class="fp-empty">プロジェクトが未登録です</div>'; return; }
+    for (const p of fbProjects) {
+      const row = document.createElement('div'); row.className = 'fp-row';
+      row.innerHTML = `<span class="fp-ico">📦</span><span class="fp-name">${escHtml(p.name)}</span>`;
+      row.addEventListener('click', () => destNavigate(p.path));
+      listEl.appendChild(row);
+    }
+    return;
+  }
+  try {
+    const r = await fetch(`/api/files?dir=${encodeURIComponent(dir)}`);
+    const data = await r.json();
+    listEl.innerHTML = '';
+    const dirs = (data.items || []).filter(it => it.type === 'dir');
+    if (!dirs.length) listEl.innerHTML = '<div class="fp-empty">サブフォルダなし — ここに入れられます</div>';
+    for (const it of dirs) {
+      const full = dir.replace(/\/+$/, '') + '/' + it.name;
+      const row = document.createElement('div'); row.className = 'fp-row';
+      row.innerHTML = `<span class="fp-ico">📁</span><span class="fp-name">${escHtml(it.name)}</span>`;
+      row.addEventListener('click', () => destNavigate(full));
+      listEl.appendChild(row);
+    }
+  } catch { listEl.innerHTML = '<div class="fp-empty">読み込み失敗</div>'; }
+}
+
+document.getElementById('fmDestClose').addEventListener('click', closeDestPicker);
+document.getElementById('fmDestCancel').addEventListener('click', closeDestPicker);
+document.getElementById('fmDestSubmit').addEventListener('click', async () => {
+  const errEl = document.getElementById('fmDestError');
+  if (!_destDir || !fbInSandbox(_destDir)) { errEl.textContent = 'サンドボックス内のフォルダを開いてください'; return; }
+  const sources = [...fbSelection];
+  const r = await fetch(`/api/fs/${_destOp}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sources, dest: _destDir }),
+  });
+  const d = await r.json();
+  if (!r.ok) { errEl.textContent = (d.error || r.status); return; }
+  closeDestPicker();
+  fbClearSelection();
+  loadDir(fbCurrentDir);
+});
 
 // Text-file editor state. _fvEditing is non-null while we're in edit mode;
 // _fvDirty tracks whether the textarea diverged from the loaded content.
@@ -2250,21 +2588,32 @@ function cancelEditing() {
 
 function renderBread(dir) {
   const bread = document.getElementById('fbBread'); bread.innerHTML = '';
-  // Build path relative to session root
-  let rel = dir;
-  if (fbSessionRoot && dir.startsWith(fbSessionRoot)) rel = dir.slice(fbSessionRoot.length) || '';
-  const segs = rel.split('/').filter(Boolean);
+  const addSeg = (label, target) => {
+    const s = document.createElement('span'); s.className = 'bc-seg'; s.textContent = label;
+    if (target !== null) s.addEventListener('click', () => loadDir(target));
+    bread.appendChild(s);
+  };
+  const addSep = () => { const x = document.createElement('span'); x.className = 'bc-sep'; x.textContent = '/'; bread.appendChild(x); };
+  const appendTail = (base, full) => {
+    let rel = (full === base) ? '' : (full.startsWith(base) ? full.slice(base.length) : full);
+    let built = base;
+    for (const seg of rel.split('/').filter(Boolean)) {
+      built = built.replace(/\/+$/, '') + '/' + seg;
+      addSep(); addSeg(seg, built);
+    }
+  };
 
-  const root = document.createElement('span'); root.className = 'bc-seg'; root.textContent = '~';
-  root.addEventListener('click', () => loadDir(fbSessionRoot)); bread.appendChild(root);
-
-  let built = fbSessionRoot;
-  for (const seg of segs) {
-    built = built.replace(/\/+$/, '') + '/' + seg;
-    const sep = document.createElement('span'); sep.className = 'bc-sep'; sep.textContent = '/'; bread.appendChild(sep);
-    const s = document.createElement('span'); s.className = 'bc-seg'; s.textContent = seg;
-    const p = built;
-    s.addEventListener('click', () => loadDir(p)); bread.appendChild(s);
+  if (fbTab === 'sandbox') {
+    addSeg('📦', FB_ROOTS);                          // → roots view
+    if (dir === FB_ROOTS) return;
+    const proj = fbProjects.find(p => dir === p.path || dir.startsWith(p.path + '/'));
+    if (!proj) { addSep(); addSeg(dir, dir); return; }
+    addSep(); addSeg(proj.name, proj.path);
+    appendTail(proj.path, dir);
+  } else {
+    const base = fbAccessRoot || '/';
+    addSeg(fbAccessRoot ? '🌐' : '/', base);
+    appendTail(base, dir);
   }
 }
 

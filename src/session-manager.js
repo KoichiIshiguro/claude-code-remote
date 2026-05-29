@@ -51,6 +51,8 @@ function buildSandboxProfile(workdir) {
     workdir,
     path.join(home, '.claude'),       // transcripts (--resume), auth, todos, logs
     os.tmpdir(), '/private/var/folders', '/private/tmp', '/tmp',
+    '/dev',                           // /dev/null, /dev/tty, /dev/stdout… — git and
+                                      // most CLIs abort without writable /dev devices
   ];
   // Read-deny the project tree so a session can't see sibling projects or climb
   // out: the workdir's immediate parent, plus BASE_DIR (the whole picker root)

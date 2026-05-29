@@ -19,6 +19,7 @@ const { handleConnection } = require('./src/ws-handler');
 const { flushPendingSave } = require('./src/session-manager');
 const { migrateIfNeeded } = require('./src/migrate');
 const projectsStore = require('./src/projects-store');
+const fsOps = require('./src/fs-ops');
 
 // One-shot CLI mode: `node server.js --reset-auth` wipes admin.json and
 // exits, forcing /setup on the next normal start so the user can pick a
@@ -472,6 +473,35 @@ app.get('/api/file/raw', requireAuth, (req, res) => {
     if (err && !res.headersSent) res.status(500).send(err.message);
   });
 });
+
+// ── File-manager mutations ────────────────────────────────────────────────
+// All guarded by src/fs-ops.js: write/delete targets must be inside a
+// registered project (the sandbox); move/copy sources may be browse-allowed.
+function fsOpHandler(fn) {
+  return (req, res) => {
+    try {
+      const result = fn(req.body || {});
+      res.json({ ok: true, result });
+    } catch (e) {
+      res.status(e.httpCode || 500).json({ error: e.message });
+    }
+  };
+}
+
+app.post('/api/fs/mkdir', requireAuth, fsOpHandler(
+  ({ parent, name }) => fsOps.mkdir(parent, name)));
+
+app.post('/api/fs/delete', requireAuth, fsOpHandler(
+  ({ paths }) => fsOps.remove(paths)));
+
+app.post('/api/fs/rename', requireAuth, fsOpHandler(
+  ({ path: p, newName }) => fsOps.rename(p, newName)));
+
+app.post('/api/fs/move', requireAuth, fsOpHandler(
+  ({ sources, dest }) => fsOps.move(sources, dest)));
+
+app.post('/api/fs/copy', requireAuth, fsOpHandler(
+  ({ sources, dest }) => fsOps.copy(sources, dest)));
 
 // App-wide settings. Only autoCompactThreshold for now — null/0 disables.
 app.get('/api/settings', requireAuth, (req, res) => {
