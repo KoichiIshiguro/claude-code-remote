@@ -27,6 +27,46 @@ function jsonlPathFor(sessionId, directory) {
   return path.join(jsonlDirFor(directory), `${sessionId}.jsonl`);
 }
 
+// Claude CLI's `/resume` picker hides any session whose transcript declares
+// `"entrypoint":"sdk-cli"` (the value stamped on sessions started via
+// `claude -p` / the Agent SDK — i.e. every session this server creates).
+// The picker reads only the first `"entrypoint"` occurrence in the file's
+// leading 64 KiB, so flipping it to `"cli"` makes our sessions appear in the
+// native TUI picker without changing anything the CLI relies on at runtime
+// (entrypoint is display metadata only). Verified against claude 2.1.156 by
+// tracing `--debug` output: a byte-faithful copy differing only in this token
+// flipped a session from "filtered out" to "visible".
+const PICKER_SCAN_BYTES = 65536;
+const SDK_ENTRYPOINT = '"entrypoint":"sdk-cli"';
+const CLI_ENTRYPOINT = '"entrypoint":"cli"';
+
+// Rewrite every `sdk-cli` entrypoint token to `cli`, in place. The picker only
+// reads the first occurrence in the leading 64 KiB, so we peek that window to
+// skip already-clean files cheaply; when a token is present we replace all of
+// them for consistency (cheap, and robust if the leading record order changes
+// across CLI versions). No-op + false if nothing to patch or on any I/O error.
+function ensurePickerVisible(filePath) {
+  try {
+    // Peek only the window the picker scans, to skip already-cli files cheaply.
+    const fd = fs.openSync(filePath, 'r');
+    let head;
+    try {
+      const n = Math.min(fs.fstatSync(fd).size, PICKER_SCAN_BYTES);
+      if (n === 0) return false;
+      const buf = Buffer.allocUnsafe(n);
+      fs.readSync(fd, buf, 0, n, 0);
+      head = buf.toString('utf8');
+    } finally { fs.closeSync(fd); }
+
+    if (!head.includes(SDK_ENTRYPOINT)) return false; // already cli / none
+
+    const full = fs.readFileSync(filePath, 'utf8');
+    if (!full.includes(SDK_ENTRYPOINT)) return false;
+    fs.writeFileSync(filePath, full.split(SDK_ENTRYPOINT).join(CLI_ENTRYPOINT));
+    return true;
+  } catch { return false; }
+}
+
 function listJsonlsForProject(directory) {
   const dir = jsonlDirFor(directory);
   let files;
@@ -36,7 +76,10 @@ function listJsonlsForProject(directory) {
   for (const f of files) {
     if (!f.endsWith('.jsonl')) continue;
     try {
-      const st = fs.statSync(path.join(dir, f));
+      const full = path.join(dir, f);
+      // Make sessions this server created visible in the native CLI picker.
+      ensurePickerVisible(full);
+      const st = fs.statSync(full);
       out.push({
         sessionId: f.slice(0, -'.jsonl'.length),
         mtime: st.mtimeMs,
@@ -284,7 +327,7 @@ function appendJsonlLine(sessionId, directory, entry) {
 
 module.exports = {
   encodedCwd, jsonlDirFor, jsonlPathFor,
-  listJsonlsForProject, firstUserPreview,
+  listJsonlsForProject, firstUserPreview, ensurePickerVisible,
   applyEventToBlocks, readHistory, getLastTokens,
   readTailEntry, appendJsonlLine,
   CLAUDE_PROJECTS_DIR,
