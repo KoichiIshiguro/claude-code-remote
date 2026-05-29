@@ -164,6 +164,7 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 | `SESSION_SECRET` | Override the auto-generated one (useful for shared cookie domains across deployments) |
 | `CLAUDE_AUTO_COMPACT_THRESHOLD` | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context models). Set to e.g. `835000` for 1M tiers |
 | `NODE_ENV=production` | Enforce HTTPS-only session cookies. Only set when terminating TLS in front |
+| `CLAUDE_SANDBOX` | **macOS only.** `0` disables the per-session OS sandbox. On by default — see Security Notes |
 
 ---
 
@@ -172,6 +173,7 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 - **Designed to live on Tailscale, not on the public internet.** A single bcrypt-hashed password (set at `/setup`, stored in `data/admin.json`) is not enough to survive sustained brute-force from the open web. Keep this on your private tailnet, or put HTTP basic-auth in front of it at the reverse proxy if you must expose it.
 - **HTTPS is still required for any non-Tailscale exposure.** Session cookies in cleartext are immediately game-over.
 - **`--dangerously-skip-permissions` is on by default** because this UI is your personal remote. If you expose it, you're trusting Claude with your filesystem — restrict `BASE_DIR` to a safe subtree.
+- **Per-session OS sandbox (macOS).** Even with `--dangerously-skip-permissions`, each spawned `claude` is wrapped in `sandbox-exec` (kernel-level Seatbelt) so it **cannot write anywhere outside its own session folder** (plus `~/.claude` and temp) and **cannot read sibling projects or climb above the session folder** — enforced on the syscall, so it holds against `bash`/`cat` too. The Node server itself is *not* sandboxed (it needs full access for the picker, git clone, and the file viewer); only the LLM child is. Auth (`~/.claude.json` + Keychain) stays reachable so Claude still works. macOS-only; set `CLAUDE_SANDBOX=0` to disable. No effect on Linux/Windows yet.
 - **Single-user by design.** There is no multi-user mode and no admin panel. That is the entire security model.
 - **Session store is in-memory** — PM2 reload signs you out. Swap to `connect-sqlite3` or `connect-redis` if that bothers you (a few-line change in `src/auth.js`).
 

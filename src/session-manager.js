@@ -7,9 +7,81 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const path = require('path');
 const archiveStore = require('./archive-store');
 const procTracker = require('./proc-tracker');
 const { jsonlPathFor, readHistory, getLastTokens } = require('./jsonl-reader');
+
+// ── Sandbox (macOS Seatbelt) ─────────────────────────────────────────────────
+// The Node server itself runs with FULL filesystem access — it needs it for the
+// project picker, git clone, and the file viewer. But every spawned `claude`
+// child is a black box running an LLM, so we confine IT (and only it) at the
+// KERNEL level by wrapping it in `sandbox-exec`. The confinement holds even
+// though we pass --dangerously-skip-permissions, and even against `bash`/`cat`,
+// because it's enforced on the syscall, not by claude's own permission logic.
+//
+// Strategy: we must START from `(allow default)`. A `(deny default)` profile
+// blocks reads of the dyld shared cache and system dylibs, so NO binary can even
+// exec inside the sandbox (it aborts with SIGABRT). From that permissive base we
+// carve out the two things that matter for THIS tool's threat model — keeping a
+// session's claude from touching anything but its own project folder:
+//   1. file-write*  — denied everywhere, re-allowed only in workdir / ~/.claude /
+//                     ~/.claude.json / temp. So claude can't modify any file
+//                     outside its session, anywhere on disk.
+//   2. file-read*   — denied across the project tree (the workdir's parent and
+//                     BASE_DIR), re-allowed only for the workdir itself. So a
+//                     session can't read sibling projects or climb to the parent.
+// We deliberately do NOT deny all of $HOME: claude's own auth lives in the macOS
+// Keychain (~/Library/Keychains) and its state in ~/.claude.json, so a blanket
+// $HOME deny breaks claude itself. The goal here is project isolation, not $HOME
+// lockdown. Rules are last-match-wins, so re-allows are placed AFTER the denies.
+// macOS only; no-op elsewhere or when CLAUDE_SANDBOX=0.
+// Debug denials with: log stream --style compact --predicate 'sender=="Sandbox"'
+function buildSandboxProfile(workdir) {
+  const home = os.homedir();
+  const q = (p) => '"' + String(p).replace(/(["\\])/g, '\\$1') + '"';
+  const sub = (...ps) => ps.map(q).map(s => `(subpath ${s})`).join(' ');
+  const reEsc = (p) => String(p).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // claude keeps its main state in the top-level ~/.claude.json (+ .backup, and
+  // a .tmp sibling it writes-then-renames). Match the whole family.
+  const claudeJson = `(regex #"^${reEsc(path.join(home, '.claude.json'))}")`;
+
+  // Where the child may WRITE (everywhere else is read-only).
+  const writeOk = [
+    workdir,
+    path.join(home, '.claude'),       // transcripts (--resume), auth, todos, logs
+    os.tmpdir(), '/private/var/folders', '/private/tmp', '/tmp',
+  ];
+  // Read-deny the project tree so a session can't see sibling projects or climb
+  // out: the workdir's immediate parent, plus BASE_DIR (the whole picker root)
+  // when set. The workdir re-allow below overrides these (last-match-wins).
+  const denyRead = [...new Set([
+    path.dirname(workdir),
+    ...(process.env.BASE_DIR ? [path.resolve(process.env.BASE_DIR)] : []),
+  ])];
+
+  return [
+    '(version 1)',
+    '(allow default)',                          // permissive base so the runtime loads
+    // — writes: nothing but the session folder, ~/.claude(.json), and temp —
+    '(deny file-write*)',
+    `(allow file-write* ${sub(...writeOk)})`,
+    `(allow file-write* ${claudeJson})`,
+    // — reads: block the project tree, then re-allow this session's folder —
+    `(deny file-read* ${sub(...denyRead)})`,
+    `(allow file-read* ${sub(workdir)})`,       // workdir last = wins
+  ].join('\n');
+}
+
+// Returns [bin, args] for spawn() — wrapped in sandbox-exec on macOS so the
+// child can only touch `workdir` (+ ~/.claude + temp + runtime). Untouched on
+// non-macOS or when CLAUDE_SANDBOX=0.
+function sandboxed(bin, args, workdir) {
+  if (process.platform !== 'darwin' || process.env.CLAUDE_SANDBOX === '0') {
+    return [bin, args];
+  }
+  return ['/usr/bin/sandbox-exec', ['-p', buildSandboxProfile(workdir), bin, ...args]];
+}
 
 // Auto-compact threshold (input tokens incl. cache). 167k matches the TUI's
 // ~83.5% trigger on 200k-context models. Lookup order per call:
@@ -71,7 +143,10 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
   if (resumeSessionId) args.push('--resume', resumeSessionId);
 
   const claudeBin = process.env.CLAUDE_PATH || 'claude';
-  const proc = spawn(claudeBin, args, { cwd: directory, env: { ...process.env } });
+  // Confine the child to `directory` (+ ~/.claude + temp). The server is
+  // unaffected — only this spawned claude is sandboxed.
+  const [bin, spawnArgs] = sandboxed(claudeBin, args, directory);
+  const proc = spawn(bin, spawnArgs, { cwd: directory, env: { ...process.env } });
   procTracker.register(processKey, proc);
 
   let buffer = '';
@@ -156,12 +231,14 @@ function summarizeSession(sessionId, directory) {
       '上記 "..." 内の履歴を300字程度で要約してください。本文のみ出力。';
 
     const claudeBin = process.env.CLAUDE_PATH || 'claude';
-    const proc = spawn(claudeBin, [
+    // Summaries run aimed at /tmp; sandbox to tmp too so they touch no project.
+    const [bin, spawnArgs] = sandboxed(claudeBin, [
       '-p',
       '--model', 'claude-haiku-4-5-20251001',
       '--append-system-prompt', systemPrompt,
       userPrompt,
-    ], { cwd: os.tmpdir(), env: { ...process.env } });
+    ], os.tmpdir());
+    const proc = spawn(bin, spawnArgs, { cwd: os.tmpdir(), env: { ...process.env } });
 
     let stdout = '', stderr = '';
     proc.stdout.on('data', d => { stdout += d.toString(); });
@@ -203,4 +280,5 @@ module.exports = {
   getAutoCompactThreshold,
   AUTO_COMPACT_DEFAULT,
   EFFORT_LEVELS,
+  buildSandboxProfile, sandboxed, // exported for tests
 };
