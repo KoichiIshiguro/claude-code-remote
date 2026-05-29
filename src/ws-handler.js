@@ -293,12 +293,13 @@ function handleConnection(ws /*, req */) {
         }
 
         subscribe(sid, ws);
-        const { history, lastTokens } = jsonlReader.readHistory(sid, directory);
+        const { history, lastTokens, truncated } = jsonlReader.readHistory(sid, directory);
         send(ws, {
           type: 'history',
           sessionId: sid,
           directory,
           history,
+          truncated,
           streaming: procTracker.isRunning(sid),
           currentEntry: null,
           allowedTools: null,

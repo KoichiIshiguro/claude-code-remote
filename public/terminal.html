@@ -939,6 +939,12 @@ function handleMessage(msg) {
       document.getElementById('messages').innerHTML = '';
       allowedTools = msg.allowedTools ?? null;
       updateCtxPill(msg.lastTokens);
+      if (msg.truncated) {
+        const note = document.createElement('div');
+        note.style.cssText = 'text-align:center;padding:10px 16px;margin-bottom:8px;color:var(--text-muted);font-size:12px;opacity:.7;';
+        note.textContent = '── 直近100件より前の履歴は省略されています ──';
+        document.getElementById('messages').appendChild(note);
+      }
       for (const e of msg.history) renderHistoryEntry(e);
       if (msg.streaming) {
         isStreaming = true;

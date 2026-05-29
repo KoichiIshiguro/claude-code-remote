@@ -278,16 +278,35 @@ function attachToolResults(history, contentBlocks) {
   return [...history.slice(0, -1), { ...last, blocks: newBlocks }];
 }
 
+// Trim a built history to the last `maxUserTurns` user messages plus the
+// assistant/tool blocks that follow each of them. We must fold the WHOLE file
+// first (tool_result attachment and lastTokens both depend on it) and only cut
+// at the end. Cutting on a `user`-entry boundary keeps every assistant turn
+// paired with the prompt that produced it. Returns { history, truncated }.
+function trimToRecentTurns(history, maxUserTurns) {
+  if (!maxUserTurns || maxUserTurns <= 0) return { history, truncated: false };
+  const userIdx = [];
+  for (let i = 0; i < history.length; i++) {
+    if (history[i].type === 'user') userIdx.push(i);
+  }
+  if (userIdx.length <= maxUserTurns) return { history, truncated: false };
+  const cut = userIdx[userIdx.length - maxUserTurns];
+  return { history: history.slice(cut), truncated: true };
+}
+
 // Full re-read of a jsonl into Remote's history-blocks shape.
-// Returns { history, lastTokens, exists, cwdMismatch }.
+// Returns { history, lastTokens, exists, cwdMismatch, truncated }.
 //  - cwdMismatch is set if the file's first event references a `cwd` that
 //    disagrees with the expected directory. Defends against encoded-cwd
 //    collisions like "/foo/bar-baz" vs "/foo-bar/baz".
-function readHistory(sessionId, directory) {
+//  - maxUserTurns caps the returned history to the last N user prompts (and
+//    their replies). A long session is unscrollable anyway and shipping 6000+
+//    blocks bloats the WS payload and DOM. 0/null = no cap.
+function readHistory(sessionId, directory, maxUserTurns = 100) {
   const p = jsonlPathFor(sessionId, directory);
   let raw;
   try { raw = fs.readFileSync(p, 'utf8'); }
-  catch { return { history: [], lastTokens: null, exists: false, cwdMismatch: false }; }
+  catch { return { history: [], lastTokens: null, exists: false, cwdMismatch: false, truncated: false }; }
 
   const lines = raw.split('\n');
   let history = [];
@@ -317,7 +336,8 @@ function readHistory(sessionId, directory) {
     history = applyEventToBlocks(history, e);
   }
 
-  return { history, lastTokens, exists: true, cwdMismatch };
+  const { history: trimmed, truncated } = trimToRecentTurns(history, maxUserTurns);
+  return { history: trimmed, lastTokens, exists: true, cwdMismatch, truncated };
 }
 
 // Tail-scan the last `maxBytes` of a jsonl and return the LAST non-empty
