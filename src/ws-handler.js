@@ -431,12 +431,19 @@ function handleConnection(ws /*, req */) {
         const resumeSessionId = isNewSession ? null : sessionId;
         const processKey = sessionId;
 
+        // Model / effort are app-wide settings chosen from the UI. Unset → let
+        // the CLI use its defaults.
+        const cfg = require('./auth').loadConfig();
+        const model = typeof cfg.model === 'string' ? cfg.model : null;
+        const effort = typeof cfg.effort === 'string' ? cfg.effort : null;
+
         if (!isNewSession && sm.shouldAutoCompact(sessionId, directory)) {
           broadcast(sessionId, { type: 'stream_start', sessionId, autoCompact: true });
           try {
             for await (const event of sm.runPrompt({
               directory, prompt: '/compact',
               resumeSessionId: sessionId, processKey: sessionId,
+              model, effort,
             })) {
               broadcast(sessionId, { type: 'stream_event', sessionId, event });
             }
@@ -459,6 +466,7 @@ function handleConnection(ws /*, req */) {
           for await (const event of sm.runPrompt({
             directory, prompt, imagePaths,
             resumeSessionId, processKey,
+            model, effort,
           })) {
             if (isNewSession && !resolvedSessionId
                 && event.type === 'system' && event.subtype === 'init' && event.session_id) {

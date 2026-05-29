@@ -37,7 +37,11 @@ function isRunning(key) { return procTracker.isRunning(key); }
 // Async generator. Yields stream-json events from `claude -p`. Caller is
 // expected to inspect the `system/init` event to capture the assigned
 // session_id for sessions that were created here (resumeSessionId=null).
-async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId = null, processKey }) {
+// Allowed `--effort` values, mirroring `claude --help` (low, medium, high,
+// xhigh, max). Anything else is ignored so we never pass a bad flag.
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId = null, processKey, model = null, effort = null }) {
   if (!directory) throw new Error('directory required');
   if (!prompt) throw new Error('prompt required');
   if (!processKey) throw new Error('processKey required');
@@ -52,6 +56,12 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
     '--verbose',
     '--dangerously-skip-permissions',
   ];
+
+  // Model / effort come from app settings. When unset we pass nothing and let
+  // the CLI use its own defaults (which is why unconfigured sessions can feel
+  // faster — they may run at a lower default effort).
+  if (model && typeof model === 'string') args.push('--model', model);
+  if (effort && EFFORT_LEVELS.includes(effort)) args.push('--effort', effort);
 
   // -p (non-interactive) mode has no channel for tool-result return, so
   // AskUserQuestion silently hangs. Tell the model to ask in plain text.
@@ -192,4 +202,5 @@ module.exports = {
   flushPendingSave,
   getAutoCompactThreshold,
   AUTO_COMPACT_DEFAULT,
+  EFFORT_LEVELS,
 };

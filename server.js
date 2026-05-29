@@ -480,10 +480,14 @@ app.get('/api/settings', requireAuth, (req, res) => {
   res.json({
     autoCompactThreshold: typeof cfg.autoCompactThreshold === 'number' ? cfg.autoCompactThreshold : null,
     autoCompactDefault: sm.AUTO_COMPACT_DEFAULT,
+    model: typeof cfg.model === 'string' ? cfg.model : null,
+    effort: typeof cfg.effort === 'string' ? cfg.effort : null,
+    effortLevels: sm.EFFORT_LEVELS,
   });
 });
 app.post('/api/settings', requireAuth, (req, res) => {
-  const { autoCompactThreshold } = req.body || {};
+  const sm = require('./src/session-manager');
+  const { autoCompactThreshold, model, effort } = req.body || {};
   const patch = {};
   if (autoCompactThreshold === null) {
     patch.autoCompactThreshold = null;
@@ -493,6 +497,23 @@ app.post('/api/settings', requireAuth, (req, res) => {
     patch.autoCompactThreshold = Math.floor(autoCompactThreshold);
   } else if (autoCompactThreshold !== undefined) {
     return res.status(400).json({ error: 'autoCompactThreshold must be a positive integer, 0 (disable), or null (default)' });
+  }
+  // Model: null clears (use CLI default); a non-empty string is stored verbatim
+  // (alias like "opus"/"sonnet" or a full id like "claude-opus-4-8").
+  if (model === null) {
+    patch.model = null;
+  } else if (typeof model === 'string' && model.trim()) {
+    patch.model = model.trim();
+  } else if (model !== undefined) {
+    return res.status(400).json({ error: 'model must be a non-empty string or null' });
+  }
+  // Effort: null clears; otherwise must be one of the CLI's accepted levels.
+  if (effort === null) {
+    patch.effort = null;
+  } else if (typeof effort === 'string' && sm.EFFORT_LEVELS.includes(effort)) {
+    patch.effort = effort;
+  } else if (effort !== undefined) {
+    return res.status(400).json({ error: `effort must be one of ${sm.EFFORT_LEVELS.join(', ')} or null` });
   }
   const { saveConfig } = require('./src/auth');
   saveConfig(patch);
