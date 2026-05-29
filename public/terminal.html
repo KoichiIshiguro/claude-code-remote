@@ -478,6 +478,9 @@
   .model-pill + .ctx-meter { margin-left: 8px; }
   .ctx-meter { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap; opacity: .8; }
   .ctx-meter:empty { display: none; }
+  /* Per-turn cost/usage footer under an assistant reply. */
+  .turn-cost { margin-top: 6px; font-size: 11px; color: var(--text-muted); opacity: .7;
+    font-family: 'SF Mono', ui-monospace, monospace; }
   .ctx-meter.warn { color: var(--accent); opacity: 1; }
   .ctx-meter.hot { color: var(--red); opacity: 1; font-weight: 500; }
 
@@ -1223,7 +1226,10 @@ function handleStreamEvent(event) {
       break;
     }
     case 'result':
-      // Intentionally drop the per-turn cost pill — distracting and not useful.
+      // Turn-level totals from `claude -p`: cost in USD (incl. background Haiku
+      // calls), aggregate token usage, and wall-clock. Append a small footer to
+      // the current assistant message.
+      appendTurnCost(c, event);
       break;
     case 'cancelled': finalizeText(); appendCancelled(); break;
   }
@@ -1261,6 +1267,26 @@ function finalizeText() {
 }
 function addCursor(el) { removeCursor(el); const c = document.createElement('span'); c.className = 'cursor'; el.appendChild(c); }
 function removeCursor(el) { el.querySelectorAll('.cursor').forEach(c => c.remove()); }
+
+// Per-turn cost/usage footer, appended to an assistant message on the `result`
+// event. Shows USD (when present), total input+output tokens, and seconds.
+function appendTurnCost(container, ev) {
+  if (!container || !ev) return;
+  const u = ev.usage || {};
+  const inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  const outTok = u.output_tokens || 0;
+  const tot = inTok + outTok;
+  const parts = [];
+  if (typeof ev.total_cost_usd === 'number') parts.push('$' + ev.total_cost_usd.toFixed(4));
+  if (tot > 0) parts.push(`${(tot / 1000).toFixed(tot >= 100000 ? 0 : 1)}k tok`);
+  if (typeof ev.duration_ms === 'number') parts.push(`${(ev.duration_ms / 1000).toFixed(1)}s`);
+  if (!parts.length) return;
+  const el = document.createElement('div');
+  el.className = 'turn-cost';
+  el.textContent = parts.join(' · ');
+  el.title = `in ${inTok.toLocaleString()} / out ${outTok.toLocaleString()} tokens`;
+  container.appendChild(el);
+}
 
 // ── DOM builders ──────────────────────────────────────────────────────────────
 function createAssistantMessage() {
