@@ -71,6 +71,13 @@ function buildSandboxProfile(workdir) {
     `(allow file-write* ${claudeJson})`,
     // — reads: block the project tree, then re-allow this session's folder —
     `(deny file-read* ${sub(...denyRead)})`,
+    // Re-allow METADATA (lstat/stat) on the denied parents. realpath() resolves
+    // a workdir file by lstat-ing every ancestor; a metadata deny on the parent
+    // EPERMs the whole resolution, which breaks `node -c`, Python imports, and
+    // many build tools even for files INSIDE the workdir. Data + directory
+    // listing stay denied, so sibling projects remain unreadable — only the
+    // existence/size of a path leaks, never its contents.
+    `(allow file-read-metadata ${sub(...denyRead)})`,
     `(allow file-read* ${sub(workdir)})`,       // workdir last = wins
   ].join('\n');
 }
