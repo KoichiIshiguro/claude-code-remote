@@ -1322,6 +1322,11 @@ function renderHistoryEntry(entry) {
       note.textContent = '⚠ Interrupted by a server restart. Type "continue" to resume.';
       c.appendChild(note);
     }
+  } else if (entry.type === 'compact') {
+    // Persisted marker: a /compact (manual or auto) happened at this point.
+    const m = document.createElement('div'); m.className = 'compact-note done';
+    m.innerHTML = '⊟ ここでコンテキストを圧縮しました';
+    document.getElementById('messages').appendChild(m);
   } else if (entry.type === 'error') { appendError(entry.message); }
 }
 

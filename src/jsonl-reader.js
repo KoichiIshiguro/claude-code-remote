@@ -221,7 +221,11 @@ function applyEventToBlocks(history, event) {
   const ts = event.timestamp ? Date.parse(event.timestamp) : Date.now();
 
   if (event.type === 'user') {
-    if (event.isMeta || event.isCompactSummary) return history;
+    // A compaction writes its summary as an isCompactSummary user entry at the
+    // exact point context was compacted. Surface it as a marker block so the
+    // user can see "compacted here" on reload, instead of silently dropping it.
+    if (event.isCompactSummary) return [...history, { type: 'compact', ts }];
+    if (event.isMeta) return history;
     const content = event.message?.content;
 
     // Tool-result wrap: attach result to preceding assistant's tool block.
