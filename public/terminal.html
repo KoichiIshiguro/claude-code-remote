@@ -974,7 +974,10 @@ function openLinksInNewTab(root) {
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws, isStreaming = false, pendingImages = [], dotTimer = null;
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
-let currentToolEls = {}, promptQueue = [];
+let currentToolEls = {};
+// Queue is authoritative on the server now; this just mirrors the last
+// queue_state broadcast so we can render the tray and gate the cancel button.
+let serverQueue = [];
 let compactNoteEl = null, compactFailed = false;
 let allowedTools = null;
 let fbCurrentDir = '', fbSessionRoot = '';
@@ -1077,6 +1080,9 @@ function handleMessage(msg) {
     }
     case 'stream_start': {
       isStreaming = true;
+      // The runner just pulled the queued prompts into this turn — drop their
+      // "⏳ queued" markers since they're now being processed.
+      document.querySelectorAll('.queued-label').forEach(el => el.remove());
       const isCompact = !!(msg.autoCompact || msg.compact);
       setStreamingUI(true, isCompact);
       if (isCompact) {
@@ -1100,9 +1106,17 @@ function handleMessage(msg) {
       if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); removeCursor(currentTextEl); }
       currentAssistantEl = null; currentTextEl = null; streamingText = '';
       scrollToBottom();
-      if (promptQueue.length > 0) {
-        const next = promptQueue.shift(); renderQueue(); dispatchPrompt(next.text, next.uploadedPaths);
-      } else { setStreamingUI(false); }
+      // The server runner drains any queued prompts on its own (browser-
+      // independent) and will emit the next stream_start itself.
+      setStreamingUI(false);
+      break;
+    case 'queue_state':
+      // Server is the source of truth for the queue. Only react to our own
+      // session's state (we're only subscribed to it, but guard anyway).
+      if (!msg.sessionId || msg.sessionId === sessionId) {
+        serverQueue = msg.queue || [];
+        renderQueue();
+      }
       break;
     case 'sessions_list':
       _sessions = msg.sessions || [];
@@ -1380,11 +1394,11 @@ function setStreamingUI(active, compacting) {
   document.getElementById('topLoader').classList.toggle('active', active);
   document.getElementById('workingChip').classList.toggle('on', active);
   document.getElementById('workingLabel').textContent = (active && compacting) ? '圧縮中…' : 'Working';
-  document.getElementById('cancelBtn').classList.toggle('on', active || promptQueue.length > 0);
+  document.getElementById('cancelBtn').classList.toggle('on', active || serverQueue.length > 0);
   document.getElementById('compactBtn').disabled = active;
   document.getElementById('messages').classList.toggle('streaming-active', active);
-  if (active) startDotAnim(); else if (!promptQueue.length) stopDotAnim();
-  if (!active && !promptQueue.length) {
+  if (active) startDotAnim(); else if (!serverQueue.length) stopDotAnim();
+  if (!active && !serverQueue.length) {
     document.getElementById('cancelBtn').classList.remove('on');
     document.getElementById('queueBadge').classList.remove('on');
     document.getElementById('queueList').classList.remove('on');
@@ -1463,8 +1477,10 @@ function buildAskCard(block, live) {
         card.querySelectorAll('.ask-btn').forEach(b => b.classList.remove('chosen'));
         btn.classList.add('chosen'); card.querySelector('.ask-note').textContent = '✓ Selected';
         const chosen = block.options[+btn.dataset.i];
-        if (!isStreaming) { appendUserMsg(chosen, [], false); dispatchPrompt(chosen, []); }
-        else { promptQueue.unshift({ text: chosen, previewUrls: [], uploadedPaths: [] }); renderQueue(); }
+        // After an AskUserQuestion intercept the stream was cancelled, so this
+        // normally runs immediately; if a turn is somehow still live it queues.
+        appendUserMsg(chosen, [], isStreaming);
+        dispatchPrompt(chosen, []);
       });
     });
   }
@@ -1477,7 +1493,7 @@ function buildThinking(text) {
 function appendUserMsg(text, images, queued) {
   const m = document.createElement('div'); m.className = 'msg msg-user';
   const imgs = images?.length ? `<div class="img-previews">${images.map(u=>`<img src="${u}">`).join('')}</div>` : '';
-  const lbl = queued ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">⏳ queued</div>` : '';
+  const lbl = queued ? `<div class="queued-label" style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">⏳ queued</div>` : '';
   m.innerHTML = `${lbl}${imgs}<div class="bubble">${escHtml(text)}</div>`;
   // User just sent — always snap to bottom (forces auto-follow back on).
   document.getElementById('messages').appendChild(m); scrollToBottomNow();
@@ -1549,12 +1565,15 @@ async function sendPrompt() {
     catch(e) { appendError('Upload failed: '+e.message); return; }
   }
   clearImgPreviews();
-  if (isStreaming) { appendUserMsg(text,previewUrls,true); promptQueue.push({text,previewUrls,uploadedPaths}); renderQueue(); setStreamingUI(true); }
-  else { appendUserMsg(text,previewUrls,false); dispatchPrompt(text,uploadedPaths); }
+  // Always hand the prompt to the server queue. If a turn is streaming it'll
+  // be batched into the next one (and shows faded); otherwise it runs now.
+  appendUserMsg(text, previewUrls, isStreaming);
+  dispatchPrompt(text, uploadedPaths);
+  if (isStreaming) setStreamingUI(true);
 }
 function dispatchPrompt(text, paths) { wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths}); }
 
-document.getElementById('cancelBtn').addEventListener('click', () => { wsSend({type:'cancel',sessionId}); promptQueue=[]; renderQueue(); });
+document.getElementById('cancelBtn').addEventListener('click', () => { wsSend({type:'cancel',sessionId}); });
 
 // /compact — summarize the conversation to shrink context. Routed through the
 // normal send_prompt path (the server treats it as a slash command, same as
@@ -1567,14 +1586,15 @@ document.getElementById('compactBtn').addEventListener('click', () => {
 
 function renderQueue() {
   const list = document.getElementById('queueList');
-  document.getElementById('queueCount').textContent = promptQueue.length;
+  document.getElementById('queueCount').textContent = serverQueue.length;
   list.innerHTML = '';
-  if (!promptQueue.length) { list.classList.remove('on'); document.getElementById('queueBadge').classList.remove('on'); return; }
+  if (!serverQueue.length) { list.classList.remove('on'); document.getElementById('queueBadge').classList.remove('on'); return; }
   document.getElementById('queueBadge').classList.add('on'); list.classList.add('on');
-  promptQueue.forEach((item,i) => {
+  serverQueue.forEach((item,i) => {
     const el = document.createElement('div'); el.className = 'queue-item';
     el.innerHTML = `<span class="q-num">${i+1}</span><span class="q-text">${escHtml(item.text)}</span><button class="q-remove">×</button>`;
-    el.querySelector('.q-remove').addEventListener('click', () => { promptQueue.splice(i,1); renderQueue(); });
+    // Removal goes through the server so it stays consistent across devices.
+    el.querySelector('.q-remove').addEventListener('click', () => { wsSend({type:'dequeue_item', sessionId, id:item.id}); });
     list.appendChild(el);
   });
 }

@@ -10,6 +10,7 @@ const projectsStore = require('./projects-store');
 const archiveStore = require('./archive-store');
 const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
+const promptQueue = require('./prompt-queue');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -105,6 +106,181 @@ function listAllSessionsLegacy() {
     out.push(pendingToLegacyShape(pid, entry));
   }
   return out;
+}
+
+// ─── Server-side prompt queue + runner ─────────────────────────────────────
+//
+// Prompts are queued per session and drained by a single browser-independent
+// runner loop. While a turn is streaming, freshly sent prompts accumulate;
+// when the turn ends the runner pulls ALL of them and submits them as one
+// batched prompt (blank-line joined). The loop lives in the server process,
+// so closing the browser doesn't stop it — the next batch still fires.
+
+const runners = new Set(); // keys (sessionId | placeholderId) with an active runner
+
+function queueStateMsg(key) {
+  return {
+    type: 'queue_state',
+    sessionId: key,
+    queue: promptQueue.list(key).map(i => ({ id: i.id, text: i.text })),
+  };
+}
+
+function broadcastQueue(key) {
+  broadcast(key, queueStateMsg(key));
+}
+
+// Idempotent: starts a runner for `key` if one isn't already draining it.
+function kickRunner(key, directory) {
+  if (runners.has(key)) return;
+  runners.add(key);
+  let activeKey = key;
+  (async () => {
+    try {
+      while (true) {
+        const items = promptQueue.dequeueAll(activeKey);
+        if (!items.length) break;
+        broadcastQueue(activeKey); // queue just drained → empty
+        const text = items.map(i => i.text).join('\n\n');
+        const images = items.flatMap(i => i.imagePaths || []);
+        const resolved = await runOneTurn(activeKey, directory, text, images);
+        // A placeholder resolved to a real session id mid-run: the queue and
+        // runner membership were already migrated inside runOneTurn at init.
+        if (resolved && resolved !== activeKey) {
+          runners.delete(activeKey);
+          activeKey = resolved;
+        }
+      }
+    } catch (e) {
+      console.error('[prompt-queue runner]', e);
+    } finally {
+      runners.delete(activeKey);
+    }
+  })();
+}
+
+// Runs a single `claude -p` turn for `key`. Returns the resolved session id
+// (the real id once a new session's init event arrives, otherwise `key`).
+async function runOneTurn(key, directory, prompt, imagePaths) {
+  const cfg = require('./auth').loadConfig();
+  const model = typeof cfg.model === 'string' ? cfg.model : null;
+  const effort = typeof cfg.effort === 'string' ? cfg.effort : null;
+
+  const isNewSession = pendingSessions.has(key);
+  let resolvedSessionId = isNewSession ? null : key;
+  const resumeSessionId = isNewSession ? null : key;
+  const processKey = key;
+
+  if (!isNewSession && sm.shouldAutoCompact(key, directory)) {
+    broadcast(key, { type: 'stream_start', sessionId: key, autoCompact: true });
+    try {
+      for await (const event of sm.runPrompt({
+        directory, prompt: '/compact',
+        resumeSessionId: key, processKey: key, model, effort,
+      })) {
+        broadcast(key, { type: 'stream_event', sessionId: key, event });
+      }
+    } catch (err) {
+      broadcast(key, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId: key });
+    } finally {
+      broadcast(key, { type: 'stream_end', sessionId: key });
+    }
+  }
+
+  // Tag the stream when the prompt itself is a manual /compact so the UI can
+  // show a "compacting…" indicator (auto-compact above sets its own flag).
+  const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
+  broadcast(key, { type: 'stream_start', sessionId: key, compact: isCompactCmd });
+
+  // AskUserQuestion intercept — the tool can't be answered in `-p` mode, so we
+  // surface the question, cancel the stream, and write a synthetic tool_result
+  // so the next /resume isn't left dangling.
+  let interceptedAUQ = null;
+
+  try {
+    for await (const event of sm.runPrompt({
+      directory, prompt, imagePaths, resumeSessionId, processKey, model, effort,
+    })) {
+      if (isNewSession && !resolvedSessionId
+          && event.type === 'system' && event.subtype === 'init' && event.session_id) {
+        resolvedSessionId = event.session_id;
+        // Claim the real id immediately so a concurrent kick(realId) (from a
+        // prompt sent after the client learns the new id) is a no-op rather
+        // than spawning a second runner.
+        runners.add(resolvedSessionId);
+        procTracker.rekey(key, resolvedSessionId);
+        rekeySubscribers(key, resolvedSessionId);
+        promptQueue.rekey(key, resolvedSessionId);
+        pendingSessions.delete(key);
+        broadcast(resolvedSessionId, { type: 'session_assigned', placeholderId: key, sessionId: resolvedSessionId });
+        broadcast(resolvedSessionId, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
+      }
+
+      if (!interceptedAUQ && event.type === 'assistant') {
+        const content = event.message && event.message.content;
+        if (Array.isArray(content)) {
+          const auq = content.find(b => b && b.type === 'tool_use' && b.name === 'AskUserQuestion');
+          if (auq) {
+            interceptedAUQ = {
+              toolUseId: auq.id,
+              questions: (auq.input && auq.input.questions) || [],
+            };
+            setTimeout(() => { try { procTracker.cancel(resolvedSessionId || key); } catch {} }, 200);
+          }
+        }
+      }
+
+      const bk = resolvedSessionId || key;
+      broadcast(bk, { type: 'stream_event', sessionId: bk, event });
+    }
+  } catch (err) {
+    const bk = resolvedSessionId || key;
+    broadcast(bk, { type: 'error', message: err.message, sessionId: bk });
+  } finally {
+    for (const p of imagePaths) { try { fs.unlinkSync(p); } catch {} }
+    const bk = resolvedSessionId || key;
+
+    if (interceptedAUQ && bk) {
+      try {
+        const tail = jsonlReader.readTailEntry(bk, directory);
+        const parentUuid = tail && typeof tail.uuid === 'string' ? tail.uuid : null;
+        const entry = {
+          parentUuid,
+          sessionId: bk,
+          type: 'user',
+          isMeta: false,
+          uuid: uuidv4(),
+          timestamp: new Date().toISOString(),
+          cwd: directory,
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: interceptedAUQ.toolUseId,
+              content: 'AskUserQuestion is unsupported in -p mode. The user will respond in plain text in the next prompt.',
+              is_error: true,
+            }],
+          },
+        };
+        jsonlReader.appendJsonlLine(bk, directory, entry);
+      } catch (e) {
+        // Non-fatal — resume will surface the dangling tool_use.
+      }
+      broadcast(bk, {
+        type: 'ask_user_question_intercepted',
+        sessionId: bk,
+        toolUseId: interceptedAUQ.toolUseId,
+        questions: interceptedAUQ.questions,
+      });
+    }
+
+    broadcast(bk, { type: 'stream_end', sessionId: bk });
+    if (isNewSession && pendingSessions.has(key)) {
+      pendingSessions.get(key).lastActivity = Date.now();
+    }
+  }
+
+  return resolvedSessionId || key;
 }
 
 function handleConnection(ws /*, req */) {
@@ -285,6 +461,7 @@ function handleConnection(ws /*, req */) {
             allowedTools: null,
             lastTokens: null,
           });
+          send(ws, queueStateMsg(sid));
           return;
         }
 
@@ -316,11 +493,17 @@ function handleConnection(ws /*, req */) {
           allowedTools: null,
           lastTokens,
         });
+        send(ws, queueStateMsg(sid));
         break;
       }
 
       case 'cancel':
+        // Stop the current turn AND drop everything queued behind it.
         procTracker.cancel(msg.sessionId);
+        if (msg.sessionId) {
+          promptQueue.clear(msg.sessionId);
+          broadcastQueue(msg.sessionId);
+        }
         break;
 
       case 'update_permissions':
@@ -397,15 +580,13 @@ function handleConnection(ws /*, req */) {
 
       case 'send_prompt': {
         const { prompt, imagePaths = [] } = msg;
-        let { sessionId } = msg;
+        const { sessionId } = msg;
         let directory = msg.directory;
 
         if (!prompt) { send(ws, { type: 'error', message: 'prompt required' }); return; }
         if (!sessionId) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
 
         const placeholder = pendingSessions.get(sessionId);
-        const isNewSession = !!placeholder;
-
         if (placeholder) directory = directory || placeholder.directory;
         else if (!directory) directory = findDirectoryForSessionId(sessionId);
 
@@ -414,137 +595,29 @@ function handleConnection(ws /*, req */) {
           return;
         }
 
+        // Enqueue and (re)start the runner. If a turn is already streaming this
+        // prompt accumulates and is batched into the next turn; otherwise the
+        // runner picks it up immediately. The runner is browser-independent —
+        // it keeps draining even if this socket closes.
         subscribe(sessionId, ws);
-        let resolvedSessionId = isNewSession ? null : sessionId;
-        const resumeSessionId = isNewSession ? null : sessionId;
-        const processKey = sessionId;
+        promptQueue.enqueue(sessionId, { text: prompt, imagePaths });
+        broadcastQueue(sessionId);
+        kickRunner(sessionId, directory);
+        break;
+      }
 
-        // Model / effort are app-wide settings chosen from the UI. Unset → let
-        // the CLI use its defaults.
-        const cfg = require('./auth').loadConfig();
-        const model = typeof cfg.model === 'string' ? cfg.model : null;
-        const effort = typeof cfg.effort === 'string' ? cfg.effort : null;
-
-        if (!isNewSession && sm.shouldAutoCompact(sessionId, directory)) {
-          broadcast(sessionId, { type: 'stream_start', sessionId, autoCompact: true });
-          try {
-            for await (const event of sm.runPrompt({
-              directory, prompt: '/compact',
-              resumeSessionId: sessionId, processKey: sessionId,
-              model, effort,
-            })) {
-              broadcast(sessionId, { type: 'stream_event', sessionId, event });
-            }
-          } catch (err) {
-            broadcast(sessionId, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId });
-          } finally {
-            broadcast(sessionId, { type: 'stream_end', sessionId });
-          }
+      case 'dequeue_item': {
+        if (msg.sessionId && msg.id) {
+          promptQueue.remove(msg.sessionId, msg.id);
+          broadcastQueue(msg.sessionId);
         }
+        break;
+      }
 
-        // Tag the stream when the prompt itself is a manual /compact so the UI
-        // can show a "compacting…" indicator (auto-compact above sets its own
-        // autoCompact flag).
-        const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
-        broadcast(sessionId, { type: 'stream_start', sessionId, compact: isCompactCmd });
-
-        // AskUserQuestion intercept state. The tool can't actually be answered
-        // in `-p` mode (no stdin channel for tool_result), so we surface the
-        // question to the user, cancel the stream, and write a synthetic
-        // tool_result into the jsonl so the next /resume isn't dangling.
-        let interceptedAUQ = null;
-
-        try {
-          for await (const event of sm.runPrompt({
-            directory, prompt, imagePaths,
-            resumeSessionId, processKey,
-            model, effort,
-          })) {
-            if (isNewSession && !resolvedSessionId
-                && event.type === 'system' && event.subtype === 'init' && event.session_id) {
-              resolvedSessionId = event.session_id;
-              procTracker.rekey(sessionId, resolvedSessionId);
-              rekeySubscribers(sessionId, resolvedSessionId);
-              pendingSessions.delete(sessionId);
-              send(ws, { type: 'session_assigned', placeholderId: sessionId, sessionId: resolvedSessionId });
-              // Refresh the sidebar so the placeholder row is replaced by the
-              // real session row — otherwise the user's first ⋯ menu would
-              // target the now-defunct placeholder id.
-              send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
-            }
-
-            // Scan assistant events for AskUserQuestion. We let the event
-            // through to the client so the model's preceding text still
-            // renders, then schedule a cancel after a brief delay to give
-            // claude time to flush this assistant turn to its jsonl.
-            if (!interceptedAUQ && event.type === 'assistant') {
-              const content = event.message && event.message.content;
-              if (Array.isArray(content)) {
-                const auq = content.find(b => b && b.type === 'tool_use' && b.name === 'AskUserQuestion');
-                if (auq) {
-                  interceptedAUQ = {
-                    toolUseId: auq.id,
-                    questions: (auq.input && auq.input.questions) || [],
-                  };
-                  setTimeout(() => { try { procTracker.cancel(processKey); } catch {} }, 200);
-                }
-              }
-            }
-
-            const bk = resolvedSessionId || sessionId;
-            broadcast(bk, { type: 'stream_event', sessionId: resolvedSessionId || sessionId, event });
-          }
-        } catch (err) {
-          const bk = resolvedSessionId || sessionId;
-          broadcast(bk, { type: 'error', message: err.message, sessionId: resolvedSessionId || sessionId });
-        } finally {
-          for (const p of imagePaths) { try { fs.unlinkSync(p); } catch {} }
-          const bk = resolvedSessionId || sessionId;
-
-          // AskUserQuestion follow-up: append a synthetic tool_result and tell
-          // the UI to render an explanatory banner. Best-effort — failures
-          // here don't poison the regular finalize path.
-          if (interceptedAUQ && (resolvedSessionId || sessionId)) {
-            const realSid = resolvedSessionId || sessionId;
-            try {
-              const tail = jsonlReader.readTailEntry(realSid, directory);
-              const parentUuid = tail && typeof tail.uuid === 'string' ? tail.uuid : null;
-              const { v4: uuidv4 } = require('uuid');
-              const entry = {
-                parentUuid,
-                sessionId: realSid,
-                type: 'user',
-                isMeta: false,
-                uuid: uuidv4(),
-                timestamp: new Date().toISOString(),
-                cwd: directory,
-                message: {
-                  role: 'user',
-                  content: [{
-                    type: 'tool_result',
-                    tool_use_id: interceptedAUQ.toolUseId,
-                    content: 'AskUserQuestion is unsupported in -p mode. The user will respond in plain text in the next prompt.',
-                    is_error: true,
-                  }],
-                },
-              };
-              jsonlReader.appendJsonlLine(realSid, directory, entry);
-            } catch (e) {
-              // Non-fatal — the resume will surface the dangling tool_use and
-              // claude will likely re-ask or error, which is informative enough.
-            }
-            broadcast(bk, {
-              type: 'ask_user_question_intercepted',
-              sessionId: realSid,
-              toolUseId: interceptedAUQ.toolUseId,
-              questions: interceptedAUQ.questions,
-            });
-          }
-
-          broadcast(bk, { type: 'stream_end', sessionId: resolvedSessionId || sessionId });
-          if (placeholder && pendingSessions.has(sessionId)) {
-            placeholder.lastActivity = Date.now();
-          }
+      case 'clear_queue': {
+        if (msg.sessionId) {
+          promptQueue.clear(msg.sessionId);
+          broadcastQueue(msg.sessionId);
         }
         break;
       }
