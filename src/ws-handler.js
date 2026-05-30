@@ -10,7 +10,6 @@ const projectsStore = require('./projects-store');
 const archiveStore = require('./archive-store');
 const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
-const cloneJobs = require('./clone-jobs');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -391,32 +390,6 @@ function handleConnection(ws /*, req */) {
         } catch (err) {
           send(ws, { type: 'error', message: err.message });
         }
-        break;
-      }
-
-      // ─── Git clone background jobs ─────────────────────────────────────────
-
-      case 'clone_start': {
-        try {
-          const jobId = cloneJobs.startClone({ url: msg.url, name: msg.name });
-          // Auto-subscribe the requester so their UI sees streaming output.
-          const state = cloneJobs.attach(jobId, ws);
-          send(ws, { type: 'clone_started', jobId, state });
-        } catch (err) {
-          send(ws, { type: 'clone_failed', error: err.message });
-        }
-        break;
-      }
-
-      case 'clone_attach': {
-        const state = cloneJobs.attach(msg.jobId, ws);
-        if (!state) { send(ws, { type: 'error', message: 'Clone job not found' }); return; }
-        send(ws, { type: 'clone_state', state });
-        break;
-      }
-
-      case 'list_clone_jobs': {
-        send(ws, { type: 'clone_jobs_list', jobs: cloneJobs.listJobs() });
         break;
       }
 

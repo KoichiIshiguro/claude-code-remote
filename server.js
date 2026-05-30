@@ -313,67 +313,6 @@ app.post('/api/projects/import', requireAuth, zipUpload.single('zip'), (req, res
   }
 });
 
-// Clone a remote repository into <accessRoot or $HOME>/<name>/ and register it.
-app.post('/api/projects/clone', requireAuth, (req, res) => {
-  const parent = defaultProjectParent();
-  const parentAbs = path.resolve(parent);
-
-  const { url, name: customName } = req.body || {};
-  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'url is required' });
-  if (url.length > 1000) return res.status(400).json({ error: 'url is too long' });
-  const urlOk =
-    /^https?:\/\/[^\s'"`;|&<>]+$/i.test(url) ||
-    /^git:\/\/[^\s'"`;|&<>]+$/i.test(url) ||
-    /^ssh:\/\/[^\s'"`;|&<>]+$/i.test(url) ||
-    /^[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+:[^\s'"`;|&<>]+$/.test(url);
-  if (!urlOk) return res.status(400).json({ error: 'Unsupported or unsafe git url' });
-
-  let name = customName;
-  if (!name) {
-    const m = url.match(/([^/:]+?)(?:\.git)?\/?$/);
-    name = m ? m[1] : null;
-  }
-  if (!name || !/^[a-zA-Z0-9_\-.]+$/.test(name)) {
-    return res.status(400).json({ error: 'Could not derive a valid folder name from URL; supply ?name=' });
-  }
-  const target = path.join(parentAbs, name);
-  if (!target.startsWith(parentAbs + path.sep) && target !== parentAbs) {
-    return res.status(400).json({ error: 'Invalid target path' });
-  }
-  if (fs.existsSync(target)) {
-    return res.status(409).json({ error: `Project "${name}" already exists` });
-  }
-
-  const { spawn } = require('child_process');
-  const proc = spawn('git', ['clone', '--', url, target], {
-    cwd: parentAbs,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-  });
-
-  let stderr = '';
-  proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-  const killTimer = setTimeout(() => { proc.kill('SIGTERM'); }, 5 * 60 * 1000);
-
-  proc.on('close', (code) => {
-    clearTimeout(killTimer);
-    if (code === 0) {
-      try {
-        const entry = projectsStore.addProject({ path: target, name });
-        res.json({ name: entry.name, path: entry.path, id: entry.id });
-      } catch (err) {
-        res.status(500).json({ error: err.message });
-      }
-    } else {
-      try { fs.rmSync(target, { recursive: true, force: true }); } catch {}
-      res.status(500).json({ error: stderr.trim() || `git exited with code ${code}` });
-    }
-  });
-  proc.on('error', (err) => {
-    clearTimeout(killTimer);
-    res.status(500).json({ error: err.message });
-  });
-});
 
 // File browser APIs — sandbox to registered projects + accessRoot.
 app.get('/api/files', requireAuth, (req, res) => {
@@ -418,7 +357,7 @@ app.get('/api/file', requireAuth, (req, res) => {
   const { path: filePath } = req.query;
   if (!filePath) return res.status(400).json({ error: 'path is required' });
   const absPath = path.resolve(filePath);
-  if (!projectsStore.isAllowedPath(absPath)) {
+  if (!sandboxedFsAllowed(absPath)) {
     return res.status(403).json({ error: 'Access denied' });
   }
   try {
@@ -441,7 +380,7 @@ app.post('/api/file/write', requireAuth, (req, res) => {
     return res.status(413).json({ error: `Content exceeds ${(FILE_READ_MAX/1024).toFixed(0)} KB limit` });
   }
   const absPath = path.resolve(filePath);
-  if (!projectsStore.isAllowedPath(absPath)) {
+  if (!sandboxedFsAllowed(absPath)) {
     return res.status(403).json({ error: 'Access denied' });
   }
   if (isBinaryExt(absPath)) {
@@ -466,7 +405,7 @@ app.get('/api/file/raw', requireAuth, (req, res) => {
   const { path: filePath } = req.query;
   if (!filePath) return res.status(400).send('path is required');
   const absPath = path.resolve(filePath);
-  if (!projectsStore.isAllowedPath(absPath)) {
+  if (!sandboxedFsAllowed(absPath)) {
     return res.status(403).send('Access denied');
   }
   res.sendFile(absPath, (err) => {

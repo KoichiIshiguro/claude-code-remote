@@ -312,6 +312,13 @@
   .bc-seg { color: var(--accent); cursor: pointer; }
   .bc-seg:hover { text-decoration: underline; }
   .bc-sep { color: var(--border); padding: 0 1px; }
+  .bc-edit { margin-left: auto; color: var(--text-muted); cursor: pointer; padding: 0 2px 0 6px; flex-shrink: 0; }
+  .bc-edit:hover { color: var(--accent); }
+  .fb-path-input {
+    flex: 1; min-width: 0; background: var(--surface2); color: var(--text);
+    border: 1px solid var(--accent); border-radius: 4px; padding: 3px 6px;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; outline: none;
+  }
   .fb-list { flex: 1; overflow-y: auto; }
   .fb-item {
     display: flex; align-items: center; gap: 8px;
@@ -1709,7 +1716,7 @@ document.getElementById('fbTabAll').addEventListener('click', () => fbSwitchTab(
 document.getElementById('fbSelectToggle').addEventListener('click', () => fbSetSelectMode(!fbSelectMode));
 
 document.getElementById('fbNewFolder').addEventListener('click', async () => {
-  if (!fbInSandbox(fbCurrentDir)) { alert('サンドボックス内のフォルダでのみ作成できます'); return; }
+  if (!fbCurrentDir || fbCurrentDir === FB_ROOTS) { alert('フォルダを開いてから作成してください'); return; }
   const name = prompt('新規フォルダ名');
   if (!name) return;
   const r = await fetch('/api/fs/mkdir', {
@@ -2328,16 +2335,14 @@ function fbSyncActionBar() {
   const n = fbSelection.size;
   bar.classList.toggle('has-sel', n > 0);
   document.getElementById('fbSelCount').textContent = n ? `${n} 件選択` : '';
-  const sel = [...fbSelection];
-  const allInSandbox = n > 0 && sel.every(fbInSandbox);
-  // move/copy: always available when something's picked (dest is chosen in-sandbox).
+  // User-driven ops run with full access scope; the backend enforces the scope
+  // and the project-root safety rails. So gate purely on selection/location.
   document.getElementById('fbActMove').disabled = n === 0;
   document.getElementById('fbActCopy').disabled = n === 0;
-  // delete: only sandbox files (can't touch outside). rename: exactly one, in-sandbox.
-  document.getElementById('fbActDelete').disabled = n === 0 || !allInSandbox;
-  document.getElementById('fbActRename').disabled = n !== 1 || !allInSandbox;
-  // new-folder only where the current dir is writable (in-sandbox).
-  document.getElementById('fbNewFolder').disabled = !(fbCurrentDir && fbCurrentDir !== FB_ROOTS && fbInSandbox(fbCurrentDir));
+  document.getElementById('fbActDelete').disabled = n === 0;
+  document.getElementById('fbActRename').disabled = n !== 1;
+  // new-folder anywhere we're inside a real directory listing.
+  document.getElementById('fbNewFolder').disabled = !(fbCurrentDir && fbCurrentDir !== FB_ROOTS);
 }
 
 function fbSetSelectMode(on) {
@@ -2374,7 +2379,7 @@ async function openDestPicker(op) {
   if (!fbSelection.size) return;
   _destOp = op; _destDir = null;
   document.getElementById('fmDestTitle').textContent =
-    (op === 'move' ? '移動先' : 'コピー先') + 'を選択（サンドボックス内）';
+    (op === 'move' ? '移動先' : 'コピー先') + 'を選択';
   document.getElementById('fmDestError').textContent = '';
   document.getElementById('fmDestOverlay').classList.add('on');
   await fbEnsureMeta();
@@ -2389,16 +2394,19 @@ function renderDestBread() {
     s.addEventListener('click', () => destNavigate(target)); bread.appendChild(s);
   };
   const sep = () => { const x = document.createElement('span'); x.className = 'fb-sep'; x.textContent = '/'; bread.appendChild(x); };
+  const tail = (base, full) => {
+    for (const s of (full === base ? '' : full.slice(base.length)).split('/').filter(Boolean)) {
+      base = base.replace(/\/+$/, '') + '/' + s; sep(); seg(s, base);
+    }
+  };
   seg('📦', null);
   if (_destDir === null) return;
   const proj = fbProjects.find(p => _destDir === p.path || _destDir.startsWith(p.path + '/'));
-  if (!proj) return;
-  sep(); seg(proj.name, proj.path);
-  let built = proj.path;
-  for (const s of _destDir.slice(proj.path.length).split('/').filter(Boolean)) {
-    built = built.replace(/\/+$/, '') + '/' + s;
-    sep(); seg(s, built);
-  }
+  if (proj) { sep(); seg(proj.name, proj.path); tail(proj.path, _destDir); return; }
+  // outside any project: root-anchored full path, with a home shortcut chip.
+  sep(); seg('/', '/');
+  if (fbHome && (_destDir === fbHome || _destDir.startsWith(fbHome + '/'))) { sep(); seg('🏠', fbHome); tail(fbHome, _destDir); }
+  else tail('/', _destDir);
 }
 
 async function destNavigate(dir) {
@@ -2408,13 +2416,16 @@ async function destNavigate(dir) {
   listEl.innerHTML = '<div class="fp-empty">読み込み中…</div>';
   if (dir === null) {
     listEl.innerHTML = '';
-    if (!fbProjects.length) { listEl.innerHTML = '<div class="fp-empty">プロジェクトが未登録です</div>'; return; }
-    for (const p of fbProjects) {
+    const addRow = (ico, name, target) => {
       const row = document.createElement('div'); row.className = 'fp-row';
-      row.innerHTML = `<span class="fp-ico">📦</span><span class="fp-name">${escHtml(p.name)}</span>`;
-      row.addEventListener('click', () => destNavigate(p.path));
+      row.innerHTML = `<span class="fp-ico">${ico}</span><span class="fp-name">${escHtml(name)}</span>`;
+      row.addEventListener('click', () => destNavigate(target));
       listEl.appendChild(row);
-    }
+    };
+    for (const p of fbProjects) addRow('📦', p.name, p.path);
+    // full-access entry points so a destination can be chosen anywhere in scope.
+    if (fbHome) addRow('🏠', 'ホーム', fbHome);
+    addRow('💽', '/ (ルート)', '/');
     return;
   }
   try {
@@ -2437,7 +2448,7 @@ document.getElementById('fmDestClose').addEventListener('click', closeDestPicker
 document.getElementById('fmDestCancel').addEventListener('click', closeDestPicker);
 document.getElementById('fmDestSubmit').addEventListener('click', async () => {
   const errEl = document.getElementById('fmDestError');
-  if (!_destDir || !fbInSandbox(_destDir)) { errEl.textContent = 'サンドボックス内のフォルダを開いてください'; return; }
+  if (!_destDir || _destDir === FB_ROOTS) { errEl.textContent = '移動先フォルダを開いてください'; return; }
   const sources = [...fbSelection];
   const r = await fetch(`/api/fs/${_destOp}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2607,16 +2618,49 @@ function renderBread(dir) {
 
   if (fbTab === 'sandbox') {
     addSeg('📦', FB_ROOTS);                          // → roots view
-    if (dir === FB_ROOTS) return;
-    const proj = fbProjects.find(p => dir === p.path || dir.startsWith(p.path + '/'));
-    if (!proj) { addSep(); addSeg(dir, dir); return; }
-    addSep(); addSeg(proj.name, proj.path);
-    appendTail(proj.path, dir);
+    if (dir !== FB_ROOTS) {
+      const proj = fbProjects.find(p => dir === p.path || dir.startsWith(p.path + '/'));
+      if (!proj) { addSep(); addSeg(dir, dir); }
+      else { addSep(); addSeg(proj.name, proj.path); appendTail(proj.path, dir); }
+    }
   } else {
-    const base = fbAccessRoot || fbHome || '/';
-    addSeg(fbAccessRoot ? '🌐' : (fbHome ? '🏠' : '/'), base);
-    appendTail(base, dir);
+    // 全体 tab: root-anchored so the FULL absolute path is shown and every
+    // ancestor (incl. outside home) is reachable. accessRoot null = full disk.
+    addSeg('/', '/');
+    const homeUnder = fbHome && (dir === fbHome || dir.startsWith(fbHome + '/'));
+    if (homeUnder) { addSep(); addSeg('🏠', fbHome); appendTail(fbHome, dir); }
+    else appendTail('/', dir);
   }
+  // trailing edit affordance: type/paste a full absolute path to jump anywhere.
+  if (dir !== FB_ROOTS) {
+    const edit = document.createElement('span');
+    edit.className = 'bc-edit'; edit.textContent = '✎'; edit.title = 'パスを入力';
+    edit.addEventListener('click', fbEditPath);
+    bread.appendChild(edit);
+  }
+}
+
+// Swap the breadcrumb for a text input pre-filled with the full current path.
+function fbEditPath() {
+  const bread = document.getElementById('fbBread'); bread.innerHTML = '';
+  const inp = document.createElement('input');
+  inp.className = 'fb-path-input';
+  inp.value = (fbCurrentDir && fbCurrentDir !== FB_ROOTS) ? fbCurrentDir : (fbHome || '/');
+  inp.spellcheck = false; inp.autocapitalize = 'off'; inp.autocomplete = 'off'; inp.autocorrect = 'off';
+  bread.appendChild(inp);
+  inp.focus(); inp.select();
+  let done = false;
+  const cancel = () => { if (done) return; done = true; renderBread(fbCurrentDir); };
+  const commit = () => {
+    if (done) return; done = true;
+    const v = inp.value.trim();
+    if (v) loadDir(v.replace(/\/+$/, '') || '/'); else renderBread(fbCurrentDir);
+  };
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  inp.addEventListener('blur', () => setTimeout(cancel, 120));
 }
 
 function getFileIcon(name) {

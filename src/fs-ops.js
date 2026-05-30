@@ -2,12 +2,16 @@
 
 // Guarded filesystem mutations for the file-manager UI.
 //
-// Encapsulation policy (see design discussion):
-//   - WRITE/DELETE targets must live inside a registered project (the sandbox).
-//   - READ sources may live anywhere browse-allowed (accessRoot), so files can
-//     be pulled INTO the sandbox, but nothing outside it can be clobbered.
-//   - Symlink escapes are defused by realpath-ing the *parent* dir and joining a
-//     sanitized basename, never trusting a caller-supplied full path for a target.
+// Access policy:
+//   These are USER-driven operations through the front-end file manager, so they
+//   run with the user's full access scope — anywhere under accessRoot (the whole
+//   disk when accessRoot is null), plus any registered project. They are NOT
+//   confined to the sandbox: confinement is the job of the per-session claude -p
+//   seatbelt sandbox (session-manager.js), which limits what Claude can touch.
+//   Restricting the user here too would block basic actions like creating a
+//   folder for a brand-new project. The only hard guards kept below are narrow
+//   safety rails (no deleting/renaming/moving a *registered project root*, which
+//   would orphan its sidebar entry — remove it from the sidebar instead).
 
 const fs = require('fs');
 const path = require('path');
@@ -17,10 +21,10 @@ function err(message, code) {
   return Object.assign(new Error(message), { httpCode: code || 400 });
 }
 
-// A path is a valid mutation target if it sits inside a registered project.
-const inSandbox = (abs) => projectsStore.isAllowedPath(abs);
-// A path is a valid read source if it's browse-allowed (accessRoot) or sandbox.
-const canRead = (abs) => projectsStore.isAllowedPath(abs) || projectsStore.isBrowseAllowed(abs);
+// A path is operable if it's browse-allowed (under accessRoot, or full disk when
+// accessRoot is null) or inside a registered project.
+const canWrite = (abs) => projectsStore.isAllowedPath(abs) || projectsStore.isBrowseAllowed(abs);
+const canRead = canWrite;
 
 function safeName(name) {
   if (typeof name !== 'string' || !name.trim()) throw err('name is required');
@@ -41,10 +45,10 @@ function isProjectRoot(abs) {
   return projectsStore.loadProjects().some((p) => p.path === abs);
 }
 
-// Create a new folder inside a sandbox directory.
+// Create a new folder. Destination must be within the user's access scope.
 function mkdir(parent, name) {
   const absParent = projectsStore.normalizePath(parent);
-  if (!inSandbox(absParent)) throw err('destination is outside the sandbox', 403);
+  if (!canWrite(absParent)) throw err('destination is outside the access scope', 403);
   requireDir(absParent, 'destination');
   const target = path.join(absParent, safeName(name));
   if (fs.existsSync(target)) throw err('a file or folder with that name already exists', 409);
@@ -52,12 +56,12 @@ function mkdir(parent, name) {
   return target;
 }
 
-// Permanently delete sandbox files/folders. Refuses to delete a project root.
+// Permanently delete files/folders in scope. Refuses to delete a project root.
 function remove(paths) {
   if (!Array.isArray(paths) || !paths.length) throw err('paths is required');
   const abs = paths.map((p) => projectsStore.normalizePath(p));
   for (const a of abs) {
-    if (!inSandbox(a)) throw err(`outside the sandbox: ${a}`, 403);
+    if (!canWrite(a)) throw err(`outside the access scope: ${a}`, 403);
     if (isProjectRoot(a)) throw err('cannot delete a registered project root — remove it from the sidebar instead', 400);
   }
   const removed = [];
@@ -68,10 +72,10 @@ function remove(paths) {
   return removed;
 }
 
-// Rename a sandbox file/folder in place.
+// Rename a file/folder in place.
 function rename(target, newName) {
   const abs = projectsStore.normalizePath(target);
-  if (!inSandbox(abs)) throw err('outside the sandbox', 403);
+  if (!canWrite(abs)) throw err('outside the access scope', 403);
   if (isProjectRoot(abs)) throw err('cannot rename a registered project root', 400);
   const dest = path.join(path.dirname(abs), safeName(newName));
   if (fs.existsSync(dest)) throw err('a file or folder with that name already exists', 409);
@@ -79,11 +83,11 @@ function rename(target, newName) {
   return dest;
 }
 
-// Shared transfer core for move/copy. dest dir must be sandbox; sources readable.
+// Shared transfer core for move/copy. dest + sources must be within the scope.
 function transfer(sources, destDir, { deleteSource }) {
   if (!Array.isArray(sources) || !sources.length) throw err('sources is required');
   const absDest = projectsStore.normalizePath(destDir);
-  if (!inSandbox(absDest)) throw err('destination is outside the sandbox', 403);
+  if (!canWrite(absDest)) throw err('destination is outside the access scope', 403);
   requireDir(absDest, 'destination');
 
   const planned = [];
