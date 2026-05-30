@@ -148,6 +148,7 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
   // Confine the child to `directory` (+ ~/.claude + temp). The server is
   // unaffected — only this spawned claude is sandboxed.
   const [bin, spawnArgs] = sandboxed(claudeBin, args, directory);
+
   const proc = spawn(bin, spawnArgs, { cwd: directory, env: { ...process.env } });
   procTracker.register(processKey, proc);
 

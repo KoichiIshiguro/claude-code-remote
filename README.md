@@ -90,6 +90,23 @@ This deletes `data/admin.json` and exits. The next `npm start` will redirect to 
 
 If you want the server to come up automatically when the machine restarts, wire it up with launchd (macOS), systemd (Linux), or the Windows Task Scheduler — pointing at `node server.js` in this directory.
 
+> **⚠️ Background services need a long-lived auth token.** When `claude` runs
+> interactively it reads its OAuth credentials from your login Keychain. A
+> launchd/systemd background agent runs *outside* your GUI login session and
+> **cannot read that Keychain**, so it falls back to a stale token and every
+> prompt fails with `401 Invalid authentication credentials`. Fix it once:
+> on your everyday GUI machine, open a real terminal and run
+> ```bash
+> claude setup-token        # opens a browser to authorize — needs a TTY
+> ```
+> then put the printed token in this directory's `.env` and restart the service:
+> ```bash
+> echo 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...' >> .env
+> ```
+> The server passes it straight to each spawned `claude`, so auth no longer
+> depends on the Keychain. (Running `node server.js` by hand in your own shell
+> doesn't need this — that shell already has Keychain access.)
+
 ### (Optional) Public HTTPS
 
 If you want to expose this on the open internet instead of Tailscale, **don't** — but if you must, terminate TLS in front (Apache / Caddy / nginx), add HTTP basic-auth at the proxy on top of the built-in ID/PW, and seriously consider switching `BASE_DIR` to a sandboxed subtree.
@@ -161,6 +178,7 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 | `PORT` | HTTP port. Default `4000` |
 | `BASE_DIR` | Root for the project picker. Overrides the value chosen at `/setup` |
 | `CLAUDE_PATH` | Absolute path to `claude` — set when PATH isn't inherited (PM2 / systemd / launchd) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Long-lived auth token from `claude setup-token`. **Required when running under launchd/systemd**, which can't read the login Keychain — without it every prompt 401s. See *Run on boot* above |
 | `SESSION_SECRET` | Override the auto-generated one (useful for shared cookie domains across deployments) |
 | `CLAUDE_AUTO_COMPACT_THRESHOLD` | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context models). Set to e.g. `835000` for 1M tiers |
 | `NODE_ENV=production` | Enforce HTTPS-only session cookies. Only set when terminating TLS in front |
@@ -175,13 +193,13 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 - **`--dangerously-skip-permissions` is on by default** because this UI is your personal remote. If you expose it, you're trusting Claude with your filesystem — restrict `BASE_DIR` to a safe subtree.
 - **Per-session OS sandbox (macOS).** Even with `--dangerously-skip-permissions`, each spawned `claude` is wrapped in `sandbox-exec` (kernel-level Seatbelt) so it **cannot write anywhere outside its own session folder** (plus `~/.claude` and temp) and **cannot read sibling projects or climb above the session folder** — enforced on the syscall, so it holds against `bash`/`cat` too. The Node server itself is *not* sandboxed (it needs full access for the picker, git clone, and the file viewer); only the LLM child is. Auth (`~/.claude.json` + Keychain) stays reachable so Claude still works. macOS-only; set `CLAUDE_SANDBOX=0` to disable. No effect on Linux/Windows yet.
 - **Single-user by design.** There is no multi-user mode and no admin panel. That is the entire security model.
-- **Session store is in-memory** — PM2 reload signs you out. Swap to `connect-sqlite3` or `connect-redis` if that bothers you (a few-line change in `src/auth.js`).
+- **Session store is file-backed** (`data/auth-sessions.json`, atomic writes via `src/session-store.js`), so a server restart or PM2 reload no longer signs you out. Swap to `connect-sqlite3` / `connect-redis` if you outgrow a single JSON file.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] Persistent session store (SQLite) so PM2 reload doesn't sign you out
+- [x] Persistent session store so a restart / PM2 reload doesn't sign you out
 - [ ] Docker image
 - [ ] CodeMirror live editing in the file viewer
 - [ ] Push notifications when long prompts finish
