@@ -148,7 +148,7 @@
   .proj-new-btn:hover { opacity: .85; }
   .proj-new-hint { font-size: 11px; color: var(--text-muted); margin-top: 5px; padding: 0 2px; }
 
-  /* Pull-up menu above the "+ 新規プロジェクト" button */
+  /* "+ 新規プロジェクト" button row */
   .proj-new-row { display: flex; gap: 6px; align-items: stretch; }
   .pullup-trigger {
     flex: 1; padding: 9px 12px; background: var(--accent); color: var(--bg);
@@ -182,21 +182,6 @@
   body.delete-mode .proj-new-btn-inline,
   body.delete-mode .sess-menu-btn { display: none; }
   body.delete-mode .sess-item { pointer-events: none; opacity: .5; }
-  .pullup-menu {
-    position: absolute; bottom: calc(100% + 4px); left: 8px; right: 8px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); padding: 4px; display: none;
-    box-shadow: 0 -6px 18px rgba(0,0,0,.35);
-    z-index: 60;
-  }
-  .pullup-menu.on { display: block; }
-  .pullup-item {
-    display: flex; align-items: center; gap: 10px;
-    padding: 9px 10px; cursor: pointer; border-radius: 4px; font-size: 13px;
-    color: var(--text);
-  }
-  .pullup-item:hover { background: var(--surface2); }
-  .pullup-item .pi-icon { font-size: 15px; width: 18px; text-align: center; }
 
   /* Per-project ↻ restore button — sits next to + */
   .proj-restore-btn {
@@ -640,10 +625,6 @@
       <button class="pullup-trigger" id="newProjTrigger">+ 新規プロジェクト</button>
       <button class="proj-delete-toggle" id="projDeleteToggle" title="プロジェクトを取り外す" aria-label="Delete projects">🗑</button>
     </div>
-    <div class="pullup-menu" id="newProjMenu">
-      <div class="pullup-item" id="puFolder"><span class="pi-icon">📁</span><span>フォルダを追加</span></div>
-      <div class="pullup-item" id="puClone"><span class="pi-icon">🌐</span><span>Git clone</span></div>
-    </div>
     <div class="del-mode-hint" id="delModeHint">取り外したいプロジェクトをタップ。もう一度 🗑 で解除。</div>
   </div>
 </aside>
@@ -723,7 +704,7 @@
     </div>
   </div>
   <div class="fb-tabs" id="fbTabs">
-    <div class="fb-tab on" data-tab="sandbox" id="fbTabSandbox">サンドボックス</div>
+    <div class="fb-tab on" data-tab="sandbox" id="fbTabSandbox">作業フォルダ</div>
     <div class="fb-tab" data-tab="all" id="fbTabAll">全体</div>
   </div>
   <div class="fb-toolbar" id="fbToolbar">
@@ -1998,32 +1979,24 @@ async function refreshProjects() {
   rerenderProjList();
 }
 
-// ── Pull-up menu: + 新規プロジェクト ──────────────────────────────────────────
+// ── + 新規プロジェクト → フォルダ選択モーダルを直接開く ──────────────────────
 const newProjTrigger = document.getElementById('newProjTrigger');
-const newProjMenu = document.getElementById('newProjMenu');
-function closePullUp() { newProjMenu.classList.remove('on'); }
-newProjTrigger.addEventListener('click', (ev) => {
-  ev.stopPropagation();
-  newProjMenu.classList.toggle('on');
-});
-document.addEventListener('click', (ev) => {
-  if (!newProjMenu.contains(ev.target) && ev.target !== newProjTrigger) closePullUp();
-});
-
-document.getElementById('puFolder').addEventListener('click', () => {
-  closePullUp();
+function openFolderPicker() {
   document.getElementById('addFolderError').textContent = '';
   document.getElementById('fpNewName').value = '';
   document.getElementById('addFolderOverlay').classList.add('on');
   // Browse from accessRoot or home — server resolves which.
   fpNavigate(null);
+}
+newProjTrigger.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  openFolderPicker();
 });
 
 // Delete-mode toggle: 🗑 next to "+ 新規". Active state shown via body.delete-mode.
 const projDeleteToggle = document.getElementById('projDeleteToggle');
 function setDeleteMode(on) {
   document.body.classList.toggle('delete-mode', !!on);
-  if (on) closePullUp();
 }
 projDeleteToggle.addEventListener('click', (ev) => {
   ev.stopPropagation();
@@ -2032,20 +2005,6 @@ projDeleteToggle.addEventListener('click', (ev) => {
 // Esc exits delete-mode
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape' && document.body.classList.contains('delete-mode')) setDeleteMode(false);
-});
-
-document.getElementById('puClone').addEventListener('click', () => {
-  closePullUp();
-  document.getElementById('cloneUrl').value = '';
-  document.getElementById('cloneName').value = '';
-  document.getElementById('cloneError').textContent = '';
-  document.getElementById('cloneStatus').textContent = '';
-  const out = document.getElementById('cloneOutput');
-  out.textContent = ''; out.classList.add('hidden');
-  document.getElementById('cloneSubmit').disabled = false;
-  document.getElementById('cloneSubmit').textContent = 'Clone';
-  document.getElementById('cloneOverlay').classList.add('on');
-  setTimeout(() => document.getElementById('cloneUrl').focus(), 50);
 });
 
 // ── Folder picker (replaces the old absolute-path text input) ────────────
