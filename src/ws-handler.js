@@ -497,12 +497,23 @@ function handleConnection(ws /*, req */) {
         break;
       }
 
+      case 'ping':
+        // Client heartbeat. Reply so the client can detect a half-open socket
+        // (common on mobile when backgrounded / on a network handoff) and force
+        // a reconnect instead of getting stuck on a stale "Working" state.
+        send(ws, { type: 'pong' });
+        break;
+
       case 'cancel':
         // Stop the current turn AND drop everything queued behind it.
         procTracker.cancel(msg.sessionId);
         if (msg.sessionId) {
           promptQueue.clear(msg.sessionId);
           broadcastQueue(msg.sessionId);
+          // Always flip every live client off "Working", even if the process
+          // had already finished (so cancel() was a no-op and no stream_end
+          // would otherwise fire). Idempotent on the client.
+          broadcast(msg.sessionId, { type: 'stream_end', sessionId: msg.sessionId });
         }
         break;
 

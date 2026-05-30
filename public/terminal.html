@@ -954,6 +954,21 @@ function openLinksInNewTab(root) {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let ws, isStreaming = false, pendingImages = [], dotTimer = null;
+// Heartbeat: mobile sockets often go "half-open" (the TCP connection dies but
+// no `close` event fires), so a finished turn's stream_end never arrives and
+// the UI sticks on "Working". We ping periodically; if we hear nothing back for
+// too long the socket is dead — force-close it to trigger reconnect + re-attach.
+let lastRx = 0, hbTimer = null;
+function stopHeartbeat() { if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } }
+function startHeartbeat() {
+  stopHeartbeat();
+  lastRx = Date.now();
+  hbTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastRx > 35000) { try { ws.close(); } catch {} return; }
+    try { ws.send(JSON.stringify({ type: 'ping' })); } catch {}
+  }, 15000);
+}
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
 let currentToolEls = {};
 // Queue is authoritative on the server now; this just mirrors the last
@@ -1013,9 +1028,11 @@ async function connect() {
     // have been opened during a disconnect, dropping its wsSend.
     if (typeof refreshProjects === 'function') refreshProjects();
     else ws.send(JSON.stringify({ type: 'list_sessions' }));
+    startHeartbeat();
   });
-  ws.addEventListener('message', e => handleMessage(JSON.parse(e.data)));
+  ws.addEventListener('message', e => { lastRx = Date.now(); handleMessage(JSON.parse(e.data)); });
   ws.addEventListener('close', () => {
+    stopHeartbeat();
     document.getElementById('reconnectBanner').classList.add('on');
     setTimeout(connect, 2000);
   });
@@ -1025,6 +1042,9 @@ function wsSend(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.
 // ── Message handling ──────────────────────────────────────────────────────────
 function handleMessage(msg) {
   switch (msg.type) {
+    case 'pong':
+      // Liveness only — lastRx was already stamped by the message listener.
+      break;
     case 'history': {
       const dir = msg.directory || '';
       document.getElementById('dirLabel').textContent = dir || sessionId;
@@ -1559,7 +1579,14 @@ async function sendPrompt() {
 }
 function dispatchPrompt(text, paths) { wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths}); }
 
-document.getElementById('cancelBtn').addEventListener('click', () => { wsSend({type:'cancel',sessionId}); });
+document.getElementById('cancelBtn').addEventListener('click', () => {
+  wsSend({type:'cancel',sessionId});
+  // Optimistic: unstick the UI immediately. If the socket is half-open or the
+  // turn already finished server-side, the cancel/stream_end round-trip may
+  // never arrive — don't make the user wait on it to escape "Working".
+  isStreaming = false;
+  setStreamingUI(false);
+});
 
 // /compact — summarize the conversation to shrink context. Routed through the
 // normal send_prompt path (the server treats it as a slash command, same as
@@ -2933,6 +2960,20 @@ window.addEventListener('beforeunload', (ev) => {
 })();
 
 connect();
+
+// Returning to the app (mobile foreground / tab refocus) is the moment a
+// half-open socket and a missed stream_end usually surface. Re-sync: if the
+// socket is gone, reconnect; if it claims open, re-attach to pull fresh
+// streaming state (the watchdog will close it shortly if it's actually dead).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    connect();
+  } else if (ws.readyState === WebSocket.OPEN) {
+    lastRx = Date.now();
+    wsSend({ type: 'attach', sessionId });
+  }
+});
 </script>
 </body>
 </html>

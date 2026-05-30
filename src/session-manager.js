@@ -169,8 +169,22 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
   // unaffected — only this spawned claude is sandboxed.
   const [bin, spawnArgs] = sandboxed(claudeBin, args, directory);
 
-  const proc = spawn(bin, spawnArgs, { cwd: directory, env: { ...process.env } });
+  // `detached: true` makes the child its own process-group leader so cancel can
+  // signal the WHOLE tree (sandbox-exec → claude → tool subprocesses). Killing
+  // just the sandbox-exec pid doesn't work: it doesn't forward SIGTERM to the
+  // claude it wraps, leaving an orphan that keeps the stdout pipe open.
+  const proc = spawn(bin, spawnArgs, { cwd: directory, env: { ...process.env }, detached: true });
   procTracker.register(processKey, proc);
+
+  // Drain stderr CONCURRENTLY into a buffer. The OS pipe buffer is ~64KB; if we
+  // only read stderr AFTER stdout reaches EOF (a sequential `for await`), a
+  // child that writes >64KB to stderr during the turn blocks on that write,
+  // never closes stdout, and the stdout loop below hangs forever — the session
+  // sticks as "running" and the UI never leaves "Working". Reading stderr as it
+  // arrives keeps the pipe drained so the child can always finish and exit.
+  let stderr = '';
+  proc.stderr.on('data', d => { stderr += d.toString(); });
+  proc.stderr.on('error', () => {});
 
   let buffer = '';
   try {
@@ -190,11 +204,9 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
     try { yield JSON.parse(buffer.trim()); } catch { /* ignore */ }
   }
 
-  let stderr = '';
-  for await (const chunk of proc.stderr) stderr += chunk.toString();
   await new Promise(r => proc.on('close', r));
 
-  if (proc.signalCode === 'SIGTERM') {
+  if (proc.signalCode === 'SIGTERM' || proc.signalCode === 'SIGKILL') {
     yield { type: 'cancelled' };
   } else if (proc.exitCode !== 0 && stderr) {
     yield { type: 'error', message: stderr.trim() };
