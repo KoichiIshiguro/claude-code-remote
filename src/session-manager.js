@@ -23,18 +23,19 @@ const { jsonlPathFor, readHistory, getLastTokens } = require('./jsonl-reader');
 // Strategy: we must START from `(allow default)`. A `(deny default)` profile
 // blocks reads of the dyld shared cache and system dylibs, so NO binary can even
 // exec inside the sandbox (it aborts with SIGABRT). From that permissive base we
-// carve out the two things that matter for THIS tool's threat model — keeping a
-// session's claude from touching anything but its own project folder:
-//   1. file-write*  — denied everywhere, re-allowed only in workdir / ~/.claude /
-//                     ~/.claude.json / temp. So claude can't modify any file
-//                     outside its session, anywhere on disk.
-//   2. file-read*   — denied across the project tree (the workdir's parent and
-//                     BASE_DIR), re-allowed only for the workdir itself. So a
-//                     session can't read sibling projects or climb to the parent.
-// We deliberately do NOT deny all of $HOME: claude's own auth lives in the macOS
-// Keychain (~/Library/Keychains) and its state in ~/.claude.json, so a blanket
-// $HOME deny breaks claude itself. The goal here is project isolation, not $HOME
-// lockdown. Rules are last-match-wins, so re-allows are placed AFTER the denies.
+// carve out the ONE thing that matters for THIS tool's threat model — keeping a
+// session's claude from MODIFYING anything but its own project folder:
+//   file-write*  — denied everywhere, re-allowed only in workdir / ~/.claude /
+//                  ~/.claude.json / regenerable caches / temp. So claude can't
+//                  modify, create, or delete any file outside its session.
+// READS are intentionally left open (`allow default`): this is a single-user dev
+// box on a private network, so isolating the user's own projects from each other
+// on read has little value, and read-denies on the project tree forced fragile
+// realpath/metadata workarounds that broke `node -c`, Python imports, and build
+// tools. Write isolation is the real protection and it stays strict.
+// We also do NOT deny $HOME: claude's auth lives in the macOS Keychain
+// (~/Library/Keychains) and its state in ~/.claude.json, so a blanket $HOME deny
+// would break claude itself. Rules are last-match-wins; re-allows follow denies.
 // macOS only; no-op elsewhere or when CLAUDE_SANDBOX=0.
 // Debug denials with: log stream --style compact --predicate 'sender=="Sandbox"'
 function buildSandboxProfile(workdir) {
@@ -46,39 +47,51 @@ function buildSandboxProfile(workdir) {
   // a .tmp sibling it writes-then-renames). Match the whole family.
   const claudeJson = `(regex #"^${reEsc(path.join(home, '.claude.json'))}")`;
 
+  // Package-manager / tool CACHES & global stores. These live outside the
+  // workdir but holding them read-only breaks `npm/pnpm/pip install`, build
+  // tools, and language toolchains, which write to a shared per-user cache.
+  // They're regenerable caches and global stores — NOT other projects' source
+  // — so allowing writes here keeps project-to-project isolation intact while
+  // letting installs work. (~/.ssh and friends stay untouched: not listed.)
+  const cacheDirs = [
+    path.join(home, '.cache'),             // XDG cache: pip, yarn berry, go, many tools
+    path.join(home, 'Library', 'Caches'),  // macOS per-user caches
+    path.join(home, '.npm'),               // npm cache
+    path.join(home, '.pnpm-store'),        // pnpm content-addressable store (legacy loc)
+    path.join(home, '.local', 'share', 'pnpm'),  // pnpm home / global bin (XDG)
+    path.join(home, 'Library', 'pnpm'),    // pnpm home on macOS (default PNPM_HOME)
+    path.join(home, '.yarn'),              // yarn global / classic cache
+    path.join(home, '.bun'),               // bun install cache & global bin
+    path.join(home, '.deno'),              // deno module cache
+    path.join(home, '.cargo'),             // rust registry cache + installed bins
+    path.join(home, '.rustup'),            // rust toolchains
+    path.join(home, 'go', 'pkg', 'mod'),   // go module cache
+  ];
+
   // Where the child may WRITE (everywhere else is read-only).
   const writeOk = [
     workdir,
     path.join(home, '.claude'),       // transcripts (--resume), auth, todos, logs
+    ...cacheDirs,
     os.tmpdir(), '/private/var/folders', '/private/tmp', '/tmp',
     '/dev',                           // /dev/null, /dev/tty, /dev/stdout… — git and
                                       // most CLIs abort without writable /dev devices
   ];
-  // Read-deny the project tree so a session can't see sibling projects or climb
-  // out: the workdir's immediate parent, plus BASE_DIR (the whole picker root)
-  // when set. The workdir re-allow below overrides these (last-match-wins).
-  const denyRead = [...new Set([
-    path.dirname(workdir),
-    ...(process.env.BASE_DIR ? [path.resolve(process.env.BASE_DIR)] : []),
-  ])];
-
+  // READS are left fully open (the permissive base handles them). This box is a
+  // single-user dev machine reached over a private network; the thing that
+  // matters is that a session can't MODIFY anything outside its own project, so
+  // a runaway/injected claude can't damage sibling projects or system files.
+  // Read isolation between the user's own projects has little value here, and
+  // denying reads on the project tree forced fragile realpath/metadata
+  // workarounds that broke `node -c`, Python imports, and build tools. So we
+  // restrict writes only and leave reads to `(allow default)`.
   return [
     '(version 1)',
-    '(allow default)',                          // permissive base so the runtime loads
-    // — writes: nothing but the session folder, ~/.claude(.json), and temp —
+    '(allow default)',                          // permissive base: reads + exec + net
+    // — writes: nothing but the session folder, ~/.claude(.json), caches, temp —
     '(deny file-write*)',
     `(allow file-write* ${sub(...writeOk)})`,
     `(allow file-write* ${claudeJson})`,
-    // — reads: block the project tree, then re-allow this session's folder —
-    `(deny file-read* ${sub(...denyRead)})`,
-    // Re-allow METADATA (lstat/stat) on the denied parents. realpath() resolves
-    // a workdir file by lstat-ing every ancestor; a metadata deny on the parent
-    // EPERMs the whole resolution, which breaks `node -c`, Python imports, and
-    // many build tools even for files INSIDE the workdir. Data + directory
-    // listing stay denied, so sibling projects remain unreadable — only the
-    // existence/size of a path leaks, never its contents.
-    `(allow file-read-metadata ${sub(...denyRead)})`,
-    `(allow file-read* ${sub(workdir)})`,       // workdir last = wins
   ].join('\n');
 }
 
