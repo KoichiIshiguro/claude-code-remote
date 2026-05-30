@@ -2973,7 +2973,22 @@ document.addEventListener('visibilitychange', () => {
     lastRx = Date.now();
     wsSend({ type: 'attach', sessionId });
   }
+  requestWakeLock();
 });
+
+// Keep the screen awake while the app is foregrounded. Without this, mobile
+// dims and locks mid-voice-input. The lock is auto-released when the tab is
+// hidden, so visibilitychange (above) re-acquires it on return.
+let wakeLock = null;
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+  if (wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch { wakeLock = null; }
+}
+requestWakeLock();
 </script>
 </body>
 </html>
