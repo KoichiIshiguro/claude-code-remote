@@ -523,6 +523,14 @@
   .q-remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
   .q-remove:hover { color: var(--red); }
   .status-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; min-height: 28px; }
+  /* Inline "compacting…" note shown in the message stream while /compact runs. */
+  .compact-note { align-self: center; max-width: 90%; margin: 8px auto; padding: 6px 14px;
+    font-size: 12px; color: var(--text-muted); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 99px; text-align: center; }
+  .compact-note .compact-spin { display: inline-block; animation: compactSpin 1.1s linear infinite; }
+  @keyframes compactSpin { to { transform: rotate(360deg); } }
+  .compact-note.done { color: var(--accent); border-color: var(--accent-dim); }
+  .compact-note.failed { color: var(--red); border-color: var(--red); }
   /* Small action pill in the status bar (e.g. /compact). */
   .pill-btn { font-size: 11px; color: var(--text-muted); white-space: nowrap;
     background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -650,7 +658,7 @@
     <span class="dir-label" id="dirLabel">Loading…</span>
     <span class="ctx-pill" id="ctxPill" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></span>
     <div class="working-chip" id="workingChip">
-      <span class="dot-anim" id="dotAnim">●</span> Working
+      <span class="dot-anim" id="dotAnim">●</span> <span id="workingLabel">Working</span>
     </div>
     <button class="hdr-btn" id="summaryBtn" title="このスレッドを要約" aria-label="Summarize thread">📋</button>
     <button class="hdr-btn" id="permBtn" title="設定" aria-label="設定">⚙</button>
@@ -967,6 +975,7 @@ function openLinksInNewTab(root) {
 let ws, isStreaming = false, pendingImages = [], dotTimer = null;
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
 let currentToolEls = {}, promptQueue = [];
+let compactNoteEl = null, compactFailed = false;
 let allowedTools = null;
 let fbCurrentDir = '', fbSessionRoot = '';
 // File-manager state
@@ -1066,15 +1075,28 @@ function handleMessage(msg) {
       scrollToBottomNow();
       break;
     }
-    case 'stream_start':
-      isStreaming = true; setStreamingUI(true);
-      currentAssistantEl = createAssistantMessage();
+    case 'stream_start': {
+      isStreaming = true;
+      const isCompact = !!(msg.autoCompact || msg.compact);
+      setStreamingUI(true, isCompact);
+      if (isCompact) {
+        // Show a dedicated "compacting…" note instead of a normal reply bubble,
+        // and suppress the raw /compact output (currentAssistantEl = null makes
+        // handleStreamEvent a no-op for this stream).
+        compactNoteEl = appendCompactNote(!!msg.autoCompact);
+        compactFailed = false;
+        currentAssistantEl = null;
+      } else {
+        currentAssistantEl = createAssistantMessage();
+      }
       currentTextEl = null; streamingText = ''; currentToolEls = {};
       break;
+    }
     case 'stream_event':
       handleStreamEvent(msg.event); break;
     case 'stream_end':
       isStreaming = false;
+      if (compactNoteEl) { finalizeCompactNote(compactNoteEl, compactFailed); compactNoteEl = null; }
       if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); removeCursor(currentTextEl); }
       currentAssistantEl = null; currentTextEl = null; streamingText = '';
       scrollToBottom();
@@ -1197,6 +1219,10 @@ function handleMessage(msg) {
         document.getElementById('addFolderError').textContent = msg.message;
       } else if (document.getElementById('cloneOverlay').classList.contains('on')) {
         document.getElementById('cloneError').textContent = msg.message;
+      } else if (compactNoteEl) {
+        // Error arrived mid-compact: mark the note failed (stream_end finalizes
+        // it) and surface the message too.
+        compactFailed = true; appendError(msg.message);
       } else {
         isStreaming = false; setStreamingUI(false); appendError(msg.message);
       }
@@ -1350,9 +1376,10 @@ function handleStreamEvent(event) {
 }
 
 // ── Streaming UI ──────────────────────────────────────────────────────────────
-function setStreamingUI(active) {
+function setStreamingUI(active, compacting) {
   document.getElementById('topLoader').classList.toggle('active', active);
   document.getElementById('workingChip').classList.toggle('on', active);
+  document.getElementById('workingLabel').textContent = (active && compacting) ? '圧縮中…' : 'Working';
   document.getElementById('cancelBtn').classList.toggle('on', active || promptQueue.length > 0);
   document.getElementById('compactBtn').disabled = active;
   document.getElementById('messages').classList.toggle('streaming-active', active);
@@ -1406,6 +1433,18 @@ function createAssistantMessage() {
   const m = document.createElement('div'); m.className = 'msg msg-assistant';
   m.innerHTML = `<div class="label"><span class="claude-dot"></span> Claude</div><div class="assistant-content"></div>`;
   document.getElementById('messages').appendChild(m); return m;
+}
+// Inline note shown while /compact runs (manual or auto). Replaces the raw
+// /compact output so the user sees a clear "compacting…" state, then a result.
+function appendCompactNote(auto) {
+  const m = document.createElement('div'); m.className = 'compact-note running';
+  m.innerHTML = `<span class="compact-spin">⊟</span> コンテキストを圧縮中…${auto ? ' <small>(自動)</small>' : ''}`;
+  document.getElementById('messages').appendChild(m); scrollToBottomNow(); return m;
+}
+function finalizeCompactNote(el, failed) {
+  if (failed) { el.className = 'compact-note failed'; el.innerHTML = '⊟ 圧縮に失敗しました'; }
+  else { el.className = 'compact-note done'; el.innerHTML = '⊟ コンテキストを圧縮しました ✓'; }
+  scrollToBottom();
 }
 function buildToolCard(toolName, title) {
   const bm = {Bash:'badge-bash',Read:'badge-read',Write:'badge-write',Edit:'badge-edit',MultiEdit:'badge-edit',LS:'badge-ls'};

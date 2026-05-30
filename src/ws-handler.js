@@ -442,7 +442,11 @@ function handleConnection(ws /*, req */) {
           }
         }
 
-        broadcast(sessionId, { type: 'stream_start', sessionId });
+        // Tag the stream when the prompt itself is a manual /compact so the UI
+        // can show a "compacting…" indicator (auto-compact above sets its own
+        // autoCompact flag).
+        const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
+        broadcast(sessionId, { type: 'stream_start', sessionId, compact: isCompactCmd });
 
         // AskUserQuestion intercept state. The tool can't actually be answered
         // in `-p` mode (no stdin channel for tool_result), so we surface the
