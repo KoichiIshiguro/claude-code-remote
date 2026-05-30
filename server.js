@@ -161,13 +161,36 @@ function convertHeicToJpeg(srcPath) {
 }
 
 app.post('/upload', requireAuth, upload.array('images', 10), (req, res) => {
+  // The spawned `claude` is sandboxed to its session's project folder, so a file
+  // sitting in the server-root uploads/ dir is unreadable to it. Move each
+  // upload into <projectDir>/.upload-files/ (inside the sandbox) when the client
+  // told us which project it's for and that path is an allowed project root.
+  // Falls back to the staging uploads/ dir otherwise (best-effort).
+  const reqDir = typeof req.body.directory === 'string' ? req.body.directory : '';
+  let targetDir = null;
+  if (reqDir && projectsStore.isAllowedPath(reqDir)) {
+    targetDir = path.join(reqDir, '.upload-files');
+    try { fs.mkdirSync(targetDir, { recursive: true }); }
+    catch { targetDir = null; }
+  }
+
   const paths = req.files.map((f) => {
-    if (/\.(heic|heif)$/i.test(f.path)) {
-      const converted = convertHeicToJpeg(f.path);
-      if (converted) return converted;
-      console.warn(`[upload] HEIC conversion failed for ${f.path}; passing through`);
+    let p = f.path;
+    if (/\.(heic|heif)$/i.test(p)) {
+      const converted = convertHeicToJpeg(p);
+      if (converted) p = converted;
+      else console.warn(`[upload] HEIC conversion failed for ${p}; passing through`);
     }
-    return f.path;
+    if (targetDir) {
+      const dest = path.join(targetDir, path.basename(p));
+      try { fs.renameSync(p, dest); p = dest; }
+      catch {
+        // Cross-device move (uploads/ and the project on different volumes) →
+        // copy then remove the staging file.
+        try { fs.copyFileSync(p, dest); fs.unlinkSync(p); p = dest; } catch {}
+      }
+    }
+    return p;
   });
   res.json({ paths });
 });

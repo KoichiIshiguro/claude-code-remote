@@ -1540,6 +1540,10 @@ async function sendPrompt() {
   const previewUrls = pendingImages.map(p => p.dataUrl);
   if (pendingImages.length > 0) {
     const fd = new FormData();
+    // Tell the server which project this upload is for so it can drop the file
+    // inside the session's sandbox (<dir>/.upload-files/) where the spawned,
+    // sandboxed claude can read it. (Field must precede the files.)
+    if (fbSessionRoot) fd.append('directory', fbSessionRoot);
     for (const p of pendingImages) fd.append('images', p.file);
     try { const r = await fetch('/upload',{method:'POST',body:fd}); uploadedPaths=(await r.json()).paths||[]; }
     catch(e) { appendError('Upload failed: '+e.message); return; }
