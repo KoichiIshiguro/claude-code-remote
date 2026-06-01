@@ -477,7 +477,10 @@
     font-size: 18px; padding: 4px 6px; line-height: 1; border-radius: 4px; flex-shrink: 0;
   }
   .hdr-btn:hover { background: var(--surface2); color: var(--text); }
-  .dir-label { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .hdr-logo { width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0; display: block; }
+  .hdr-brand { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; line-height: 1.2; }
+  .hdr-title { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dir-label { flex: none; max-width: 100%; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
   /* ── Working chip ── */
   .working-chip {
@@ -639,7 +642,11 @@
 
   <div class="chat-hdr">
     <button class="hdr-btn hdr-left-btn" id="leftBtn" title="Projects" aria-label="Projects">☰</button>
-    <span class="dir-label" id="dirLabel">Loading…</span>
+    <img class="hdr-logo" src="/icons/icon.svg" alt="" />
+    <div class="hdr-brand">
+      <span class="hdr-title">Claude Code Remote</span>
+      <span class="dir-label" id="dirLabel">Loading…</span>
+    </div>
     <span class="ctx-pill" id="ctxPill" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></span>
     <div class="working-chip" id="workingChip">
       <span class="dot-anim" id="dotAnim">●</span> <span id="workingLabel">Working</span>
@@ -762,6 +769,7 @@
   .wp-add:hover { border-color: var(--accent); }
   .wp-archived { display: flex; flex-direction: column; gap: 6px; }
   .set-saved { flex: 1; font-size: 12px; color: var(--green, #3fb950); }
+  .app-ver-label { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); opacity: .7; }
 </style>
 
 <!-- System settings: write allow-list shared by every project -->
@@ -775,6 +783,7 @@
       <button class="wp-add" id="sysWpAdd">＋ フォルダを追加</button>
     </div>
     <div class="perm-ftr">
+      <span class="app-ver-label" id="appVerSetting"></span>
       <span class="set-saved" id="sysSaved"></span>
       <button class="btn-ghost" id="sysSettingsCancel">閉じる</button>
       <button class="btn-save" id="sysSettingsSave">保存</button>
@@ -3250,6 +3259,12 @@ window.addEventListener('beforeunload', (ev) => {
 })();
 
 connect();
+
+// Show the running app version in the system-settings modal footer.
+fetch('/api/version', { credentials: 'same-origin' })
+  .then(r => r.ok ? r.json() : null)
+  .then(d => { if (d && d.version) { const el = document.getElementById('appVerSetting'); if (el) el.textContent = 'Claude Code Remote v' + d.version; } })
+  .catch(() => {});
 
 // Returning to the app (mobile foreground / tab refocus) is the moment a
 // half-open socket and a missed stream_end usually surface. Re-sync: if the

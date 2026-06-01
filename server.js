@@ -197,6 +197,11 @@ app.post('/upload', requireAuth, upload.array('images', 10), (req, res) => {
 
 // Lightweight auth probe — returns 200/401 with no redirect so the client
 // can check session validity before opening a WebSocket.
+// App version (for the sidebar badge). Not sensitive — no auth needed.
+app.get('/api/version', (req, res) => {
+  res.json({ version: require('./package.json').version });
+});
+
 app.get('/api/auth/status', (req, res) => {
   if (req.session && req.session.user) {
     res.json({ authenticated: true, user: req.session.user.username });
