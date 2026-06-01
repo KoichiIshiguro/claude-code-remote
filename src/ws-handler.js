@@ -338,6 +338,40 @@ function handleConnection(ws /*, req */) {
         break;
       }
 
+      // ─── Settings: sandbox write allow-lists ───────────────────────────────
+
+      case 'system_settings_get':
+        send(ws, { type: 'system_settings', writablePaths: projectsStore.getSystemWritablePaths() });
+        break;
+
+      case 'system_settings_set': {
+        try {
+          const paths = projectsStore.setSystemWritablePaths(msg.paths || []);
+          send(ws, { type: 'system_settings', writablePaths: paths, saved: true });
+        } catch (err) {
+          send(ws, { type: 'error', message: err.message });
+        }
+        break;
+      }
+
+      case 'project_settings_get': {
+        const proj = projectsStore.getProject(msg.projectId);
+        if (!proj) { send(ws, { type: 'error', message: 'project not found' }); break; }
+        send(ws, { type: 'project_settings', project: proj, writablePaths: proj.writablePaths || [] });
+        break;
+      }
+
+      case 'project_settings_set': {
+        try {
+          const proj = projectsStore.setProjectWritablePaths(msg.projectId, msg.paths || []);
+          send(ws, { type: 'project_settings', project: proj, writablePaths: proj.writablePaths || [], saved: true });
+          send(ws, { type: 'projects_list', projects: projectsStore.loadProjects() });
+        } catch (err) {
+          send(ws, { type: 'error', message: err.message });
+        }
+        break;
+      }
+
       // ─── Session listing ───────────────────────────────────────────────────
 
       case 'list_sessions': {

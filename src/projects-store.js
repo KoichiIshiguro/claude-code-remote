@@ -45,6 +45,7 @@ function addProject({ path: rawPath, name } = {}) {
     path: absPath,
     name: (name && String(name).trim()) || path.basename(absPath) || absPath,
     addedAt: new Date().toISOString(),
+    writablePaths: [],   // extra dirs the sandboxed claude may write to (besides workdir)
   };
   projects.push(entry);
   saveProjects(projects);
@@ -85,6 +86,61 @@ function setAccessRoot(p) {
   saveConfig({ accessRoot: value });
 }
 
+// ── Write allow-lists (sandbox) ──────────────────────────────────────────────
+// The sandboxed claude can write to its workdir + caches by default; these lists
+// grant additional writable dirs (e.g. a pnpm store outside the workdir).
+// Resolve ~ and realpath, drop blanks/dupes.
+function sanitizePaths(paths) {
+  if (!Array.isArray(paths)) return [];
+  const out = [];
+  for (const p of paths) {
+    if (typeof p !== 'string' || !p.trim()) continue;
+    const abs = normalizePath(p);
+    if (!out.includes(abs)) out.push(abs);
+  }
+  return out;
+}
+
+function getProject(id) {
+  return loadProjects().find(p => p.id === id) || null;
+}
+
+// System-wide writable dirs (config.json) — apply to EVERY sandboxed session.
+function getSystemWritablePaths() {
+  const cfg = loadConfig();
+  return Array.isArray(cfg.writablePaths) ? cfg.writablePaths : [];
+}
+
+function setSystemWritablePaths(paths) {
+  const clean = sanitizePaths(paths);
+  saveConfig({ writablePaths: clean });
+  return clean;
+}
+
+function setProjectWritablePaths(id, paths) {
+  const projects = loadProjects();
+  const proj = projects.find(p => p.id === id);
+  if (!proj) throw new Error(`project not found: ${id}`);
+  proj.writablePaths = sanitizePaths(paths);
+  saveProjects(projects);
+  return proj;
+}
+
+// What the sandbox should grant for a given workdir: the system list PLUS the
+// writable list of whichever registered project owns that workdir.
+function resolvedWritablePaths(workdir) {
+  const out = [...getSystemWritablePaths()];
+  try {
+    const target = normalizePath(workdir);
+    for (const p of loadProjects()) {
+      if (target === p.path || target.startsWith(p.path + path.sep)) {
+        if (Array.isArray(p.writablePaths)) out.push(...p.writablePaths);
+      }
+    }
+  } catch { /* workdir unresolvable — system list only */ }
+  return [...new Set(out)];
+}
+
 // For the file-manager folder picker: a path is browse-allowed if accessRoot
 // is null (full access) OR the target sits under accessRoot.
 function isBrowseAllowed(absPath) {
@@ -97,8 +153,10 @@ function isBrowseAllowed(absPath) {
 
 module.exports = {
   loadProjects, saveProjects,
-  addProject, removeProject, findProjectByPath,
+  addProject, removeProject, findProjectByPath, getProject,
   isAllowedPath, isBrowseAllowed,
   getAccessRoot, setAccessRoot,
+  getSystemWritablePaths, setSystemWritablePaths,
+  setProjectWritablePaths, resolvedWritablePaths,
   normalizePath, resolveTilde,
 };

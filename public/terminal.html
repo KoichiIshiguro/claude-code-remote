@@ -620,7 +620,7 @@
 <aside class="side side-left" id="sideL">
   <div class="side-hdr">
     <span>Projects</span>
-    <button class="side-close" id="sideL-close" aria-label="Close">×</button>
+    <button class="side-close" id="sysSettingsBtn" title="システム設定" aria-label="システム設定">⚙</button>
   </div>
   <div class="proj-list" id="projList"><div class="proj-empty">Loading…</div></div>
   <div class="proj-new-area" style="position:relative;">
@@ -644,7 +644,7 @@
     <div class="working-chip" id="workingChip">
       <span class="dot-anim" id="dotAnim">●</span> <span id="workingLabel">Working</span>
     </div>
-    <button class="hdr-btn" id="summaryBtn" title="このスレッドを要約" aria-label="Summarize thread">📋</button>
+    <button class="hdr-btn" id="projSettingsBtn" title="プロジェクト設定" aria-label="プロジェクト設定">⚙</button>
     <button class="hdr-btn" id="shellBtn" title="シェル (tmux)" aria-label="シェル">🖥</button>
     <button class="hdr-btn hdr-right-btn" id="rightBtn" title="Files" aria-label="Files">📁</button>
   </div>
@@ -744,16 +744,61 @@
   </div>
 </div>
 
-<!-- ── Summary Modal ── -->
-<div class="modal-overlay" id="summaryOverlay">
-  <div class="perm-modal" style="max-width:520px;">
-    <div class="perm-hdr">
-      <h3>スレッドの要約</h3>
-      <button class="side-close" id="summaryClose">×</button>
+<!-- ── Settings modals (sandbox write allow-lists) ── -->
+<style>
+  .set-sec-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .set-hint { font-size: 11px; color: var(--text-muted); line-height: 1.5; margin-bottom: 8px; }
+  .wp-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .wp-empty { font-size: 12px; color: var(--text-muted); padding: 6px 2px; }
+  .wp-row { display: flex; align-items: center; gap: 8px; background: var(--surface2);
+            border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; }
+  .wp-row .wp-path { flex: 1; font-family: 'SF Mono', monospace; font-size: 12px;
+                     color: var(--text); word-break: break-all; }
+  .wp-row .wp-del { background: none; border: none; color: var(--text-muted); cursor: pointer;
+                    font-size: 16px; line-height: 1; padding: 0 2px; }
+  .wp-row .wp-del:hover { color: var(--red); }
+  .wp-add { background: var(--surface2); border: 1px dashed var(--border); border-radius: var(--radius-sm);
+            color: var(--accent); cursor: pointer; padding: 8px; width: 100%; font-size: 13px; }
+  .wp-add:hover { border-color: var(--accent); }
+  .wp-archived { display: flex; flex-direction: column; gap: 6px; }
+  .set-saved { flex: 1; font-size: 12px; color: var(--green, #3fb950); }
+</style>
+
+<!-- System settings: write allow-list shared by every project -->
+<div class="modal-overlay" id="sysSettingsOverlay">
+  <div class="perm-modal" style="max-width:560px;">
+    <div class="perm-hdr"><h3>システム設定</h3><button class="side-close" id="sysSettingsClose">×</button></div>
+    <div class="perm-body" style="padding:14px;">
+      <div class="set-sec-title">書き込み許可フォルダ（全プロジェクト共通）</div>
+      <div class="set-hint">サンドボックス内の Claude が書き込めるフォルダ。pnpm / cargo などのストアが作業フォルダの外にあるとき追加します。読み取りは元から全て許可されています。</div>
+      <div class="wp-list" id="sysWpList"></div>
+      <button class="wp-add" id="sysWpAdd">＋ フォルダを追加</button>
     </div>
-    <div class="perm-body" id="summaryBody" style="white-space:pre-wrap;line-height:1.7;font-size:14px;">読み込み中…</div>
     <div class="perm-ftr">
-      <button class="btn-save" id="summaryDismiss">OK</button>
+      <span class="set-saved" id="sysSaved"></span>
+      <button class="btn-ghost" id="sysSettingsCancel">閉じる</button>
+      <button class="btn-save" id="sysSettingsSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Project settings: per-project write allow-list + archived sessions -->
+<div class="modal-overlay" id="projSettingsOverlay">
+  <div class="perm-modal" style="max-width:600px;">
+    <div class="perm-hdr"><h3 id="projSettingsTitle">プロジェクト設定</h3><button class="side-close" id="projSettingsClose">×</button></div>
+    <div class="perm-body" style="padding:14px;">
+      <div class="set-sec-title">書き込み許可フォルダ（このプロジェクトのみ）</div>
+      <div class="set-hint">このプロジェクトのセッションだけが書き込めるフォルダ。</div>
+      <div class="wp-list" id="projWpList"></div>
+      <button class="wp-add" id="projWpAdd">＋ フォルダを追加</button>
+      <div class="set-sec-title" style="margin-top:18px;">アーカイブ済みセッション</div>
+      <div class="set-hint">タップで復元します。</div>
+      <div id="projArchivedBody" class="wp-archived">読み込み中…</div>
+    </div>
+    <div class="perm-ftr">
+      <span class="set-saved" id="projSaved"></span>
+      <button class="btn-ghost" id="projSettingsCancel">閉じる</button>
+      <button class="btn-save" id="projSettingsSave">書き込み許可を保存</button>
     </div>
   </div>
 </div>
@@ -1284,11 +1329,13 @@ function handleMessage(msg) {
     case 'permissions_updated':
       if (msg.sessionId === sessionId) allowedTools = msg.allowedTools;
       break;
-    case 'summary':
-      if (msg.sessionId === sessionId) showSummary(msg.text);
+    case 'system_settings':
+      renderSysWritable(msg.writablePaths || []);
+      if (msg.saved) flashSettingsSaved('sysSaved');
       break;
-    case 'summary_error':
-      if (msg.sessionId === sessionId) showSummary('要約に失敗しました: ' + msg.message, true);
+    case 'project_settings':
+      renderProjWritable(msg.writablePaths || []);
+      if (msg.saved) flashSettingsSaved('projSaved');
       break;
     case 'error':
       // Route errors into the open modal's error slot when relevant; only
@@ -1919,7 +1966,7 @@ document.getElementById('fbActRename').addEventListener('click', async () => {
 document.getElementById('fbActMove').addEventListener('click', () => openDestPicker('move'));
 document.getElementById('fbActCopy').addEventListener('click', () => openDestPicker('copy'));
 
-document.getElementById('sideL-close').addEventListener('click', () => closeSide('sideL'));
+document.getElementById('sysSettingsBtn').addEventListener('click', openSystemSettings);
 document.getElementById('sideR-close').addEventListener('click', () => closeSide('sideR'));
 backdrop.addEventListener('click', () => { closeSide('sideL'); closeSide('sideR'); });
 
@@ -2015,15 +2062,16 @@ function rerenderProjList() {
       toggleProjectCollapse(p.path);
     });
 
-    const restoreBtn = document.createElement('button');
-    restoreBtn.className = 'proj-restore-btn';
-    restoreBtn.title = 'Restore archived sessions for this folder';
-    restoreBtn.textContent = '↻';
-    restoreBtn.addEventListener('click', (ev) => {
+    // ⚙ per-project settings (write allow-list + archived-session restore).
+    const settBtn = document.createElement('button');
+    settBtn.className = 'proj-restore-btn';
+    settBtn.title = 'プロジェクト設定（書き込み許可・アーカイブ復元）';
+    settBtn.textContent = '⚙';
+    settBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      openRestoreModal(p);
+      openProjectSettings(p);
     });
-    head.appendChild(restoreBtn);
+    head.appendChild(settBtn);
 
     const newBtn = document.createElement('button');
     newBtn.className = 'proj-new-btn-inline';
@@ -2090,9 +2138,17 @@ async function refreshProjects() {
 
 // ── + 新規プロジェクト → フォルダ選択モーダルを直接開く ──────────────────────
 const newProjTrigger = document.getElementById('newProjTrigger');
-function openFolderPicker() {
+// mode 'project' → confirm registers a project (add_project). mode 'pick' →
+// confirm hands the chosen path to _fpOnPick (used by the settings allow-lists).
+let _fpMode = 'project';
+let _fpOnPick = null;
+function openFolderPicker(mode, onPick) {
+  _fpMode = mode || 'project';
+  _fpOnPick = onPick || null;
   document.getElementById('addFolderError').textContent = '';
   document.getElementById('fpNewName').value = '';
+  document.getElementById('addFolderSubmit').textContent =
+    _fpMode === 'pick' ? 'このフォルダを選択' : 'このフォルダを追加';
   document.getElementById('addFolderOverlay').classList.add('on');
   // Browse from accessRoot or home — server resolves which.
   fpNavigate(null);
@@ -2124,6 +2180,13 @@ document.getElementById('addFolderSubmit').addEventListener('click', () => {
   const err = document.getElementById('addFolderError');
   if (!_fpCurrent) { err.textContent = 'まず開いているフォルダを選択してください'; return; }
   err.textContent = '';
+  if (_fpMode === 'pick') {
+    const picked = _fpCurrent, cb = _fpOnPick;
+    document.getElementById('addFolderOverlay').classList.remove('on');
+    _fpOnPick = null; _fpMode = 'project';
+    if (cb) cb(picked);
+    return;
+  }
   wsSend({ type: 'add_project', path: _fpCurrent });
 });
 document.getElementById('fpNewBtn').addEventListener('click', () => {
@@ -2276,7 +2339,7 @@ document.getElementById('restoreDismiss').addEventListener('click', () => docume
 
 function renderArchivedList(projectPath, sessions) {
   if (!_restoreProject || _restoreProject.path !== projectPath) return;
-  const body = document.getElementById('restoreBody');
+  const body = document.getElementById('projArchivedBody');
   body.innerHTML = '';
   const archived = sessions.filter(s => s.archived);
   const discovered = sessions.filter(s => !s.archived);
@@ -2805,29 +2868,110 @@ function getFileIcon(name) {
   return m[ext] || '📄';
 }
 
-// ── Summary modal ─────────────────────────────────────────────────────────────
-// クリック → モーダル表示 → サーバーが要約を返す (または前回キャッシュを返す) → 表示。
-// 履歴に変化がなければサーバー側で API は呼ばれないので連打しても課金されない。
-const summaryOverlay = document.getElementById('summaryOverlay');
-const summaryBody = document.getElementById('summaryBody');
-const summaryBtn = document.getElementById('summaryBtn');
+// ── Settings modals (sandbox write allow-lists) ──────────────────────────────
+// System list (config.json, all projects) and per-project list let the user
+// grant the sandboxed claude write access to dirs outside its workdir.
+let _sysWp = [];    // working copy — system writable paths
+let _projWp = [];   // working copy — current project's writable paths
 
-summaryBtn.addEventListener('click', requestSummary);
-document.getElementById('summaryClose').addEventListener('click', closeSummary);
-document.getElementById('summaryDismiss').addEventListener('click', closeSummary);
-summaryOverlay.addEventListener('click', e => { if (e.target === e.currentTarget) closeSummary(); });
+function flashSettingsSaved(elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.textContent = '保存しました';
+  setTimeout(() => { if (el.textContent === '保存しました') el.textContent = ''; }, 2000);
+}
 
-function requestSummary() {
-  summaryBody.textContent = '要約中…';
-  summaryBody.style.color = '';
-  summaryOverlay.classList.add('on');
-  wsSend({ type: 'request_summary', sessionId });
+function renderWpList(listEl, paths, onDelete) {
+  listEl.innerHTML = '';
+  if (!paths.length) {
+    const e = document.createElement('div');
+    e.className = 'wp-empty'; e.textContent = '(なし)';
+    listEl.appendChild(e);
+    return;
+  }
+  paths.forEach((p, i) => {
+    const row = document.createElement('div');
+    row.className = 'wp-row';
+    const path = document.createElement('span');
+    path.className = 'wp-path'; path.textContent = p;
+    const del = document.createElement('button');
+    del.className = 'wp-del'; del.textContent = '×'; del.title = '削除';
+    del.addEventListener('click', () => onDelete(i));
+    row.appendChild(path); row.appendChild(del);
+    listEl.appendChild(row);
+  });
 }
-function showSummary(text, isError) {
-  summaryBody.textContent = text || '(空の応答)';
-  summaryBody.style.color = isError ? 'var(--yellow, #d29922)' : '';
+
+// — System settings —
+function openSystemSettings() {
+  document.getElementById('sysSaved').textContent = '';
+  document.getElementById('sysWpList').innerHTML = '';
+  document.getElementById('sysSettingsOverlay').classList.add('on');
+  wsSend({ type: 'system_settings_get' });
 }
-function closeSummary() { summaryOverlay.classList.remove('on'); }
+function renderSysWritable(paths) {
+  _sysWp = (paths || []).slice();
+  renderWpList(document.getElementById('sysWpList'), _sysWp, (i) => {
+    _sysWp.splice(i, 1); renderSysWritable(_sysWp);
+  });
+}
+document.getElementById('sysSettingsClose').addEventListener('click', () => document.getElementById('sysSettingsOverlay').classList.remove('on'));
+document.getElementById('sysSettingsCancel').addEventListener('click', () => document.getElementById('sysSettingsOverlay').classList.remove('on'));
+document.getElementById('sysWpAdd').addEventListener('click', () => {
+  openFolderPicker('pick', (picked) => {
+    if (picked && !_sysWp.includes(picked)) { _sysWp.push(picked); renderSysWritable(_sysWp); }
+  });
+});
+document.getElementById('sysSettingsSave').addEventListener('click', () => {
+  wsSend({ type: 'system_settings_set', paths: _sysWp });
+});
+
+// — Project settings (write allow-list + archived-session restore) —
+function openProjectSettings(project) {
+  if (!project) { alert('プロジェクトが特定できません'); return; }
+  _restoreProject = project;   // gates renderArchivedList → #projArchivedBody
+  document.getElementById('projSettingsTitle').textContent = project.name + ' の設定';
+  document.getElementById('projSaved').textContent = '';
+  document.getElementById('projWpList').innerHTML = '';
+  document.getElementById('projArchivedBody').innerHTML = '<div class="restore-empty">読み込み中…</div>';
+  document.getElementById('projSettingsOverlay').classList.add('on');
+  wsSend({ type: 'project_settings_get', projectId: project.id });
+  wsSend({ type: 'list_archived', projectPath: project.path });
+}
+function renderProjWritable(paths) {
+  _projWp = (paths || []).slice();
+  renderWpList(document.getElementById('projWpList'), _projWp, (i) => {
+    _projWp.splice(i, 1); renderProjWritable(_projWp);
+  });
+}
+document.getElementById('projSettingsClose').addEventListener('click', () => document.getElementById('projSettingsOverlay').classList.remove('on'));
+document.getElementById('projSettingsCancel').addEventListener('click', () => document.getElementById('projSettingsOverlay').classList.remove('on'));
+document.getElementById('projWpAdd').addEventListener('click', () => {
+  openFolderPicker('pick', (picked) => {
+    if (picked && !_projWp.includes(picked)) { _projWp.push(picked); renderProjWritable(_projWp); }
+  });
+});
+document.getElementById('projSettingsSave').addEventListener('click', () => {
+  if (!_restoreProject) return;
+  wsSend({ type: 'project_settings_set', projectId: _restoreProject.id, paths: _projWp });
+});
+
+// Center-header ⚙ opens settings for the CURRENT session's owning project.
+function currentProjectForSession() {
+  const dir = fbSessionRoot || '';
+  let best = null;
+  for (const p of (_projects || [])) {
+    if (dir === p.path || dir.startsWith(p.path + '/')) {
+      if (!best || p.path.length > best.path.length) best = p;
+    }
+  }
+  return best;
+}
+document.getElementById('projSettingsBtn').addEventListener('click', () => {
+  const p = currentProjectForSession();
+  if (!p) { alert('現在のプロジェクトが特定できません。左サイドバーの各プロジェクトの ⚙ から開いてください。'); return; }
+  openProjectSettings(p);
+});
 
 // ── Permissions modal ─────────────────────────────────────────────────────────
 const permAll = document.getElementById('permAll');

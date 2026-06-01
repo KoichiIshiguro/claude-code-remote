@@ -68,11 +68,20 @@ function buildSandboxProfile(workdir) {
     path.join(home, 'go', 'pkg', 'mod'),   // go module cache
   ];
 
+  // User-granted extra writable dirs: a system-wide list (config.json) plus the
+  // owning project's own list. This is the escape hatch for stores/caches that
+  // live outside the workdir and the hardcoded cacheDirs above (e.g. a pnpm
+  // store on another volume). Lazy require to avoid load-order coupling.
+  let extraWrite = [];
+  try { extraWrite = require('./projects-store').resolvedWritablePaths(workdir); }
+  catch { /* projects-store/config not ready — fall back to defaults */ }
+
   // Where the child may WRITE (everywhere else is read-only).
   const writeOk = [
     workdir,
     path.join(home, '.claude'),       // transcripts (--resume), auth, todos, logs
     ...cacheDirs,
+    ...extraWrite,
     os.tmpdir(), '/private/var/folders', '/private/tmp', '/tmp',
     '/dev',                           // /dev/null, /dev/tty, /dev/stdout… — git and
                                       // most CLIs abort without writable /dev devices
