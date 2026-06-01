@@ -71,7 +71,11 @@
 
   .side-hdr {
     display: flex; align-items: center; gap: 8px;
-    padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+    /* On mobile the drawers sit at top:0, under the status bar / notch, so the
+       header must clear the safe-area inset like .chat-hdr does. env() is 0 on
+       desktop, leaving the normal 10px. */
+    padding: max(10px, env(safe-area-inset-top, 0px)) 12px 10px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
     font-size: 11px; font-weight: 700; text-transform: uppercase;
     letter-spacing: .08em; color: var(--text-muted);
   }
@@ -280,6 +284,24 @@
     border-radius: var(--radius-sm); padding: 6px 12px; cursor: pointer; font-size: 12px;
   }
   .fp-new button:hover { background: var(--accent); color: var(--bg); }
+
+  /* Direct path-input bar shared by every folder picker */
+  .fp-pathbar {
+    display: flex; gap: 6px; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .fp-pathbar input {
+    flex: 1; min-width: 0; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); color: var(--text); padding: 6px 10px;
+    font-size: 12px; outline: none; font-family: 'SF Mono', monospace;
+  }
+  .fp-pathbar input:focus { border-color: var(--accent); }
+  .fp-pathbar button {
+    background: transparent; border: 1px solid var(--accent); color: var(--accent);
+    border-radius: var(--radius-sm); padding: 6px 12px; cursor: pointer;
+    font-size: 12px; white-space: nowrap;
+  }
+  .fp-pathbar button:hover { background: var(--accent); color: var(--bg); }
 
   /* Clone streaming output area */
   .clone-output {
@@ -752,6 +774,10 @@
   <div class="perm-modal" style="max-width:600px;">
     <div class="perm-hdr"><h3 id="fmDestTitle">移動先を選択</h3><button class="side-close" id="fmDestClose">×</button></div>
     <div class="perm-body" style="padding:0;display:flex;flex-direction:column;">
+      <div class="fp-pathbar">
+        <input id="fmDestPathInput" type="text" placeholder="パスを直接入力 (例: /Users/you/projects)" autocomplete="off" spellcheck="false">
+        <button id="fmDestPathGo">移動</button>
+      </div>
       <div class="fp-bread" id="fmDestBread"></div>
       <div class="fp-list" id="fmDestList"><div class="fp-empty">読み込み中…</div></div>
       <div id="fmDestError" style="color:var(--red);font-size:12px;min-height:14px;padding:6px 12px 0;"></div>
@@ -829,6 +855,10 @@
   <div class="perm-modal" style="max-width:600px;">
     <div class="perm-hdr"><h3>フォルダを追加</h3><button class="side-close" id="addFolderClose">×</button></div>
     <div class="perm-body" style="padding:0;display:flex;flex-direction:column;">
+      <div class="fp-pathbar">
+        <input id="fpPathInput" type="text" placeholder="パスを直接入力 (例: /Users/you/projects)" autocomplete="off" spellcheck="false">
+        <button id="fpPathGo">移動</button>
+      </div>
       <div class="fp-bread" id="fpBread"></div>
       <div class="fp-list" id="fpList"><div class="fp-empty">読み込み中…</div></div>
       <div class="fp-new">
@@ -2318,6 +2348,17 @@ function fpNavigate(path) {
   wsSend({ type: 'browse_dir', path });
 }
 
+// Direct path entry: jump straight to a typed/pasted absolute path.
+const fpPathInput = document.getElementById('fpPathInput');
+function fpGoToTyped() {
+  const p = fpPathInput.value.trim();
+  if (!p) return;
+  document.getElementById('addFolderError').textContent = '';
+  fpNavigate(p);
+}
+document.getElementById('fpPathGo').addEventListener('click', fpGoToTyped);
+fpPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); fpGoToTyped(); } });
+
 function renderDirListing(msg) {
   if (msg.error) {
     document.getElementById('addFolderError').textContent = msg.error;
@@ -2325,6 +2366,8 @@ function renderDirListing(msg) {
     return;
   }
   _fpCurrent = msg.path;
+  // Reflect the resolved path in the direct-entry field (unless mid-typing).
+  if (document.activeElement !== fpPathInput) fpPathInput.value = msg.path;
 
   // Breadcrumb
   const bread = document.getElementById('fpBread');
@@ -2725,6 +2768,8 @@ function renderDestBread() {
 
 async function destNavigate(dir) {
   _destDir = dir;
+  // Reflect the current location in the direct-entry field (unless mid-typing).
+  if (document.activeElement !== fmDestPathInput) fmDestPathInput.value = dir || '';
   renderDestBread();
   const listEl = document.getElementById('fmDestList');
   listEl.innerHTML = '<div class="fp-empty">読み込み中…</div>';
@@ -2757,6 +2802,17 @@ async function destNavigate(dir) {
     }
   } catch { listEl.innerHTML = '<div class="fp-empty">読み込み失敗</div>'; }
 }
+
+// Direct path entry for the move/copy destination picker.
+const fmDestPathInput = document.getElementById('fmDestPathInput');
+function destGoToTyped() {
+  const p = fmDestPathInput.value.trim();
+  if (!p) return;
+  document.getElementById('fmDestError').textContent = '';
+  destNavigate(p);
+}
+document.getElementById('fmDestPathGo').addEventListener('click', destGoToTyped);
+fmDestPathInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); destGoToTyped(); } });
 
 document.getElementById('fmDestClose').addEventListener('click', closeDestPicker);
 document.getElementById('fmDestCancel').addEventListener('click', closeDestPicker);

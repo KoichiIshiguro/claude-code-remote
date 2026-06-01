@@ -10,13 +10,13 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: PolyForm Internal Use](https://img.shields.io/badge/license-PolyForm_Internal_Use-blue.svg)](LICENSE)
 [![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8?logo=pwa&logoColor=white)](#)
-[![~2000 LOC](https://img.shields.io/badge/code-~2000_LOC-lightgrey)](#)
+[![~3k LOC](https://img.shields.io/badge/code-~3k_LOC-lightgrey)](#)
 
 ![Chat view](docs/screenshots/chat.png)
 
 </div>
 
-> **Why?** Other Claude Code web UIs are 30–50k LOC React/Tauri monsters. This one is **vanilla JS + Express in ~2,000 lines** — readable in an afternoon, hackable in a weekend, and battle-tested on real iOS Safari.
+> **Why?** Other Claude Code web UIs are 30–50k LOC React/Tauri monsters. This one is **vanilla JS + Express in ~3,000 lines of backend** — readable in an afternoon, hackable in a weekend, and battle-tested on real iOS Safari.
 
 ---
 
@@ -24,16 +24,19 @@
 
 - 🔐 **Tailscale-first auth** — local ID/PW set up via browser on first run; designed to sit behind your private Tailscale network, not on the open web
 - 💬 **Streaming chat UI** with tool-use cards, thinking blocks, and per-turn cost
-- 📁 **Multi-project switcher** — open any subdirectory under `BASE_DIR`
+- 📁 **Explicit multi-project switcher** — register any folder through a built-in file-browser picker (or zip import); each project is sandboxed to its own path, and adding one never auto-spawns a session
 - 🧵 **Multiple sessions per project** — keep parallel conversations in the same repo and switch between them from the sidebar
+- 🗄️ **Archive / restore / purge sessions** — hide finished threads, bring them back, or permanently delete the underlying jsonl
+- ↔️ **TUI-compatible** — Claude's own `~/.claude/projects/*.jsonl` is the single source of truth, so sessions you start in the `claude` CLI show up here (and vice-versa)
 - 🔄 **Resume any session** via Claude's native `--resume`
+- 🖥️ **Built-in terminal** — a persistent tmux-backed shell per session that survives server restarts (where tmux is available); plain-shell fallback on Windows / no-tmux hosts
 - 🛟 **Survive crashes** — in-flight responses are persisted to disk; reattach picks up where you left off
 - 🖼️ **Drag / paste images** straight into chat (uses Claude's prompt-path syntax — no proprietary attachment API)
 - 📱 **Installable PWA** with status-bar styling, splash screen, home-screen icon
 - 🔌 **Auto-reconnect WebSocket** that survives mobile network switches and PM2 reloads
 - 📄 **In-browser file viewer** with Markdown rendering and a refresh button
 - ⚡ **Stateless prompt model** — spawns a fresh `claude` per turn, no zombies to babysit
-- 📊 **Context size indicator** — header pill + status-bar meter show the real input-token count from the last API call (matches what the TUI shows)
+- 📊 **Context size indicator** — a status-bar meter shows the real input-token count from the last API call (matches what the TUI shows)
 - 🗜️ **Auto-compact at TUI threshold** — when context hits 167k (Claude Code TUI's ~83.5% trigger on 200k models), `/compact` runs automatically before the next prompt
 
 ## 📸 Screenshots
@@ -72,7 +75,7 @@ npm install
 npm start
 ```
 
-Open `http://localhost:4000` — you'll be redirected to `/setup`, the first-run wizard. Pick a username, password, and working folder. Done.
+Open `http://localhost:4000` — you'll be redirected to `/setup`, the first-run wizard. Pick a username, password, and an access scope (a single folder to sandbox to, or full disk access on a trusted tailnet). Done.
 
 After setup, sign in from your phone at `http://<tailscale-ip>:4000` (the wizard shows you the URL + a QR code).
 
@@ -109,7 +112,7 @@ If you want the server to come up automatically when the machine restarts, wire 
 
 ### (Optional) Public HTTPS
 
-If you want to expose this on the open internet instead of Tailscale, **don't** — but if you must, terminate TLS in front (Apache / Caddy / nginx), add HTTP basic-auth at the proxy on top of the built-in ID/PW, and seriously consider switching `BASE_DIR` to a sandboxed subtree.
+If you want to expose this on the open internet instead of Tailscale, **don't** — but if you must, terminate TLS in front (Apache / Caddy / nginx), add HTTP basic-auth at the proxy on top of the built-in ID/PW, and seriously consider narrowing the access scope to a sandboxed subtree.
 
 ---
 
@@ -117,7 +120,7 @@ If you want to expose this on the open internet instead of Tailscale, **don't** 
 
 | | **Claude Code Remote** | [siteboon/claudecodeui](https://github.com/siteboon/claudecodeui) | [d-kimuson/claude-code-viewer](https://github.com/d-kimuson/claude-code-viewer) |
 |---|---|---|---|
-| LOC | **~2,000** | 50k+ | 30k+ |
+| LOC | **~3,000** | 50k+ | 30k+ |
 | Auth | **Local ID/PW + Tailscale** | None / token | Single password |
 | Frontend | Vanilla JS (no build step) | React + Vite | React + Vite |
 | In-flight response persistence | **✅** | ❌ | ❌ |
@@ -171,16 +174,17 @@ If you want to expose this on the open internet instead of Tailscale, **don't** 
 
 ## 🔧 Configuration Reference
 
-All configuration is **optional** — the first-run wizard at `/setup` writes admin credentials and the working folder to `data/admin.json` and `data/config.json`, and the session secret is auto-generated. Use env vars only to override these defaults.
+All configuration is **optional** — the first-run wizard at `/setup` writes admin credentials and the access scope to `data/admin.json` and `data/config.json`, the registered projects live in `data/projects.json`, and the session secret is auto-generated. Use env vars only to override these defaults.
 
 | Env var | Description |
 |---|---|
 | `PORT` | HTTP port. Default `4000` |
-| `BASE_DIR` | Root for the project picker. Overrides the value chosen at `/setup` |
 | `CLAUDE_PATH` | Absolute path to `claude` — set when PATH isn't inherited (PM2 / systemd / launchd) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Long-lived auth token from `claude setup-token`. **Required when running under launchd/systemd**, which can't read the login Keychain — without it every prompt 401s. See *Run on boot* above |
 | `SESSION_SECRET` | Override the auto-generated one (useful for shared cookie domains across deployments) |
 | `CLAUDE_AUTO_COMPACT_THRESHOLD` | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context models). Set to e.g. `835000` for 1M tiers |
+| `TMUX_PATH` | Absolute path to `tmux` for the built-in terminal — set when it isn't on PATH. Auto-detected via `which tmux` otherwise; falls back to a plain shell if tmux is absent |
+| `CCR_SHELL` | Override the shell the terminal launches (default: `$SHELL -l`, or `powershell.exe` on Windows) |
 | `NODE_ENV=production` | Enforce HTTPS-only session cookies. Only set when terminating TLS in front |
 | `CLAUDE_SANDBOX` | **macOS only.** `0` disables the per-session OS sandbox. On by default — see Security Notes |
 
@@ -190,7 +194,7 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 
 - **Designed to live on Tailscale, not on the public internet.** A single bcrypt-hashed password (set at `/setup`, stored in `data/admin.json`) is not enough to survive sustained brute-force from the open web. Keep this on your private tailnet, or put HTTP basic-auth in front of it at the reverse proxy if you must expose it.
 - **HTTPS is still required for any non-Tailscale exposure.** Session cookies in cleartext are immediately game-over.
-- **`--dangerously-skip-permissions` is on by default** because this UI is your personal remote. If you expose it, you're trusting Claude with your filesystem — restrict `BASE_DIR` to a safe subtree.
+- **`--dangerously-skip-permissions` is on by default** because this UI is your personal remote. If you expose it, you're trusting Claude with your filesystem — narrow the access scope to a safe subtree.
 - **Per-session OS sandbox (macOS).** Even with `--dangerously-skip-permissions`, each spawned `claude` is wrapped in `sandbox-exec` (kernel-level Seatbelt) so it **cannot write anywhere outside its own session folder** (plus `~/.claude` and temp) and **cannot read sibling projects or climb above the session folder** — enforced on the syscall, so it holds against `bash`/`cat` too. The Node server itself is *not* sandboxed (it needs full access for the picker, git clone, and the file viewer); only the LLM child is. Auth (`~/.claude.json` + Keychain) stays reachable so Claude still works. macOS-only; set `CLAUDE_SANDBOX=0` to disable. No effect on Linux/Windows yet.
 - **Single-user by design.** There is no multi-user mode and no admin panel. That is the entire security model.
 - **Session store is file-backed** (`data/auth-sessions.json`, atomic writes via `src/session-store.js`), so a server restart or PM2 reload no longer signs you out. Swap to `connect-sqlite3` / `connect-redis` if you outgrow a single JSON file.
