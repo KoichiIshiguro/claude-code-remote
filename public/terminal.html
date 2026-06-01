@@ -1065,6 +1065,14 @@ let renderedAssistantIds = new Set();
 // queue_state broadcast so we can render the tray and gate the cancel button.
 let serverQueue = [];
 let compactNoteEl = null, compactFailed = false;
+// Display-only optimistic state, re-applied after a jsonl `history` repaint so a
+// mid-turn reconnect (mobile backgrounding drops the socket → attach → full
+// repaint from jsonl) doesn't blank the in-flight user bubble / "compacting…"
+// note. These are NEVER sent to the server and never touch jsonl — worst case a
+// transient duplicate that self-heals on the next clean repaint.
+//   _inflightUser : the prompt just sent, not yet written to jsonl
+//   _compacting   : a /compact turn is mid-flight (auto or manual)
+let _inflightUser = null, _compacting = null;
 let allowedTools = null;
 let fbCurrentDir = '', fbSessionRoot = '';
 // File-manager state
@@ -1163,6 +1171,21 @@ function handleMessage(msg) {
         document.getElementById('messages').appendChild(note);
       }
       for (const e of msg.history) renderHistoryEntry(e);
+      // Re-apply display-only optimistic state wiped by this jsonl repaint.
+      // A mid-turn reconnect repaints from jsonl alone — which during an
+      // (auto-)compact has neither the just-sent prompt nor the compact marker
+      // yet — so without this the user bubble and "compacting…" note vanish.
+      if (_inflightUser && !historyHasUserText(msg.history, _inflightUser.text)) {
+        appendUserMsg(_inflightUser.text, _inflightUser.images, false);
+      }
+      if (_compacting && msg.streaming) {
+        compactNoteEl = appendCompactNote(_compacting.auto);
+        compactFailed = false;
+      } else if (!msg.streaming) {
+        // Turn fully finished while we were away — any compaction is long done
+        // (its ⊟ marker, if any, was drawn from jsonl above). Drop stale state.
+        _compacting = null;
+      }
       if (msg.streaming) {
         isStreaming = true;
         // Don't pre-create a live bubble here: the in-progress turn was just
@@ -1200,6 +1223,7 @@ function handleMessage(msg) {
         // handleStreamEvent a no-op for this stream).
         compactNoteEl = appendCompactNote(!!msg.autoCompact);
         compactFailed = false;
+        _compacting = { auto: !!msg.autoCompact };
         currentAssistantEl = null;
       } else {
         currentAssistantEl = createAssistantMessage();
@@ -1211,7 +1235,16 @@ function handleMessage(msg) {
       handleStreamEvent(msg.event); break;
     case 'stream_end':
       isStreaming = false;
-      if (compactNoteEl) { finalizeCompactNote(compactNoteEl, compactFailed); compactNoteEl = null; }
+      if (compactNoteEl) {
+        // Compact phase finished. The real prompt's turn (if auto-compact) runs
+        // next as its own stream_start/stream_end, so keep _inflightUser.
+        finalizeCompactNote(compactNoteEl, compactFailed); compactNoteEl = null;
+        _compacting = null;
+      } else {
+        // A real turn finished → its prompt is now in jsonl; drop the optimistic
+        // bubble so a later repaint doesn't risk an identical-text duplicate.
+        _inflightUser = null;
+      }
       if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); removeCursor(currentTextEl); }
       currentAssistantEl = null; currentTextEl = null; streamingText = '';
       scrollToBottom();
@@ -1416,6 +1449,12 @@ function updateModelPill(model, effort) {
 }
 
 // ── History rendering ─────────────────────────────────────────────────────────
+// Has the jsonl history already persisted a user turn with this exact text?
+// Used to skip re-appending the optimistic in-flight bubble once it's real.
+function historyHasUserText(history, text) {
+  for (const e of history) if (e.type === 'user' && e.text === text) return true;
+  return false;
+}
 function renderHistoryEntry(entry) {
   if (entry.type === 'user') {
     const m = document.createElement('div'); m.className = 'msg msg-user';
@@ -1703,10 +1742,16 @@ async function sendPrompt() {
   // Always hand the prompt to the server queue. If a turn is streaming it'll
   // be batched into the next one (and shows faded); otherwise it runs now.
   appendUserMsg(text, previewUrls, isStreaming);
-  dispatchPrompt(text, uploadedPaths);
+  dispatchPrompt(text, uploadedPaths, previewUrls);
   if (isStreaming) setStreamingUI(true);
 }
-function dispatchPrompt(text, paths) { wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths}); }
+function dispatchPrompt(text, paths, previewImages) {
+  // Remember the latest prompt for display-only re-rendering across a reconnect.
+  // Overwriting on each send is intentional: only the most-recent prompt can be
+  // mid-flight / unwritten to jsonl at any moment.
+  _inflightUser = { text, images: previewImages || [] };
+  wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths});
+}
 
 document.getElementById('cancelBtn').addEventListener('click', () => {
   wsSend({type:'cancel',sessionId});
