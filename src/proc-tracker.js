@@ -10,7 +10,12 @@ const procs = new Map();
 function register(key, proc) {
   procs.set(key, proc);
   proc.on('close', () => {
-    if (procs.get(key) === proc) procs.delete(key);
+    // The proc may have been rekeyed (placeholder id → real session id) since
+    // registration, so remove it by IDENTITY wherever it currently lives — not
+    // by the captured `key`. Keying on the stale placeholder left the real-id
+    // entry behind, so isRunning(realId) stayed true after a new session's first
+    // turn finished → a stuck "Stop" / streaming state on reload or switch.
+    for (const [k, v] of procs) if (v === proc) procs.delete(k);
   });
 }
 
