@@ -43,12 +43,12 @@
 
 <table>
   <tr>
-    <td align="center"><strong>Projects</strong><br><img src="docs/screenshots/projects.png" alt="Projects" width="100%"></td>
-    <td align="center"><strong>Chat</strong><br><img src="docs/screenshots/chat.png" alt="Chat" width="100%"></td>
+    <td align="center" width="50%"><strong>Chat</strong><br><img src="docs/screenshots/chat.png" alt="Chat" width="100%"></td>
+    <td align="center" width="50%"><strong>Sign-in</strong><br><img src="docs/screenshots/login.png" alt="Sign in" width="100%"></td>
   </tr>
   <tr>
-    <td align="center"><strong>Sign-in</strong><br><img src="docs/screenshots/login.png" alt="Sign in" width="100%"></td>
-    <td align="center"><strong>Mobile (PWA)</strong><br><img src="docs/screenshots/mobile-chat.png" alt="Mobile chat" width="50%"></td>
+    <td align="center"><strong>Mobile chat</strong><br><img src="docs/screenshots/mobile-chat.png" alt="Mobile chat" width="260"></td>
+    <td align="center"><strong>Mobile projects</strong><br><img src="docs/screenshots/mobile-projects.png" alt="Mobile projects" width="260"></td>
   </tr>
 </table>
 

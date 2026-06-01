@@ -43,12 +43,12 @@
 
 <table>
   <tr>
-    <td align="center"><strong>プロジェクト一覧</strong><br><img src="docs/screenshots/projects.png" alt="Projects" width="100%"></td>
-    <td align="center"><strong>チャット</strong><br><img src="docs/screenshots/chat.png" alt="Chat" width="100%"></td>
+    <td align="center" width="50%"><strong>チャット</strong><br><img src="docs/screenshots/chat.png" alt="Chat" width="100%"></td>
+    <td align="center" width="50%"><strong>サインイン</strong><br><img src="docs/screenshots/login.png" alt="Sign in" width="100%"></td>
   </tr>
   <tr>
-    <td align="center"><strong>サインイン</strong><br><img src="docs/screenshots/login.png" alt="Sign in" width="100%"></td>
-    <td align="center"><strong>モバイル (PWA)</strong><br><img src="docs/screenshots/mobile-chat.png" alt="Mobile chat" width="50%"></td>
+    <td align="center"><strong>モバイル (チャット)</strong><br><img src="docs/screenshots/mobile-chat.png" alt="Mobile chat" width="260"></td>
+    <td align="center"><strong>モバイル (プロジェクト)</strong><br><img src="docs/screenshots/mobile-projects.png" alt="Mobile projects" width="260"></td>
   </tr>
 </table>
 
