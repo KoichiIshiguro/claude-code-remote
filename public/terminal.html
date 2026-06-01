@@ -1784,8 +1784,11 @@ function getToolTitle(name, input) {
 async function sendPrompt() {
   const inp = document.getElementById('promptInput');
   const text = inp.value.trim();
-  if (!text && pendingImages.length === 0) return;
-  inp.value = ''; autoResize(inp);
+  // Require non-empty prompt text — even when files are attached. The server
+  // rejects an empty prompt (two guards: ws-handler + session-manager), so a
+  // files-only send would silently fail; block it here instead.
+  if (!text) return;
+  inp.value = ''; autoResize(inp); syncSendBtn();
   let uploadedPaths = [];
   const previewUrls = pendingImages.map(p => p.dataUrl);
   if (pendingImages.length > 0) {
@@ -1930,7 +1933,14 @@ document.getElementById('promptInput').addEventListener('keydown', e => {
   if (isMobile()) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
 });
-document.getElementById('promptInput').addEventListener('input', e => autoResize(e.target));
+document.getElementById('promptInput').addEventListener('input', e => { autoResize(e.target); syncSendBtn(); });
+// Disable the send button while the prompt is empty (whitespace-only counts as
+// empty) so the no-send is visible, not a silent no-op.
+function syncSendBtn() {
+  const btn = document.getElementById('sendBtn');
+  if (btn) btn.disabled = !document.getElementById('promptInput').value.trim();
+}
+syncSendBtn();
 
 // ── Sidebar / panel open-close ────────────────────────────────────────────────
 const backdrop = document.getElementById('backdrop');
