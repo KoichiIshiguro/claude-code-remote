@@ -118,6 +118,11 @@ function listAllSessionsLegacy() {
 // so closing the browser doesn't stop it — the next batch still fires.
 
 const runners = new Set(); // keys (sessionId | placeholderId) with an active runner
+// Keys whose CURRENT in-flight turn is a (auto-)compact. Server-authoritative so
+// a fresh page load / project switch can re-show the "compacting…" note from the
+// history payload instead of relying on client-side in-memory state (which a full
+// navigation wipes). Maps key → { auto: bool }.
+const compactingKeys = new Map();
 
 function queueStateMsg(key) {
   return {
@@ -173,6 +178,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   const processKey = key;
 
   if (!isNewSession && sm.shouldAutoCompact(key, directory)) {
+    compactingKeys.set(key, { auto: true });
     broadcast(key, { type: 'stream_start', sessionId: key, autoCompact: true });
     try {
       for await (const event of sm.runPrompt({
@@ -184,6 +190,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     } catch (err) {
       broadcast(key, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId: key });
     } finally {
+      compactingKeys.delete(key);
       broadcast(key, { type: 'stream_end', sessionId: key });
     }
   }
@@ -191,6 +198,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   // Tag the stream when the prompt itself is a manual /compact so the UI can
   // show a "compacting…" indicator (auto-compact above sets its own flag).
   const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
+  if (isCompactCmd) compactingKeys.set(key, { auto: false });
   broadcast(key, { type: 'stream_start', sessionId: key, compact: isCompactCmd });
 
   // AskUserQuestion intercept — the tool can't be answered in `-p` mode, so we
@@ -275,6 +283,8 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
       });
     }
 
+    compactingKeys.delete(key);
+    compactingKeys.delete(bk);
     broadcast(bk, { type: 'stream_end', sessionId: bk });
     if (isNewSession && pendingSessions.has(key)) {
       pendingSessions.get(key).lastActivity = Date.now();
@@ -540,6 +550,7 @@ function handleConnection(ws /*, req */) {
           history,
           truncated,
           streaming: procTracker.isRunning(sid),
+          compacting: compactingKeys.has(sid) ? compactingKeys.get(sid) : null,
           currentEntry: null,
           allowedTools: null,
           lastTokens,

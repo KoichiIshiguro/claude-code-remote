@@ -1182,7 +1182,16 @@ function handleMessage(msg) {
       if (_inflightUser && !historyHasUserText(msg.history, _inflightUser.text)) {
         appendUserMsg(_inflightUser.text, _inflightUser.images, false);
       }
-      if (_compacting && msg.streaming) {
+      // Server is authoritative about an in-flight compaction (msg.compacting),
+      // which survives a full page navigation / project switch where the local
+      // _compacting var is wiped. Fall back to the local var for an in-page WS
+      // blip where the server might race the flag.
+      const srvCompacting = msg.compacting || null;
+      if (srvCompacting && msg.streaming) {
+        _compacting = { auto: !!srvCompacting.auto };
+        compactNoteEl = appendCompactNote(_compacting.auto);
+        compactFailed = false;
+      } else if (_compacting && msg.streaming) {
         compactNoteEl = appendCompactNote(_compacting.auto);
         compactFailed = false;
       } else if (!msg.streaming) {

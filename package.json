@@ -1,6 +1,6 @@
 {
   "name": "claude-code-remote",
-  "version": "1.26.3",
+  "version": "1.26.4",
   "description": "Minimal self-hosted web UI for the Claude Code CLI. Use Claude from any browser, any phone.",
   "main": "server.js",
   "scripts": {
@@ -37,6 +37,7 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "bcrypt",
       "node-pty"
     ]
   }
