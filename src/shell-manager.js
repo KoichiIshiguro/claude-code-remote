@@ -2,26 +2,37 @@
 
 // Persistent interactive shells, one tmux session per Claude session.
 //
-// tmux owns the persistence: we spawn a node-pty running `tmux new-session -A`
-// (create-or-attach). Killing that pty just DETACHES the tmux client — the
-// session, its shell, and scrollback live on in the tmux server, surviving the
-// browser disconnect, the modal close, AND a restart of THIS node server (tmux
-// is a separate daemon). Reopening spawns a fresh pty that re-attaches.
+// When tmux is available, tmux owns the persistence: we spawn a node-pty running
+// `tmux new-session -A` (create-or-attach). Killing that pty just DETACHES the
+// tmux client — the session, its shell, and scrollback live on in the tmux
+// server, surviving the browser disconnect, the modal close, AND a restart of
+// THIS node server (tmux is a separate daemon). Reopening spawns a fresh pty
+// that re-attaches.
 //
-// Sessions are named `ccr-<sessionId>` so cleanup can find our zombies without
-// touching the user's own tmux sessions.
+// When tmux is NOT available (Windows has no native tmux; some Linux/macOS hosts
+// simply don't have it installed) we fall back to spawning the platform's
+// default shell directly. That shell works fully, but with NO persistence: the
+// session ends when its pty closes (browser disconnect / modal close / server
+// restart), since there's no tmux daemon holding it.
+//
+// tmux sessions are named `ccr-<sessionId>` so cleanup can find our zombies
+// without touching the user's own tmux sessions.
 
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const IS_WINDOWS = process.platform === 'win32';
+
 // node-pty exec()s a bundled `spawn-helper` binary for every pty it opens. Its
 // install/postinstall script is what makes that helper executable — but pnpm
 // blocks dependency build scripts by default, so the prebuilt helper stays at
 // 0644 and EVERY spawn dies with "posix_spawnp failed.". Self-heal by adding the
 // exec bit on load, independent of whether the build script ran. Idempotent.
+// (POSIX-only; on Windows node-pty uses ConPTY and there's no spawn-helper.)
 function ensureSpawnHelperExecutable() {
+  if (IS_WINDOWS) return;
   let root;
   try { root = path.dirname(require.resolve('node-pty/package.json')); }
   catch { return; }
@@ -42,8 +53,47 @@ function ensureSpawnHelperExecutable() {
 let pty = null;
 try { pty = require('node-pty'); ensureSpawnHelperExecutable(); } catch { /* not installed yet */ }
 
-const TMUX = process.env.TMUX_PATH || '/opt/homebrew/bin/tmux';
+// Resolve a usable tmux binary once, at load. Order: explicit TMUX_PATH → PATH
+// lookup (`which`) → well-known install dirs (PATH is often minimal under a
+// service manager / launchd). null = no tmux on this host → plain-shell fallback.
+function resolveTmux() {
+  if (IS_WINDOWS) return null; // no native tmux on Windows
+  const isExec = (p) => { try { fs.accessSync(p, fs.constants.X_OK); return true; } catch { return false; } };
+
+  const envPath = process.env.TMUX_PATH;
+  if (envPath && isExec(envPath)) return envPath;
+
+  // Ask the login shell's PATH first — covers Homebrew (either arch), Nix, etc.
+  try {
+    const found = execFileSync('which', ['tmux'], { encoding: 'utf8' }).trim().split('\n')[0];
+    if (found && isExec(found)) return found;
+  } catch { /* `which` missing or tmux not on PATH */ }
+
+  // Fall back to common locations for when PATH is stripped (launchd/systemd).
+  const candidates = [
+    '/opt/homebrew/bin/tmux', // Apple Silicon Homebrew
+    '/usr/local/bin/tmux',    // Intel Homebrew / manual installs
+    '/usr/bin/tmux',          // Linux distro package
+    '/bin/tmux',
+  ];
+  for (const c of candidates) if (isExec(c)) return c;
+  return null;
+}
+
+const TMUX = resolveTmux();
+const HAS_TMUX = !!TMUX;
 const PREFIX = 'ccr-';
+
+// The platform default shell for the no-tmux fallback path.
+function defaultShell() {
+  if (IS_WINDOWS) {
+    // Prefer PowerShell; allow override, fall back to cmd via COMSPEC.
+    const file = process.env.CCR_SHELL || 'powershell.exe';
+    return { file, args: [] };
+  }
+  const file = process.env.CCR_SHELL || process.env.SHELL || '/bin/bash';
+  return { file, args: ['-l'] };
+}
 
 // tmux session names treat '.' and ':' specially; UUIDs are already safe but
 // sanitize defensively for placeholder ids.
@@ -52,24 +102,33 @@ function tmuxName(sessionId) {
 }
 
 function hasPty() { return !!pty; }
+// True when shells survive disconnect/restart (tmux-backed). The UI can warn
+// when false so users know a closed shell won't come back.
+function hasPersistence() { return HAS_TMUX; }
 
-// Spawn a pty attached to this session's tmux (creating it on first open).
+// Spawn a pty for this session. With tmux: attach-or-create a named, persistent
+// session. Without tmux: spawn the platform shell directly (no persistence).
 function open(sessionId, directory, cols, rows) {
   if (!pty) throw new Error('node-pty is not installed — run `pnpm i` and restart the server');
-  const name = tmuxName(sessionId);
   const cwd = directory || os.homedir();
-  const args = ['new-session', '-A', '-s', name, '-c', cwd];
-  return pty.spawn(TMUX, args, {
+  const base = {
     name: 'xterm-256color',
     cols: cols || 80,
     rows: rows || 24,
     cwd,
     env: { ...process.env, TERM: 'xterm-256color' },
-  });
+  };
+  if (HAS_TMUX) {
+    const name = tmuxName(sessionId);
+    return pty.spawn(TMUX, ['new-session', '-A', '-s', name, '-c', cwd], base);
+  }
+  const shell = defaultShell();
+  return pty.spawn(shell.file, shell.args, base);
 }
 
-// All live `ccr-*` tmux session names.
+// All live `ccr-*` tmux session names. Empty when there's no tmux on this host.
 function listSessions() {
+  if (!HAS_TMUX) return [];
   try {
     const out = execFileSync(TMUX, ['list-sessions', '-F', '#{session_name}'], { encoding: 'utf8' });
     return out.split('\n').map(s => s.trim()).filter(s => s.startsWith(PREFIX));
@@ -79,8 +138,10 @@ function listSessions() {
 }
 
 // Kill every `ccr-*` tmux session whose Claude session id is NOT in keepIds
-// (i.e. no longer shown anywhere in the GUI). Returns the names killed.
+// (i.e. no longer shown anywhere in the GUI). Returns the names killed. No-op
+// without tmux (the plain-shell fallback leaves no detached sessions to reap).
 function cleanupOrphans(keepIds) {
+  if (!HAS_TMUX) return [];
   const keep = new Set((keepIds || []).map(tmuxName));
   const killed = [];
   for (const name of listSessions()) {
@@ -90,4 +151,4 @@ function cleanupOrphans(keepIds) {
   return killed;
 }
 
-module.exports = { open, listSessions, cleanupOrphans, tmuxName, hasPty };
+module.exports = { open, listSessions, cleanupOrphans, tmuxName, hasPty, hasPersistence };
