@@ -12,6 +12,7 @@ const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
 const shell = require('./shell-manager');
+const gitInfo = require('./git-info');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -572,6 +573,7 @@ function handleConnection(ws /*, req */) {
           type: 'history',
           sessionId: sid,
           directory,
+          branch: gitInfo.currentBranch(directory),
           history,
           truncated,
           streaming: procTracker.isRunning(sid),
