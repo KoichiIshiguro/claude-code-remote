@@ -12,12 +12,35 @@
 // touching the user's own tmux sessions.
 
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const { execFileSync } = require('child_process');
+
+// node-pty exec()s a bundled `spawn-helper` binary for every pty it opens. Its
+// install/postinstall script is what makes that helper executable — but pnpm
+// blocks dependency build scripts by default, so the prebuilt helper stays at
+// 0644 and EVERY spawn dies with "posix_spawnp failed.". Self-heal by adding the
+// exec bit on load, independent of whether the build script ran. Idempotent.
+function ensureSpawnHelperExecutable() {
+  let root;
+  try { root = path.dirname(require.resolve('node-pty/package.json')); }
+  catch { return; }
+  const candidates = [
+    path.join(root, 'build', 'Release', 'spawn-helper'),
+    path.join(root, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper'),
+  ];
+  for (const f of candidates) {
+    try {
+      const st = fs.statSync(f);
+      if (!(st.mode & 0o111)) fs.chmodSync(f, st.mode | 0o755);
+    } catch { /* absent or not writable — skip */ }
+  }
+}
 
 // node-pty is a native module — tolerate it being absent (e.g. before
 // `pnpm i`) so the rest of the server still boots; shell features just error.
 let pty = null;
-try { pty = require('node-pty'); } catch { /* not installed yet */ }
+try { pty = require('node-pty'); ensureSpawnHelperExecutable(); } catch { /* not installed yet */ }
 
 const TMUX = process.env.TMUX_PATH || '/opt/homebrew/bin/tmux';
 const PREFIX = 'ccr-';
