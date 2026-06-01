@@ -996,7 +996,12 @@
   window.addEventListener('pageshow', (e) => { if (e.persisted) pin(); });
 })();
 
-const sessionId = new URLSearchParams(location.search).get('session');
+// `let`, not `const`: a freshly-created session starts as a placeholder id and
+// is reassigned here when the CLI's init event resolves the real session id
+// (see the `session_assigned` handler). A `const` made that assignment throw,
+// leaving the id stuck on the dead placeholder → "directory could not be
+// determined" on the next prompt / reload.
+let sessionId = new URLSearchParams(location.search).get('session');
 // No session → render an empty-state placeholder and auto-open the projects
 // sidebar so the user can pick one. Server's /terminal route already tries to
 // redirect to the most-recent jsonl, so we only reach here when zero sessions
