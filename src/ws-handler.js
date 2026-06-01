@@ -11,6 +11,7 @@ const archiveStore = require('./archive-store');
 const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
+const shell = require('./shell-manager');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -283,8 +284,24 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   return resolvedSessionId || key;
 }
 
+// Every Claude session id currently reachable from the GUI (visible OR
+// archived) plus any in-flight placeholders. Used by shell cleanup to decide
+// which `ccr-*` tmux sessions are true orphans.
+function knownSessionIds() {
+  const ids = new Set();
+  for (const p of projectsStore.loadProjects()) {
+    for (const s of jsonlReader.listJsonlsForProject(p.path)) ids.add(s.sessionId);
+  }
+  for (const pid of pendingSessions.keys()) ids.add(pid);
+  return [...ids];
+}
+
 function handleConnection(ws /*, req */) {
-  ws.on('close', () => unsubscribe(ws));
+  ws.on('close', () => {
+    unsubscribe(ws);
+    // Detach this client's shell (tmux session lives on for re-attach).
+    if (ws._shell) { try { ws._shell.kill(); } catch {} ws._shell = null; }
+  });
 
   ws.on('message', async (raw) => {
     let msg;
@@ -630,6 +647,49 @@ function handleConnection(ws /*, req */) {
           promptQueue.clear(msg.sessionId);
           broadcastQueue(msg.sessionId);
         }
+        break;
+      }
+
+      // ─── Persistent shell (tmux-backed PTY) ───────────────────────────────
+
+      case 'shell_attach': {
+        const sid = msg.sessionId;
+        if (!sid) { send(ws, { type: 'shell_error', message: 'sessionId required' }); break; }
+        let directory = msg.directory
+          || (pendingSessions.get(sid) || {}).directory
+          || findDirectoryForSessionId(sid);
+        // One shell pty per socket — drop any prior one (detaches its tmux).
+        if (ws._shell) { try { ws._shell.kill(); } catch {} ws._shell = null; }
+        let term;
+        try { term = shell.open(sid, directory, msg.cols, msg.rows); }
+        catch (e) { send(ws, { type: 'shell_error', message: e.message }); break; }
+        ws._shell = term;
+        term.onData(d => send(ws, { type: 'shell_output', data: d }));
+        term.onExit(() => {
+          if (ws._shell === term) ws._shell = null;
+          send(ws, { type: 'shell_exit' });
+        });
+        send(ws, { type: 'shell_attached', sessionId: sid, directory: directory || '' });
+        break;
+      }
+
+      case 'shell_input':
+        if (ws._shell && typeof msg.data === 'string') { try { ws._shell.write(msg.data); } catch {} }
+        break;
+
+      case 'shell_resize':
+        if (ws._shell && msg.cols && msg.rows) { try { ws._shell.resize(msg.cols, msg.rows); } catch {} }
+        break;
+
+      case 'shell_detach':
+        // Close the modal: detach the pty, leave tmux running for re-attach.
+        if (ws._shell) { try { ws._shell.kill(); } catch {} ws._shell = null; }
+        break;
+
+      case 'shell_cleanup': {
+        // Kill every ccr-* tmux session not reachable from the GUI.
+        const killed = shell.cleanupOrphans(knownSessionIds());
+        send(ws, { type: 'shell_cleanup_done', killed });
         break;
       }
 

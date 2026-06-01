@@ -1,6 +1,6 @@
 {
   "name": "claude-code-remote",
-  "version": "1.24.0",
+  "version": "1.25.0",
   "description": "Minimal self-hosted web UI for the Claude Code CLI. Use Claude from any browser, any phone.",
   "main": "server.js",
   "scripts": {
@@ -30,6 +30,7 @@
     "express": "^4.19.2",
     "express-session": "^1.18.0",
     "multer": "^2.1.1",
+    "node-pty": "^1.0.0",
     "qrcode": "^1.5.4",
     "uuid": "^10.0.0",
     "ws": "^8.18.0"

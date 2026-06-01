@@ -14,7 +14,10 @@
   <link rel="apple-touch-icon" href="/icons/icon.svg">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.css">
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10/lib/addon-fit.js"></script>
   <style>
   /* ── 3-panel app shell ── */
   html, body { overscroll-behavior-x: none; }
@@ -642,7 +645,7 @@
       <span class="dot-anim" id="dotAnim">●</span> <span id="workingLabel">Working</span>
     </div>
     <button class="hdr-btn" id="summaryBtn" title="このスレッドを要約" aria-label="Summarize thread">📋</button>
-    <button class="hdr-btn" id="permBtn" title="設定" aria-label="設定">⚙</button>
+    <button class="hdr-btn" id="shellBtn" title="シェル (tmux)" aria-label="シェル">🖥</button>
     <button class="hdr-btn hdr-right-btn" id="rightBtn" title="Files" aria-label="Files">📁</button>
   </div>
 
@@ -893,6 +896,42 @@
   </div>
 </div>
 
+<style>
+  .shell-modal { background:#000; border:1px solid var(--border); border-radius:var(--radius); width:100%; max-width:900px; height:88vh; display:flex; flex-direction:column; overflow:hidden; }
+  .shell-hdr { display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--surface); border-bottom:1px solid var(--border); flex-shrink:0; }
+  .shell-title { flex:1; min-width:0; font-size:12px; color:var(--text-muted); font-family:'SF Mono',Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .shell-clean { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; padding:5px 9px; font-size:12px; cursor:pointer; flex-shrink:0; }
+  .shell-clean:active { background:var(--accent); color:#000; }
+  .shell-term { flex:1; min-height:0; padding:4px 4px 0; background:#000; overflow:hidden; }
+  .shell-term .xterm, .shell-term .xterm-viewport, .shell-term .xterm-screen { height:100% !important; }
+  .shell-keys { display:flex; gap:6px; padding:8px; background:var(--surface); border-top:1px solid var(--border); overflow-x:auto; flex-shrink:0; -webkit-overflow-scrolling:touch; }
+  .shell-keys button { flex:0 0 auto; min-width:46px; padding:11px 12px; background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:8px; font-size:14px; font-family:'SF Mono',Menlo,monospace; cursor:pointer; -webkit-user-select:none; user-select:none; }
+  .shell-keys button:active { background:var(--accent); color:#000; }
+  .shell-keys button.mod-on { background:var(--accent); color:#000; border-color:var(--accent); }
+</style>
+
+<div class="modal-overlay" id="shellOverlay">
+  <div class="shell-modal">
+    <div class="shell-hdr">
+      <span class="shell-title" id="shellTitle">Shell</span>
+      <button class="shell-clean" id="shellCleanBtn" title="GUIに出ていない tmux(ccr-*) を一括削除">🧹 cleanup</button>
+      <button class="side-close" id="shellClose">×</button>
+    </div>
+    <div class="shell-term" id="shellTerm"></div>
+    <div class="shell-keys">
+      <button data-seq="tab">Tab</button>
+      <button data-seq="ctrlc">^C</button>
+      <button data-seq="esc">Esc</button>
+      <button data-mod="ctrl" id="shellCtrlKey">Ctrl</button>
+      <button data-mod="alt" id="shellAltKey">Alt</button>
+      <button data-seq="left">←</button>
+      <button data-seq="up">↑</button>
+      <button data-seq="down">↓</button>
+      <button data-seq="right">→</button>
+    </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -971,6 +1010,12 @@ function startHeartbeat() {
 }
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
 let currentToolEls = {};
+// Assistant message ids already painted (from jsonl history OR a prior live
+// event). `claude -p` flushes its stream-json events in a burst near the end of
+// a turn, while the jsonl is written incrementally — so a mid-stream re-attach
+// can render the in-progress turn from jsonl, then the live burst arrives and
+// repaints the SAME messages. Deduping by message id kills that double-render.
+let renderedAssistantIds = new Set();
 // Queue is authoritative on the server now; this just mirrors the last
 // queue_state broadcast so we can render the tray and gate the cancel button.
 let serverQueue = [];
@@ -1045,10 +1090,25 @@ function handleMessage(msg) {
     case 'pong':
       // Liveness only — lastRx was already stamped by the message listener.
       break;
+    case 'shell_output': if (shellTerm) shellTerm.write(msg.data); break;
+    case 'shell_attached': break;
+    case 'shell_exit': if (shellTerm) shellTerm.write('\r\n\x1b[33m[shell detached / exited — reopen to re-attach]\x1b[0m\r\n'); break;
+    case 'shell_error':
+      if (shellTerm) shellTerm.write('\r\n\x1b[31m' + (msg.message || 'shell error') + '\x1b[0m\r\n');
+      else alert('Shell: ' + (msg.message || 'error'));
+      break;
+    case 'shell_cleanup_done':
+      alert(msg.killed && msg.killed.length
+        ? `${msg.killed.length} 件の tmux セッションを削除しました:\n` + msg.killed.join('\n')
+        : '削除対象（GUIに無い ccr-* セッション）はありませんでした');
+      break;
     case 'history': {
       const dir = msg.directory || '';
       document.getElementById('dirLabel').textContent = dir || sessionId;
       document.getElementById('messages').innerHTML = '';
+      // Fresh paint — forget any ids from a previous render; renderHistoryEntry
+      // repopulates this from the jsonl we're about to draw.
+      renderedAssistantIds = new Set();
       allowedTools = msg.allowedTools ?? null;
       updateCtxPill(msg.lastTokens);
       if (msg.truncated) {
@@ -1060,9 +1120,12 @@ function handleMessage(msg) {
       for (const e of msg.history) renderHistoryEntry(e);
       if (msg.streaming) {
         isStreaming = true;
-        currentAssistantEl = createAssistantMessage();
+        // Don't pre-create a live bubble here: the in-progress turn was just
+        // drawn from jsonl above. handleStreamEvent lazily creates a bubble only
+        // when a genuinely-new (non-deduped) live message arrives, so we never
+        // leave an empty "Claude" bubble nor duplicate the jsonl-drawn turn.
+        currentAssistantEl = null;
         currentTextEl = null; streamingText = ''; currentToolEls = {};
-        if (msg.currentEntry) renderBlocks(currentAssistantEl.querySelector('.assistant-content'), msg.currentEntry.blocks);
         setStreamingUI(true);
       } else {
         // Server says not streaming — reset any stale local streaming state
@@ -1313,6 +1376,7 @@ function renderHistoryEntry(entry) {
     m.innerHTML = `${imgs}<div class="bubble">${escHtml(entry.text)}</div>`;
     document.getElementById('messages').appendChild(m);
   } else if (entry.type === 'assistant') {
+    if (entry.msgId) renderedAssistantIds.add(entry.msgId);
     const m = createAssistantMessage();
     const c = m.querySelector('.assistant-content');
     renderBlocks(c, entry.blocks);
@@ -1348,8 +1412,26 @@ function renderBlocks(container, blocks) {
   }
 }
 
+// Lazily create the live assistant bubble. Used after a mid-stream re-attach,
+// where we deliberately don't pre-create one (the jsonl turn was already drawn).
+function ensureAssistantEl() {
+  if (!currentAssistantEl) {
+    currentAssistantEl = createAssistantMessage();
+    currentTextEl = null; streamingText = '';
+  }
+  return currentAssistantEl;
+}
+
 // ── Live stream ───────────────────────────────────────────────────────────────
 function handleStreamEvent(event) {
+  // Skip a whole assistant message we've already painted from jsonl (or a prior
+  // live event). Without this, a mid-stream re-attach double-renders the turn.
+  if (event.type === 'assistant') {
+    const mid = event.message?.id;
+    if (mid && renderedAssistantIds.has(mid)) return;
+    if (mid) renderedAssistantIds.add(mid);
+    ensureAssistantEl();
+  }
   if (!currentAssistantEl) return;
   const c = currentAssistantEl.querySelector('.assistant-content');
   switch (event.type) {
@@ -2749,7 +2831,8 @@ function closeSummary() { summaryOverlay.classList.remove('on'); }
 
 // ── Permissions modal ─────────────────────────────────────────────────────────
 const permAll = document.getElementById('permAll');
-document.getElementById('permBtn').addEventListener('click', openSettingsModal);
+// Settings is reachable from the model pill (the ⚙ header button was replaced
+// by the shell button).
 document.getElementById('modelPill').addEventListener('click', openSettingsModal);
 document.getElementById('permClose').addEventListener('click', closeSettingsModal);
 document.getElementById('permCancel').addEventListener('click', closeSettingsModal);
@@ -2971,7 +3054,10 @@ document.addEventListener('visibilitychange', () => {
     connect();
   } else if (ws.readyState === WebSocket.OPEN) {
     lastRx = Date.now();
-    wsSend({ type: 'attach', sessionId });
+    // If a turn is streaming on a healthy socket, the live DOM is already
+    // correct — re-attaching would rebuild from jsonl and risk a flash/dup.
+    // Only re-sync when idle (cheap refresh to catch a missed stream_end).
+    if (!isStreaming) wsSend({ type: 'attach', sessionId });
   }
   requestWakeLock();
 });
@@ -2989,6 +3075,99 @@ async function requestWakeLock() {
   } catch { wakeLock = null; }
 }
 requestWakeLock();
+
+// ── Persistent shell (tmux-backed PTY) ────────────────────────────────────────
+// One tmux session per Claude session (named ccr-<sessionId> server-side). The
+// modal hosts an xterm.js client; closing it (or disconnecting) detaches but
+// leaves the tmux session running, so reopening re-attaches with scrollback.
+let shellTerm = null, shellFit = null, shellModalOpen = false;
+let shellCtrlOn = false, shellAltOn = false;
+
+const SHELL_SEQ = {
+  tab: '\t', ctrlc: '\x03', esc: '\x1b',
+  up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D',
+};
+
+function setShellMod(which, on) {
+  if (which === 'ctrl') { shellCtrlOn = on; document.getElementById('shellCtrlKey').classList.toggle('mod-on', on); }
+  if (which === 'alt')  { shellAltOn = on;  document.getElementById('shellAltKey').classList.toggle('mod-on', on); }
+}
+
+// Apply sticky Ctrl/Alt to a single printable char typed on the soft keyboard.
+function applyShellMods(d) {
+  if (d.length !== 1) return d;
+  let out = d;
+  if (shellCtrlOn) {
+    const c = d.toLowerCase().charCodeAt(0);
+    if (c >= 97 && c <= 122) out = String.fromCharCode(c - 96); // ^A..^Z
+    else if (d === ' ') out = '\x00';
+  }
+  if (shellAltOn) out = '\x1b' + out; // Meta/Alt prefix
+  return out;
+}
+
+function shellEnsureTerm() {
+  if (shellTerm) return;
+  shellTerm = new Terminal({
+    fontFamily: "'SF Mono', Menlo, monospace",
+    fontSize: 13, cursorBlink: true, scrollback: 5000,
+    theme: { background: '#000000' },
+  });
+  shellFit = new FitAddon.FitAddon();
+  shellTerm.loadAddon(shellFit);
+  shellTerm.open(document.getElementById('shellTerm'));
+  shellTerm.onData(d => {
+    if (shellCtrlOn || shellAltOn) { d = applyShellMods(d); setShellMod('ctrl', false); setShellMod('alt', false); }
+    wsSend({ type: 'shell_input', data: d });
+  });
+}
+
+function shellResize() {
+  if (!shellTerm || !shellFit) return;
+  try { shellFit.fit(); } catch {}
+  wsSend({ type: 'shell_resize', cols: shellTerm.cols, rows: shellTerm.rows });
+}
+
+function openShellModal() {
+  if (!sessionId) { alert('セッションがまだありません'); return; }
+  if (typeof Terminal === 'undefined') { alert('ターミナルの読み込みに失敗しました（ネットワーク?）'); return; }
+  document.getElementById('shellOverlay').classList.add('on');
+  document.getElementById('shellTitle').textContent = (fbSessionRoot || '') + '  ·  ' + String(sessionId).slice(0, 8);
+  shellEnsureTerm();
+  shellModalOpen = true;
+  setShellMod('ctrl', false); setShellMod('alt', false);
+  // Let the modal lay out before measuring rows/cols.
+  setTimeout(() => {
+    shellResize();
+    wsSend({ type: 'shell_attach', sessionId, directory: fbSessionRoot || '', cols: shellTerm.cols, rows: shellTerm.rows });
+    shellTerm.focus();
+  }, 60);
+}
+
+function closeShellModal() {
+  document.getElementById('shellOverlay').classList.remove('on');
+  shellModalOpen = false;
+  wsSend({ type: 'shell_detach' });
+  // Clear so a later re-attach repaints cleanly from tmux's redraw-on-attach.
+  if (shellTerm) shellTerm.reset();
+}
+
+document.querySelectorAll('.shell-keys [data-seq]').forEach(b => {
+  b.addEventListener('click', () => {
+    wsSend({ type: 'shell_input', data: SHELL_SEQ[b.dataset.seq] });
+    if (shellTerm) shellTerm.focus();
+  });
+});
+document.getElementById('shellCtrlKey').addEventListener('click', () => { setShellMod('ctrl', !shellCtrlOn); if (shellTerm) shellTerm.focus(); });
+document.getElementById('shellAltKey').addEventListener('click', () => { setShellMod('alt', !shellAltOn); if (shellTerm) shellTerm.focus(); });
+document.getElementById('shellClose').addEventListener('click', closeShellModal);
+document.getElementById('shellCleanBtn').addEventListener('click', () => {
+  if (confirm('GUIに出ていない tmux セッション (ccr-*) を全て削除します。よろしいですか？')) {
+    wsSend({ type: 'shell_cleanup' });
+  }
+});
+document.getElementById('shellBtn').addEventListener('click', openShellModal);
+window.addEventListener('resize', () => { if (shellModalOpen) shellResize(); });
 </script>
 </body>
 </html>
