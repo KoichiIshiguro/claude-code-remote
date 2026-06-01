@@ -95,15 +95,20 @@ function pendingToLegacyShape(placeholderId, entry) {
 function listAllSessionsLegacy() {
   const archived = new Set(archiveStore.load());
   const out = [];
+  const seen = new Set();
   for (const p of projectsStore.loadProjects()) {
     const ls = jsonlReader.listJsonlsForProject(p.path);
     for (const s of ls) {
       if (archived.has(s.sessionId)) continue;
+      seen.add(s.sessionId);
       out.push(sessionToLegacyShape(s, p.path));
     }
   }
   for (const [pid, entry] of pendingSessions) {
     if (archived.has(pid)) continue;
+    // A just-resolved session is pending under its real id only until its jsonl
+    // is on disk; once the jsonl row exists, skip the transitional pending row.
+    if (seen.has(pid)) continue;
     out.push(pendingToLegacyShape(pid, entry));
   }
   return out;
@@ -220,7 +225,16 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
         procTracker.rekey(key, resolvedSessionId);
         rekeySubscribers(key, resolvedSessionId);
         promptQueue.rekey(key, resolvedSessionId);
+        // Re-key the pending record to the REAL id instead of deleting it. Claude
+        // emits `init` before it has necessarily flushed the session jsonl to
+        // disk, so deleting here left a window where the sidebar had neither the
+        // placeholder row nor a jsonl-derived row → the session vanished until a
+        // reload. Keeping a pending row under the real id bridges that gap;
+        // listAllSessionsLegacy de-dups it once the jsonl appears, and the turn's
+        // stream_end cleans it up.
+        const pendingEntry = pendingSessions.get(key);
         pendingSessions.delete(key);
+        if (pendingEntry) pendingSessions.set(resolvedSessionId, pendingEntry);
         broadcast(resolvedSessionId, { type: 'session_assigned', placeholderId: key, sessionId: resolvedSessionId });
         broadcast(resolvedSessionId, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
       }
@@ -286,8 +300,19 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     compactingKeys.delete(key);
     compactingKeys.delete(bk);
     broadcast(bk, { type: 'stream_end', sessionId: bk });
-    if (isNewSession && pendingSessions.has(key)) {
-      pendingSessions.get(key).lastActivity = Date.now();
+    if (isNewSession) {
+      if (resolvedSessionId) {
+        // init arrived → the session jsonl is now on disk, so the jsonl-derived
+        // row replaces the transitional pending one. Drop both keys.
+        pendingSessions.delete(resolvedSessionId);
+        pendingSessions.delete(key);
+      } else if (pendingSessions.has(key)) {
+        // init never came (turn errored before it) → keep the placeholder so the
+        // user can retry; just freshen its activity time.
+        pendingSessions.get(key).lastActivity = Date.now();
+      }
+      // Push a refreshed list so the sidebar row updates to its real title/preview.
+      broadcast(bk, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
     }
   }
 
