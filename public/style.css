@@ -70,8 +70,6 @@ a { color: var(--accent); text-decoration: none; }
 .msg-user .img-previews img { max-width: 120px; max-height: 120px; border-radius: var(--radius-sm); object-fit: cover; }
 
 .msg-assistant { align-items: flex-start; }
-.msg-assistant .label { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
-.msg-assistant .label .claude-dot { width: 18px; height: 18px; border-radius: 4px; background: url(/icons/icon.svg) center/cover no-repeat; flex-shrink: 0; }
 .assistant-content { display: flex; flex-direction: column; gap: 10px; width: 100%; min-width: 0; }
 
 /* ── Markdown in assistant ── */
@@ -127,12 +125,6 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ── Cost / usage pill ── */
 .usage-pill { font-size: 11px; color: var(--text-muted); padding: 3px 8px; border-radius: 99px; background: var(--surface2); align-self: flex-start; }
-
-/* ── Context size pill (header) ── */
-.ctx-pill { font-size: 11px; color: var(--text-muted); padding: 2px 7px; border-radius: 99px; background: var(--surface2); white-space: nowrap; }
-.ctx-pill:empty { display: none; }
-.ctx-pill.warn { color: var(--accent); }
-.ctx-pill.hot { color: var(--red); background: rgba(248,81,73,.15); }
 
 /* ── Error message ── */
 .msg-error .bubble { background: rgba(248,81,73,.15); border: 1px solid rgba(248,81,73,.3); color: var(--red); padding: 10px 14px; border-radius: var(--radius-sm); }

@@ -482,18 +482,15 @@
   .hdr-title { font-size: 13px; font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dir-label { flex: none; max-width: 100%; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
-  /* ── Working chip ── */
-  .working-chip {
-    display: none; align-items: center; gap: 5px; padding: 3px 9px;
-    background: rgba(217,119,6,.15); border: 1px solid rgba(217,119,6,.35);
-    border-radius: 99px; font-size: 12px; color: #d97706; white-space: nowrap; flex-shrink: 0;
+  /* ── Live mark ──
+     A single status dot pinned below the latest output (last child of #messages).
+     Static = idle/done; pulsing = a turn is streaming. Replaces both the old
+     per-message .claude-dot and the header "Working" chip. */
+  .live-mark {
+    width: 18px; height: 18px; border-radius: 4px; margin: 2px 2px 10px;
+    background: url(/icons/icon.svg) center/cover no-repeat; flex-shrink: 0;
   }
-  .working-chip.on { display: flex; }
-  .dot-anim { display: inline-block; width: 18px; }
-
-  /* ── Claude dot pulse ── */
-  .claude-dot { transition: box-shadow .3s; }
-  .streaming-active .claude-dot { animation: dot-pulse 1.4s ease-in-out infinite; }
+  #messages.streaming-active .live-mark { animation: dot-pulse 1.4s ease-in-out infinite; }
   @keyframes dot-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(217,119,6,.5)} 50%{box-shadow:0 0 0 7px rgba(217,119,6,0)} }
 
   /* ── Reconnect banner ── */
@@ -646,10 +643,6 @@
     <div class="hdr-brand">
       <span class="hdr-title">Claude Code Remote</span>
       <span class="dir-label" id="dirLabel">Loading…</span>
-    </div>
-    <span class="ctx-pill" id="ctxPill" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></span>
-    <div class="working-chip" id="workingChip">
-      <span class="dot-anim" id="dotAnim">●</span> <span id="workingLabel">Working</span>
     </div>
     <button class="hdr-btn" id="projSettingsBtn" title="プロジェクト設定" aria-label="プロジェクト設定">⚙</button>
     <button class="hdr-btn" id="shellBtn" title="シェル (tmux)" aria-label="シェル">🖥</button>
@@ -1051,7 +1044,7 @@ function openLinksInNewTab(root) {
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let ws, isStreaming = false, pendingImages = [], dotTimer = null;
+let ws, isStreaming = false, pendingImages = [];
 // Heartbeat: mobile sockets often go "half-open" (the TCP connection dies but
 // no `close` event fires), so a finished turn's stream_end never arrives and
 // the UI sticks on "Working". We ping periodically; if we hear nothing back for
@@ -1418,10 +1411,8 @@ function handleMessage(msg) {
 // ── Context size indicator ────────────────────────────────────────────────────
 // Thresholds match the server's auto-compact logic (167k default = TUI ~83.5%).
 function updateCtxPill(tokens) {
-  const pill = document.getElementById('ctxPill');
   const meter = document.getElementById('ctxMeter');
   if (!tokens) {
-    if (pill) { pill.textContent = ''; pill.className = 'ctx-pill'; }
     if (meter) { meter.textContent = ''; meter.className = 'ctx-meter'; }
     return;
   }
@@ -1431,10 +1422,6 @@ function updateCtxPill(tokens) {
   const thr = (typeof _autoCompactEffective === 'number' && _autoCompactEffective > 0) ? _autoCompactEffective : 167_000;
   const warnAt = Math.max(Math.floor(thr * 0.6), 60_000);
   const cls = (_autoCompactEffective !== 0 && tokens > thr) ? 'hot' : tokens > warnAt ? 'warn' : '';
-  if (pill) {
-    pill.textContent = `${k}k`;
-    pill.className = 'ctx-pill' + (cls ? ' ' + cls : '');
-  }
   if (meter) {
     const pct = Math.round((tokens / 200_000) * 100);
     const tail = (_autoCompactEffective !== 0 && tokens > thr) ? ' · auto-compacting next turn'
@@ -1593,23 +1580,37 @@ function handleStreamEvent(event) {
 // ── Streaming UI ──────────────────────────────────────────────────────────────
 function setStreamingUI(active, compacting) {
   document.getElementById('topLoader').classList.toggle('active', active);
-  document.getElementById('workingChip').classList.toggle('on', active);
-  document.getElementById('workingLabel').textContent = (active && compacting) ? '圧縮中…' : 'Working';
   document.getElementById('cancelBtn').classList.toggle('on', active || serverQueue.length > 0);
   document.getElementById('compactBtn').disabled = active;
+  // Drives the live-mark: `.streaming-active .live-mark` pulses; otherwise it
+  // sits static below the latest output as a "done" indicator.
   document.getElementById('messages').classList.toggle('streaming-active', active);
-  if (active) startDotAnim(); else if (!serverQueue.length) stopDotAnim();
   if (!active && !serverQueue.length) {
     document.getElementById('cancelBtn').classList.remove('on');
     document.getElementById('queueBadge').classList.remove('on');
     document.getElementById('queueList').classList.remove('on');
   }
 }
-function startDotAnim() {
-  const el = document.getElementById('dotAnim'); let i = 0;
-  dotTimer = setInterval(() => { el.textContent = ['●','●·','●··','●···'][i++ % 4]; }, 350);
-}
-function stopDotAnim() { clearInterval(dotTimer); document.getElementById('dotAnim').textContent = '●'; }
+
+// ── Live mark ──
+// A single status dot kept as the last child of #messages, so it always sits
+// just below the latest output. Hidden until there's at least one message.
+// A MutationObserver re-pins it to the end whenever messages are (re)rendered
+// — e.g. after innerHTML='' on a session switch — so we never have to touch the
+// many individual append sites.
+(function initLiveMark() {
+  const msgs = document.getElementById('messages');
+  if (!msgs) return;
+  const mark = document.createElement('div');
+  mark.className = 'live-mark';
+  mark.id = 'liveMark';
+  function place() {
+    if (msgs.lastElementChild !== mark) msgs.appendChild(mark); // also re-attaches after innerHTML=''
+    mark.style.display = msgs.querySelector('.msg, .compact-note') ? '' : 'none';
+  }
+  new MutationObserver(place).observe(msgs, { childList: true });
+  place();
+})();
 
 // ── Text streaming ────────────────────────────────────────────────────────────
 function appendStreamText(container, text) {
@@ -1646,7 +1647,7 @@ function appendTurnCost(container, ev) {
 // ── DOM builders ──────────────────────────────────────────────────────────────
 function createAssistantMessage() {
   const m = document.createElement('div'); m.className = 'msg msg-assistant';
-  m.innerHTML = `<div class="label"><span class="claude-dot"></span> Claude</div><div class="assistant-content"></div>`;
+  m.innerHTML = `<div class="assistant-content"></div>`;
   document.getElementById('messages').appendChild(m); return m;
 }
 // Inline note shown while /compact runs (manual or auto). Replaces the raw
