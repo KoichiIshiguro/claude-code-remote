@@ -1055,12 +1055,16 @@ function startHeartbeat() {
 }
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
 let currentToolEls = {};
-// Assistant message ids already painted (from jsonl history OR a prior live
-// event). `claude -p` flushes its stream-json events in a burst near the end of
-// a turn, while the jsonl is written incrementally — so a mid-stream re-attach
-// can render the in-progress turn from jsonl, then the live burst arrives and
-// repaints the SAME messages. Deduping by message id kills that double-render.
-let renderedAssistantIds = new Set();
+// Per-event uuids already painted (from jsonl history OR a prior live event).
+// `claude -p` flushes its stream-json events in a burst near the end of a turn,
+// while the jsonl is written incrementally — so a mid-stream re-attach can
+// render the in-progress turn from jsonl, then the live burst arrives and
+// repaints the SAME events. Dedup by the per-event uuid (NOT message.id): one
+// assistant message streams as several events sharing a message.id — thinking,
+// then text — so message-id dedup would drop everything after the first block.
+// The stdout uuid equals the jsonl uuid for the same event, so per-uuid dedup
+// collapses the re-attach duplicate while keeping every block.
+let renderedEventUuids = new Set();
 // Queue is authoritative on the server now; this just mirrors the last
 // queue_state broadcast so we can render the tray and gate the cancel button.
 let serverQueue = [];
@@ -1161,7 +1165,7 @@ function handleMessage(msg) {
       document.getElementById('messages').innerHTML = '';
       // Fresh paint — forget any ids from a previous render; renderHistoryEntry
       // repopulates this from the jsonl we're about to draw.
-      renderedAssistantIds = new Set();
+      renderedEventUuids = new Set();
       allowedTools = msg.allowedTools ?? null;
       updateCtxPill(msg.lastTokens);
       if (msg.truncated) {
@@ -1462,7 +1466,7 @@ function renderHistoryEntry(entry) {
     m.innerHTML = `${imgs}<div class="bubble">${escHtml(entry.text)}</div>`;
     document.getElementById('messages').appendChild(m);
   } else if (entry.type === 'assistant') {
-    if (entry.msgId) renderedAssistantIds.add(entry.msgId);
+    if (entry.uuid) renderedEventUuids.add(entry.uuid);
     const m = createAssistantMessage();
     const c = m.querySelector('.assistant-content');
     renderBlocks(c, entry.blocks);
@@ -1513,9 +1517,9 @@ function handleStreamEvent(event) {
   // Skip a whole assistant message we've already painted from jsonl (or a prior
   // live event). Without this, a mid-stream re-attach double-renders the turn.
   if (event.type === 'assistant') {
-    const mid = event.message?.id;
-    if (mid && renderedAssistantIds.has(mid)) return;
-    if (mid) renderedAssistantIds.add(mid);
+    const uid = event.uuid;
+    if (uid && renderedEventUuids.has(uid)) return;
+    if (uid) renderedEventUuids.add(uid);
     ensureAssistantEl();
   }
   if (!currentAssistantEl) return;

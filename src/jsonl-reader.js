@@ -258,10 +258,14 @@ function applyEventToBlocks(history, event) {
       }
     }
     if (!blocks.length) return history;
-    // msgId lets the live stream dedupe against what we've already painted from
+    // uuid lets the live stream dedupe against what we've already painted from
     // jsonl on a mid-stream re-attach (`claude -p` flushes its stream-json in a
-    // late burst, so the same message can arrive from both paths).
-    return [...history, { type: 'assistant', blocks, ts, msgId: event.message?.id || null }];
+    // late burst, so the same event can arrive from both paths). It must be the
+    // per-event uuid, NOT message.id: one assistant message streams as multiple
+    // events sharing one message.id (thinking, then text), and the stdout uuid
+    // matches the jsonl uuid for the same event — so per-uuid dedup keeps every
+    // block while still collapsing the re-attach duplicate.
+    return [...history, { type: 'assistant', blocks, ts, uuid: event.uuid || null }];
   }
 
   // attachment / system / mode / permission-mode / ai-title / last-prompt /
