@@ -1604,12 +1604,19 @@ function setStreamingUI(active, compacting) {
   const mark = document.createElement('div');
   mark.className = 'live-mark';
   mark.id = 'liveMark';
-  function place() {
+  function place(andScroll) {
     if (msgs.lastElementChild !== mark) msgs.appendChild(mark); // also re-attaches after innerHTML=''
     mark.style.display = msgs.querySelector('.msg, .compact-note') ? '' : 'none';
+    // The mark is appended by this observer AFTER the render's own scroll call,
+    // so it would land below the viewport and be cut off. Re-follow the bottom
+    // (scrollToBottom is conditional on the user already being at the bottom, so
+    // it won't yank someone reading further up). Only the observer-driven calls
+    // pass true — the initial synchronous call must not touch the not-yet-
+    // initialised scroll state.
+    if (andScroll && typeof scrollToBottom === 'function') scrollToBottom();
   }
-  new MutationObserver(place).observe(msgs, { childList: true });
-  place();
+  new MutationObserver(() => place(true)).observe(msgs, { childList: true });
+  place(false);
 })();
 
 // ── Text streaming ────────────────────────────────────────────────────────────
