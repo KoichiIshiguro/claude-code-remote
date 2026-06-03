@@ -683,7 +683,7 @@ function handleConnection(ws /*, req */) {
         const { sessionId } = msg;
         let directory = msg.directory;
 
-        if (!prompt) { send(ws, { type: 'error', message: 'prompt required' }); return; }
+        if (!prompt && imagePaths.length === 0) { send(ws, { type: 'error', message: 'prompt required' }); return; }
         if (!sessionId) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
 
         const placeholder = pendingSessions.get(sessionId);

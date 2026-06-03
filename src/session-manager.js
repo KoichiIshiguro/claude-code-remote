@@ -146,11 +146,13 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId = null, processKey, model = null, effort = null }) {
   if (!directory) throw new Error('directory required');
-  if (!prompt) throw new Error('prompt required');
+  // A files-only send carries no prompt text — the attached paths ARE the
+  // message. Only reject when neither text nor attachments are present.
+  if (!prompt && imagePaths.length === 0) throw new Error('prompt required');
   if (!processKey) throw new Error('processKey required');
 
   const finalPrompt = imagePaths.length
-    ? `${imagePaths.join('\n')}\n\n${prompt}`
+    ? (prompt ? `${imagePaths.join('\n')}\n\n${prompt}` : imagePaths.join('\n'))
     : prompt;
 
   const args = [
