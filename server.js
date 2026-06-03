@@ -144,6 +144,16 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
 });
 
+// Separate uploader for the FILES sidebar "drop into the working folder" flow.
+// Stages files in uploads/ then the handler moves them into the chosen dir.
+const fsUpload = multer({
+  storage: multer.diskStorage({
+    destination: path.join(__dirname, 'uploads'),
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}`),
+  }),
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB — these are real project files, not just images
+});
+
 // Claude's vision pipeline doesn't accept HEIC/HEIF — iPhone screenshots and
 // photos arrive in that format. Convert to JPEG synchronously here so the
 // path we hand back is something Claude can actually open.
@@ -430,15 +440,80 @@ app.post('/api/file/write', requireAuth, (req, res) => {
 });
 
 app.get('/api/file/raw', requireAuth, (req, res) => {
-  const { path: filePath } = req.query;
+  const { path: filePath, download } = req.query;
   if (!filePath) return res.status(400).send('path is required');
   const absPath = path.resolve(filePath);
   if (!sandboxedFsAllowed(absPath)) {
     return res.status(403).send('Access denied');
   }
-  res.sendFile(absPath, (err) => {
+  // download=1 forces a "Save as" instead of inline rendering (file DL button).
+  const opts = download ? { headers: { 'Content-Disposition': `attachment; filename="${encodeURIComponent(path.basename(absPath))}"` } } : {};
+  res.sendFile(absPath, opts, (err) => {
     if (err && !res.headersSent) res.status(500).send(err.message);
   });
+});
+
+// Stream a folder as a .zip download. Used by the FILES sidebar DL popup for
+// directories (single files go through /api/file/raw?download=1).
+app.get('/api/fs/download-zip', requireAuth, (req, res) => {
+  const { path: dirPath } = req.query;
+  if (!dirPath) return res.status(400).send('path is required');
+  const absPath = path.resolve(dirPath);
+  if (!sandboxedFsAllowed(absPath)) return res.status(403).send('Access denied');
+  let st;
+  try { st = fs.statSync(absPath); } catch { return res.status(404).send('Not found'); }
+  if (!st.isDirectory()) return res.status(400).send('Not a directory');
+  try {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip();
+    zip.addLocalFolder(absPath);
+    const buf = zip.toBuffer();
+    const name = (path.basename(absPath) || 'folder') + '.zip';
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"`);
+    res.send(buf);
+  } catch (err) {
+    if (!res.headersSent) res.status(500).send(err.message);
+  }
+});
+
+// Upload files straight into a working folder (FILES sidebar drag-and-drop).
+// Unlike /upload (which stages prompt attachments in .upload-files/), this
+// writes the dropped files directly into the currently-browsed directory.
+app.post('/api/fs/upload', requireAuth, fsUpload.array('files', 50), (req, res) => {
+  const reqDir = typeof req.body.dir === 'string' ? req.body.dir : '';
+  if (!reqDir) return res.status(400).json({ error: 'dir is required' });
+  const absDir = path.resolve(reqDir);
+  if (!sandboxedFsAllowed(absDir)) return res.status(403).json({ error: 'Access denied' });
+  let st;
+  try { st = fs.statSync(absDir); } catch { return res.status(404).json({ error: 'directory does not exist' }); }
+  if (!st.isDirectory()) return res.status(400).json({ error: 'destination is not a directory' });
+
+  // Pick a non-colliding destination name: "report.pdf" → "report (1).pdf".
+  const uniqueName = (orig) => {
+    const base = path.basename(orig).replace(/[\/\\\0]/g, '_') || 'file';
+    let candidate = base;
+    if (!fs.existsSync(path.join(absDir, candidate))) return candidate;
+    const ext = path.extname(base);
+    const stem = base.slice(0, base.length - ext.length);
+    for (let i = 1; i < 1000; i++) {
+      candidate = `${stem} (${i})${ext}`;
+      if (!fs.existsSync(path.join(absDir, candidate))) return candidate;
+    }
+    return `${stem}-${Date.now()}${ext}`;
+  };
+
+  const saved = [];
+  for (const f of (req.files || [])) {
+    const dest = path.join(absDir, uniqueName(f.originalname));
+    try { fs.renameSync(f.path, dest); }
+    catch {
+      try { fs.copyFileSync(f.path, dest); fs.unlinkSync(f.path); }
+      catch (e) { return res.status(500).json({ error: e.message }); }
+    }
+    saved.push(path.basename(dest));
+  }
+  res.json({ ok: true, saved });
 });
 
 // ── File-manager mutations ────────────────────────────────────────────────

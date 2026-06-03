@@ -335,7 +335,14 @@
     padding: 7px 12px; cursor: pointer; transition: background .1s; user-select: none;
   }
   .fb-item:hover { background: var(--surface2); }
-  .fi-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
+  /* Drag-and-drop upload into the open working folder. */
+  .side-right.fb-drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; background: var(--accent-dim); }
+  .fb-upload-note { padding: 8px 12px; font-size: 12px; color: var(--accent); background: var(--accent-dim); border-bottom: 1px solid var(--border); }
+  .fi-icon { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; cursor: pointer; }
+  /* DL popup shown when the file/folder icon is clicked. */
+  .fb-dl-pop { position: fixed; z-index: 1000; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 6px 24px rgba(0,0,0,.4); padding: 4px; }
+  .fb-dl-pop button { display: block; width: 100%; background: none; border: none; color: var(--text); font-size: 13px; padding: 7px 18px; cursor: pointer; border-radius: 4px; white-space: nowrap; }
+  .fb-dl-pop button:hover { background: var(--accent-dim); color: var(--accent); }
   .fi-name { flex: 1; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .fi-hidden { opacity: .4; }
   .fb-viewer { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
@@ -551,6 +558,13 @@
   .q-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .q-remove { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
   .q-remove:hover { color: var(--red); }
+  /* In-thread queue: pending prompts rendered just below the live mark /
+     compact note (inside the message thread), so their position itself shows
+     they have not been processed yet. */
+  .thread-tail { display: flex; flex-direction: column; }
+  .thread-queue { display: flex; flex-direction: column; gap: 4px; margin: 0 2px 10px; }
+  .thread-queue:empty { display: none; }
+  .thread-queue .queue-item { opacity: .9; }
   .status-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; min-height: 28px; }
   /* Inline "compacting…" note shown in the message stream while /compact runs. */
   .compact-note { align-self: center; max-width: 90%; margin: 8px auto; padding: 6px 14px;
@@ -691,7 +705,6 @@
       <span class="hdr-title">Claude Code Remote</span>
       <span class="dir-label" id="dirLabel">Loading…</span>
     </div>
-    <button class="hdr-btn" id="projSettingsBtn" title="プロジェクト設定" aria-label="プロジェクト設定">⚙</button>
     <button class="hdr-btn" id="shellBtn" title="シェル (tmux)" aria-label="シェル">🖥</button>
     <button class="hdr-btn hdr-right-btn" id="rightBtn" title="Files" aria-label="Files">📁</button>
   </div>
@@ -702,7 +715,6 @@
     <button class="scroll-latest-btn" id="scrollLatestBtn" aria-label="最新の出力へ">
       ↓ 最新へ<span class="count" id="scrollLatestCount" hidden></span>
     </button>
-    <div class="queue-list" id="queueList"></div>
     <div class="image-previews" id="imagePreviews"></div>
     <div class="status-bar">
       <button class="btn-stop" id="cancelBtn">■ Stop</button>
@@ -1646,7 +1658,6 @@ function setStreamingUI(active, compacting) {
   if (!active && !serverQueue.length) {
     document.getElementById('cancelBtn').classList.remove('on');
     document.getElementById('queueBadge').classList.remove('on');
-    document.getElementById('queueList').classList.remove('on');
   }
 }
 
@@ -1659,6 +1670,13 @@ function setStreamingUI(active, compacting) {
 (function initLiveMark() {
   const msgs = document.getElementById('messages');
   if (!msgs) return;
+  // The tail bundles the live mark and the pending-prompt queue, in that order,
+  // and is kept as the last child of #messages. So queued (unprocessed) prompts
+  // always render BELOW the "Working…" mark — and, because the compact note is
+  // appended above the tail, below the "compacting…" note too.
+  const tail = document.createElement('div');
+  tail.className = 'thread-tail';
+  tail.id = 'threadTail';
   const mark = document.createElement('div');
   mark.className = 'live-mark';
   mark.id = 'liveMark';
@@ -1668,10 +1686,18 @@ function setStreamingUI(active, compacting) {
       '<span>W</span><span>o</span><span>r</span><span>k</span><span>i</span><span>n</span><span>g</span>' +
       '<span class="dots"><span>.</span><span>.</span><span>.</span></span>' +
     '</span>';
+  const queue = document.createElement('div');
+  queue.className = 'thread-queue';
+  queue.id = 'threadQueue';
+  tail.appendChild(mark);
+  tail.appendChild(queue);
   function place(andScroll) {
-    if (msgs.lastElementChild !== mark) msgs.appendChild(mark); // also re-attaches after innerHTML=''
-    mark.style.display = msgs.querySelector('.msg, .compact-note') ? '' : 'none';
-    // The mark is appended by this observer AFTER the render's own scroll call,
+    if (msgs.lastElementChild !== tail) msgs.appendChild(tail); // also re-attaches after innerHTML=''
+    const hasContent = msgs.querySelector('.msg, .compact-note');
+    mark.style.display = hasContent ? '' : 'none';
+    // Hide the whole tail only when there's neither output nor a pending queue.
+    tail.style.display = (hasContent || queue.children.length) ? '' : 'none';
+    // The tail is appended by this observer AFTER the render's own scroll call,
     // so it would land below the viewport and be cut off. Re-follow the bottom
     // (scrollToBottom is conditional on the user already being at the bottom, so
     // it won't yank someone reading further up). Only the observer-driven calls
@@ -1681,6 +1707,14 @@ function setStreamingUI(active, compacting) {
   }
   new MutationObserver(() => place(true)).observe(msgs, { childList: true });
   place(false);
+  // Persistent handles for renderQueue: it must reach the queue node even while
+  // the tail is briefly detached (e.g. right after #messages.innerHTML='' on a
+  // session switch, before the observer re-attaches it), so getElementById —
+  // which only finds in-document nodes — isn't reliable there. Re-pinning the
+  // tail via place() also re-evaluates visibility, since queue mutations don't
+  // trip the childList observer.
+  window._threadQueueEl = queue;
+  window._placeThreadTail = () => place(true);
 })();
 
 // ── Text streaming ────────────────────────────────────────────────────────────
@@ -1823,10 +1857,9 @@ function getToolTitle(name, input) {
 async function sendPrompt() {
   const inp = document.getElementById('promptInput');
   const text = inp.value.trim();
-  // Require non-empty prompt text — even when files are attached. The server
-  // rejects an empty prompt (two guards: ws-handler + session-manager), so a
-  // files-only send would silently fail; block it here instead.
-  if (!text) return;
+  // Allow a files-only send: the attachments are the message. Block only when
+  // there's neither text nor an attachment (the server applies the same rule).
+  if (!text && pendingImages.length === 0) return;
   inp.value = ''; autoResize(inp); syncSendBtn();
   let uploadedPaths = [];
   const previewUrls = pendingImages.map(p => p.dataUrl);
@@ -1874,18 +1907,27 @@ document.getElementById('compactBtn').addEventListener('click', () => {
 });
 
 function renderQueue() {
-  const list = document.getElementById('queueList');
+  // Render the pending prompts inside the message thread (below the live mark /
+  // compact note), not in the composer, so their position shows they're queued.
+  const list = window._threadQueueEl || document.getElementById('threadQueue');
   document.getElementById('queueCount').textContent = serverQueue.length;
-  list.innerHTML = '';
-  if (!serverQueue.length) { list.classList.remove('on'); document.getElementById('queueBadge').classList.remove('on'); return; }
-  document.getElementById('queueBadge').classList.add('on'); list.classList.add('on');
+  if (list) list.innerHTML = '';
+  if (!serverQueue.length) {
+    document.getElementById('queueBadge').classList.remove('on');
+    if (window._placeThreadTail) window._placeThreadTail();
+    return;
+  }
+  document.getElementById('queueBadge').classList.add('on');
   serverQueue.forEach((item,i) => {
     const el = document.createElement('div'); el.className = 'queue-item';
     el.innerHTML = `<span class="q-num">${i+1}</span><span class="q-text">${escHtml(item.text)}</span><button class="q-remove">×</button>`;
     // Removal goes through the server so it stays consistent across devices.
     el.querySelector('.q-remove').addEventListener('click', () => { wsSend({type:'dequeue_item', sessionId, id:item.id}); });
-    list.appendChild(el);
+    if (list) list.appendChild(el);
   });
+  // The queue lives inside #messages but doesn't trip its childList observer
+  // (that watches direct children only), so re-pin/reveal the tail explicitly.
+  if (window._placeThreadTail) window._placeThreadTail();
 }
 
 // ── File attachment handling ──────────────────────────────────────────────────
@@ -1925,6 +1967,65 @@ document.addEventListener('paste', e => { for (const item of e.clipboardData.ite
   });
 })();
 
+// Drag & drop onto the FILES sidebar uploads straight into the open working
+// folder (not the prompt). stopPropagation keeps the window-level handler above
+// — which would otherwise stage the files as prompt attachments — from firing.
+(function setupFileBrowserDrop() {
+  const panel = document.getElementById('sideR');
+  if (!panel) return;
+  const isFileDrag = e => Array.from(e.dataTransfer?.types || []).includes('Files');
+  let depth = 0;
+  panel.addEventListener('dragenter', e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    depth++; panel.classList.add('fb-drag-over');
+  });
+  panel.addEventListener('dragover', e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); e.stopPropagation();
+  });
+  panel.addEventListener('dragleave', e => {
+    if (!isFileDrag(e)) return;
+    e.stopPropagation();
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) panel.classList.remove('fb-drag-over');
+  });
+  panel.addEventListener('drop', e => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    depth = 0; panel.classList.remove('fb-drag-over');
+    fbUploadFiles(Array.from(e.dataTransfer.files));
+  });
+})();
+
+// Upload files into the currently-open file-browser directory, then refresh.
+async function fbUploadFiles(files) {
+  if (!files || !files.length) return;
+  if (!fbCurrentDir || fbCurrentDir === FB_ROOTS) {
+    alert('アップロード先のフォルダを開いてからドロップしてください');
+    return;
+  }
+  const targetDir = fbCurrentDir;
+  const fd = new FormData();
+  fd.append('dir', targetDir);              // field must precede the files
+  for (const f of files) fd.append('files', f);
+  const content = document.getElementById('fbContent');
+  const note = document.createElement('div');
+  note.className = 'fb-upload-note';
+  note.textContent = `アップロード中… (${files.length} 件)`;
+  content.prepend(note);
+  try {
+    const r = await fetch('/api/fs/upload', { method: 'POST', body: fd });
+    const data = await r.json();
+    if (!r.ok || data.error) throw new Error(data.error || `HTTP ${r.status}`);
+    if (fbCurrentDir === targetDir) loadDir(targetDir); // replaces content (drops the note)
+    else note.remove();
+  } catch (e) {
+    note.remove();
+    alert('アップロードに失敗しました: ' + e.message);
+  }
+}
+
 function addFile(file) {
   if (file.type.startsWith('image/')) {
     const r = new FileReader();
@@ -1961,8 +2062,11 @@ function renderImgPreviews() {
     });
     c.appendChild(el);
   });
+  // Attachments count toward "is there something to send?" — keep the send
+  // button in sync as previews are added or removed.
+  syncSendBtn();
 }
-function clearImgPreviews() { pendingImages = []; document.getElementById('imagePreviews').innerHTML = ''; }
+function clearImgPreviews() { pendingImages = []; document.getElementById('imagePreviews').innerHTML = ''; syncSendBtn(); }
 
 // ── Input events ──────────────────────────────────────────────────────────────
 document.getElementById('sendBtn').addEventListener('click', sendPrompt);
@@ -1973,11 +2077,12 @@ document.getElementById('promptInput').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
 });
 document.getElementById('promptInput').addEventListener('input', e => { autoResize(e.target); syncSendBtn(); });
-// Disable the send button while the prompt is empty (whitespace-only counts as
-// empty) so the no-send is visible, not a silent no-op.
+// Disable the send button only when there's nothing to send — no prompt text
+// (whitespace-only counts as empty) AND no attachment. A files-only send is
+// valid, so attachments alone keep the button live.
 function syncSendBtn() {
   const btn = document.getElementById('sendBtn');
-  if (btn) btn.disabled = !document.getElementById('promptInput').value.trim();
+  if (btn) btn.disabled = !document.getElementById('promptInput').value.trim() && pendingImages.length === 0;
 }
 syncSendBtn();
 
@@ -2645,6 +2750,45 @@ async function loadRootsView() {
   fbSyncActionBar();
 }
 
+// ── File download (icon-click "DL" popup) ──────────────────────────────────
+function closeDlPopup() {
+  const p = document.getElementById('fbDlPop');
+  if (p) p.remove();
+  document.removeEventListener('click', closeDlPopup);
+  document.removeEventListener('keydown', _dlPopKey, true);
+}
+function _dlPopKey(e) { if (e.key === 'Escape') closeDlPopup(); }
+function downloadPath(fullPath, isDir) {
+  const url = isDir
+    ? `/api/fs/download-zip?path=${encodeURIComponent(fullPath)}`
+    : `/api/file/raw?path=${encodeURIComponent(fullPath)}&download=1`;
+  const a = document.createElement('a');
+  a.href = url; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function showDlPopup(anchor, fullPath, isDir) {
+  closeDlPopup();
+  const pop = document.createElement('div');
+  pop.className = 'fb-dl-pop'; pop.id = 'fbDlPop';
+  const btn = document.createElement('button');
+  btn.textContent = isDir ? 'DL (zip)' : 'DL';
+  btn.addEventListener('click', (ev) => { ev.stopPropagation(); downloadPath(fullPath, isDir); closeDlPopup(); });
+  pop.appendChild(btn);
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  pop.style.top = (r.bottom + 4) + 'px';
+  pop.style.left = r.left + 'px';
+  const pr = pop.getBoundingClientRect();
+  if (pr.right > window.innerWidth - 8) pop.style.left = Math.max(8, window.innerWidth - pr.width - 8) + 'px';
+  if (pr.bottom > window.innerHeight - 8) pop.style.top = Math.max(8, r.top - pr.height - 4) + 'px';
+  // Dismiss on any outside click or Escape. The button handler calls
+  // stopPropagation, so clicking "DL" downloads before this listener closes it.
+  setTimeout(() => {
+    document.addEventListener('click', closeDlPopup);
+    document.addEventListener('keydown', _dlPopKey, true);
+  }, 0);
+}
+
 async function loadDir(dir) {
   if (dir === FB_ROOTS) return loadRootsView();
   if (!maybeDiscardEdits()) return;
@@ -2669,6 +2813,13 @@ async function loadDir(dir) {
       el.addEventListener('click', () => {
         if (fbSelectMode) { fbToggleSelect(fullPath, el); return; }
         if (item.type === 'dir') loadDir(fullPath); else viewFile(fullPath, item.name);
+      });
+      // Clicking the icon (outside select mode) offers a download popup.
+      // Folders download as a .zip, single files as-is.
+      el.querySelector('.fi-icon').addEventListener('click', (ev) => {
+        if (fbSelectMode) return; // let it bubble to toggle selection
+        ev.stopPropagation();
+        showDlPopup(ev.currentTarget, fullPath, item.type === 'dir');
       });
       // Double-click always navigates/opens, even mid-selection.
       el.addEventListener('dblclick', () => {
@@ -3136,22 +3287,8 @@ document.getElementById('projSettingsSave').addEventListener('click', () => {
   wsSend({ type: 'project_settings_set', projectId: _restoreProject.id, paths: _projWp });
 });
 
-// Center-header ⚙ opens settings for the CURRENT session's owning project.
-function currentProjectForSession() {
-  const dir = fbSessionRoot || '';
-  let best = null;
-  for (const p of (_projects || [])) {
-    if (dir === p.path || dir.startsWith(p.path + '/')) {
-      if (!best || p.path.length > best.path.length) best = p;
-    }
-  }
-  return best;
-}
-document.getElementById('projSettingsBtn').addEventListener('click', () => {
-  const p = currentProjectForSession();
-  if (!p) { alert('現在のプロジェクトが特定できません。左サイドバーの各プロジェクトの ⚙ から開いてください。'); return; }
-  openProjectSettings(p);
-});
+// The center-header ⚙ button was removed — project settings are reached from
+// each project's ⚙ in the left sidebar (same openProjectSettings handler).
 
 // ── Permissions modal ─────────────────────────────────────────────────────────
 const permAll = document.getElementById('permAll');
