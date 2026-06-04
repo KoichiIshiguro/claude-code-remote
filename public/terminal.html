@@ -580,12 +580,24 @@
     padding: 3px 9px; cursor: pointer; line-height: 1.4; }
   .pill-btn:hover { color: var(--text); border-color: var(--accent); }
   .pill-btn:disabled { opacity: .4; cursor: default; }
-  /* Current git branch of the active session's directory (read-only label). */
+  /* Current git branch of the active session's directory — tap to switch. */
   .branch-pill { font-size: 11px; color: var(--text-muted); white-space: nowrap;
     background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 3px 9px; line-height: 1.4; max-width: 180px; overflow: hidden;
-    text-overflow: ellipsis; font-family: 'SF Mono', 'Fira Code', monospace; }
+    text-overflow: ellipsis; font-family: 'SF Mono', 'Fira Code', monospace; cursor: pointer; }
+  .branch-pill:hover { color: var(--text); border-color: var(--accent); }
   .branch-pill:empty { display: none; }
+  /* Branch picker rows. */
+  .branch-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border-radius: var(--radius-sm); cursor: pointer; font-size: 13px;
+    font-family: 'SF Mono', 'Fira Code', monospace; }
+  .branch-row:hover { background: var(--surface2); }
+  .branch-row.cur { color: var(--accent); cursor: default; }
+  .branch-row.cur:hover { background: none; }
+  .branch-row .check { width: 14px; flex-shrink: 0; text-align: center; }
+  .branch-row .bname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .branch-note { padding: 12px; color: var(--text-muted); font-size: 13px; }
+  .branch-note.err { color: var(--red); white-space: pre-wrap; }
   /* Model/effort pill — pushed to the right edge of the status bar, ctx-meter
      follows it. */
   .model-pill { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap;
@@ -1025,6 +1037,13 @@
   .shell-keys button.mod-on { background:var(--accent); color:#000; border-color:var(--accent); }
 </style>
 
+<div class="modal-overlay" id="branchOverlay">
+  <div class="perm-modal" style="max-width:380px;">
+    <div class="perm-hdr"><h3>ブランチを切り替え</h3><button class="side-close" id="branchClose">×</button></div>
+    <div class="perm-body" id="branchBody"></div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="shellOverlay">
   <div class="shell-modal">
     <div class="shell-hdr">
@@ -1072,6 +1091,9 @@
 // leaving the id stuck on the dead placeholder → "directory could not be
 // determined" on the next prompt / reload.
 let sessionId = new URLSearchParams(location.search).get('session');
+// Directory of the session currently on screen — needed by the branch picker
+// to scope list/switch requests, and to filter incoming `branch_changed`.
+let curDirectory = '';
 // No session → render an empty-state placeholder and auto-open the projects
 // sidebar so the user can pick one. Server's /terminal route already tries to
 // redirect to the most-recent jsonl, so we only reach here when zero sessions
@@ -1236,6 +1258,7 @@ function handleMessage(msg) {
       break;
     case 'history': {
       const dir = msg.directory || '';
+      curDirectory = dir;
       document.getElementById('dirLabel').textContent = dir || sessionId;
       const branchPill = document.getElementById('branchPill');
       branchPill.textContent = msg.branch ? '⎇ ' + msg.branch : '';
@@ -1298,6 +1321,24 @@ function handleMessage(msg) {
       fbTab = 'sandbox';
       if (dir) fbEnsureMeta().then(() => loadDir(dir));
       scrollToBottomNow();
+      break;
+    }
+    case 'branch_list': {
+      renderBranchList(msg);
+      break;
+    }
+    case 'branch_switched': {
+      closeBranchPicker();
+      // On success the pill updates via the `branch_changed` broadcast below.
+      if (!msg.ok) alert('ブランチを切り替えできませんでした:\n\n' + (msg.error || 'unknown error'));
+      break;
+    }
+    case 'branch_changed': {
+      // Reactive pill update — fires when Claude (or another client) moves HEAD.
+      // Ignore updates for a directory we're no longer viewing.
+      if (!msg.directory || msg.directory === curDirectory) {
+        document.getElementById('branchPill').textContent = msg.branch ? '⎇ ' + msg.branch : '';
+      }
       break;
     }
     case 'stream_start': {
@@ -3292,6 +3333,59 @@ document.getElementById('projSettingsSave').addEventListener('click', () => {
 
 // ── Permissions modal ─────────────────────────────────────────────────────────
 const permAll = document.getElementById('permAll');
+// ── Branch picker ─────────────────────────────────────────────────────────
+const branchOverlay = document.getElementById('branchOverlay');
+const branchBody = document.getElementById('branchBody');
+
+function openBranchPicker() {
+  if (!curDirectory) return;
+  branchBody.innerHTML = '<div class="branch-note">読み込み中…</div>';
+  branchOverlay.classList.add('on');
+  wsSend({ type: 'list_branches', sessionId, directory: curDirectory });
+}
+function closeBranchPicker() { branchOverlay.classList.remove('on'); }
+
+function renderBranchList(msg) {
+  // Stale response for a directory we've since navigated away from.
+  if (msg.directory && curDirectory && msg.directory !== curDirectory) return;
+  branchBody.innerHTML = '';
+  if (msg.error) {
+    branchBody.innerHTML = '<div class="branch-note err"></div>';
+    branchBody.firstChild.textContent = msg.error;
+    return;
+  }
+  if (!msg.branches || !msg.branches.length) {
+    branchBody.innerHTML = '<div class="branch-note">ローカルブランチがありません</div>';
+    return;
+  }
+  for (const b of msg.branches) {
+    const isCur = b === msg.current;
+    const row = document.createElement('div');
+    row.className = 'branch-row' + (isCur ? ' cur' : '');
+    const check = document.createElement('span');
+    check.className = 'check';
+    check.textContent = isCur ? '✓' : '';
+    const name = document.createElement('span');
+    name.className = 'bname';
+    name.textContent = b;
+    row.appendChild(check);
+    row.appendChild(name);
+    if (!isCur) row.addEventListener('click', () => switchBranch(b));
+    branchBody.appendChild(row);
+  }
+}
+
+function switchBranch(branch) {
+  branchBody.innerHTML = '<div class="branch-note">切り替え中…</div>';
+  wsSend({ type: 'switch_branch', sessionId, directory: curDirectory, branch });
+}
+
+document.getElementById('branchPill').addEventListener('click', () => {
+  if (document.getElementById('branchPill').textContent) openBranchPicker();
+});
+document.getElementById('branchClose').addEventListener('click', closeBranchPicker);
+branchOverlay.addEventListener('click', e => { if (e.target === e.currentTarget) closeBranchPicker(); });
+
 // Settings is reachable from the model pill (the ⚙ header button was replaced
 // by the shell button).
 document.getElementById('modelPill').addEventListener('click', openSettingsModal);

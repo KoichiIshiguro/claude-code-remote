@@ -64,4 +64,10 @@ function isRunning(key) {
   return procs.has(key);
 }
 
-module.exports = { register, get, cancel, rekey, isRunning };
+// All keys with a live subprocess — used to tell whether any session in a
+// given directory is mid-turn (so a branch switch can be refused).
+function runningKeys() {
+  return [...procs.keys()];
+}
+
+module.exports = { register, get, cancel, rekey, isRunning, runningKeys };

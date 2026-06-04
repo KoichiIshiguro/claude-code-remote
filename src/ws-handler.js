@@ -54,6 +54,60 @@ function rekeySubscribers(oldKey, newKey) {
   else sessionClients.set(newKey, set);
 }
 
+// ── Reactive branch tracking ────────────────────────────────────────────────
+// Clients viewing a directory get pushed a `branch_changed` whenever that
+// directory's git HEAD moves — e.g. Claude runs `git checkout` mid-turn, or the
+// branch is switched from another client. Poll-based: simpler and more robust
+// than fs.watch across worktrees / HEAD-file replacement, and the live client
+// count here is tiny.
+const dirClients = new Map(); // absDir → Set<ws> currently viewing it
+const dirBranch = new Map();  // absDir → last branch we broadcast (string|null)
+let branchPollTimer = null;
+
+function broadcastBranch(absDir, branch) {
+  const set = dirClients.get(absDir);
+  if (!set) return;
+  const data = JSON.stringify({ type: 'branch_changed', directory: absDir, branch });
+  for (const c of set) if (c.readyState === 1) c.send(data);
+}
+
+function pollBranches() {
+  for (const [dir, set] of dirClients) {
+    if (set.size === 0) continue;
+    const b = gitInfo.currentBranch(dir);
+    if (b !== dirBranch.get(dir)) {
+      dirBranch.set(dir, b);
+      broadcastBranch(dir, b);
+    }
+  }
+}
+
+// Point `ws` at `dir` for branch updates, dropping whatever it watched before
+// (a client only ever views one session/dir at a time).
+function watchDir(dir, ws) {
+  unwatchWs(ws);
+  if (!dir) return;
+  const absDir = path.resolve(dir);
+  if (!dirClients.has(absDir)) dirClients.set(absDir, new Set());
+  dirClients.get(absDir).add(ws);
+  if (!dirBranch.has(absDir)) dirBranch.set(absDir, gitInfo.currentBranch(absDir));
+  if (!branchPollTimer) {
+    branchPollTimer = setInterval(pollBranches, 2500);
+    branchPollTimer.unref?.();
+  }
+}
+
+function unwatchWs(ws) {
+  for (const [dir, set] of dirClients) {
+    set.delete(ws);
+    if (set.size === 0) { dirClients.delete(dir); dirBranch.delete(dir); }
+  }
+  if (dirClients.size === 0 && branchPollTimer) {
+    clearInterval(branchPollTimer);
+    branchPollTimer = null;
+  }
+}
+
 // Look up directory by sessionId. Pending placeholders take precedence; then
 // scan registered projects for a matching jsonl filename.
 function findDirectoryForSessionId(sessionId) {
@@ -335,6 +389,7 @@ function knownSessionIds() {
 function handleConnection(ws /*, req */) {
   ws.on('close', () => {
     unsubscribe(ws);
+    unwatchWs(ws);
     // Detach this client's shell (tmux session lives on for re-attach).
     if (ws._shell) { try { ws._shell.kill(); } catch {} ws._shell = null; }
   });
@@ -538,6 +593,7 @@ function handleConnection(ws /*, req */) {
         if (pendingSessions.has(sid)) {
           subscribe(sid, ws);
           const entry = pendingSessions.get(sid);
+          watchDir(entry.directory, ws);
           send(ws, {
             type: 'history',
             sessionId: sid,
@@ -568,6 +624,7 @@ function handleConnection(ws /*, req */) {
         }
 
         subscribe(sid, ws);
+        watchDir(directory, ws);
         const { history, lastTokens, truncated } = jsonlReader.readHistory(sid, directory);
         send(ws, {
           type: 'history',
@@ -672,6 +729,52 @@ function handleConnection(ws /*, req */) {
           send(ws, { type: 'folder_created', path: target });
         } catch (err) {
           send(ws, { type: 'error', message: err.message });
+        }
+        break;
+      }
+
+      // ─── Git branch ────────────────────────────────────────────────────────
+
+      case 'list_branches': {
+        const dir = msg.directory || findDirectoryForSessionId(msg.sessionId);
+        if (!dir) { send(ws, { type: 'branch_list', directory: '', branches: [], current: null, error: 'directory unknown' }); return; }
+        const absDir = path.resolve(dir);
+        if (!projectsStore.isBrowseAllowed(absDir)) { send(ws, { type: 'branch_list', directory: absDir, branches: [], current: null, error: 'Access denied' }); return; }
+        send(ws, {
+          type: 'branch_list',
+          directory: absDir,
+          branches: gitInfo.listBranches(absDir),
+          current: gitInfo.currentBranch(absDir),
+        });
+        break;
+      }
+
+      case 'switch_branch': {
+        const dir = msg.directory || findDirectoryForSessionId(msg.sessionId);
+        const branch = msg.branch;
+        if (!dir || !branch) { send(ws, { type: 'branch_switched', ok: false, error: 'directory and branch required' }); return; }
+        const absDir = path.resolve(dir);
+        if (!projectsStore.isBrowseAllowed(absDir)) { send(ws, { type: 'branch_switched', directory: absDir, ok: false, error: 'Access denied' }); return; }
+        // Refuse while any Claude turn is streaming in this directory — a
+        // checkout would swap files out from under the running process.
+        const busy = procTracker.runningKeys().some(k => {
+          const d = pendingSessions.has(k) ? pendingSessions.get(k).directory : findDirectoryForSessionId(k);
+          return d && path.resolve(d) === absDir;
+        });
+        if (busy) { send(ws, { type: 'branch_switched', directory: absDir, ok: false, busy: true, error: 'このフォルダでセッションが実行中です。完了してから切り替えてください。' }); return; }
+        // Only switch to a known local branch (also blocks checking out an
+        // arbitrary ref / path supplied by a rogue client).
+        if (!gitInfo.listBranches(absDir).includes(branch)) { send(ws, { type: 'branch_switched', directory: absDir, ok: false, error: 'unknown branch: ' + branch }); return; }
+        const res = gitInfo.checkoutBranch(absDir, branch);
+        if (res.ok) {
+          const cur = gitInfo.currentBranch(absDir);
+          // Keep the poll cache in step and push the new branch to every client
+          // viewing this directory (reactive pill update for the initiator too).
+          dirBranch.set(absDir, cur);
+          broadcastBranch(absDir, cur);
+          send(ws, { type: 'branch_switched', directory: absDir, ok: true, branch: cur });
+        } else {
+          send(ws, { type: 'branch_switched', directory: absDir, ok: false, error: res.error });
         }
         break;
       }
