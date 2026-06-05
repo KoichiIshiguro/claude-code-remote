@@ -3709,11 +3709,15 @@ function applyShellViewport() {
   if (!shellModalOpen || !vv) { reset(); return; }
   const kbUp = (window.innerHeight - vv.height) > 100;
   if (kbUp) {
-    overlay.style.top = vv.offsetTop + 'px';
+    // Drop the top edge below the status bar / notch so the first row isn't
+    // clipped. --sat is the safe-area inset; add a little breathing room.
+    const sat = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0;
+    const topGap = sat + 12;
+    overlay.style.top = (vv.offsetTop + topGap) + 'px';
     overlay.style.bottom = 'auto';
-    overlay.style.height = vv.height + 'px';
+    overlay.style.height = (vv.height - topGap) + 'px';
     overlay.style.padding = '6px';
-    if (modal) modal.style.height = Math.max(180, vv.height - 12) + 'px';
+    if (modal) modal.style.height = Math.max(160, vv.height - topGap - 12) + 'px';
   } else {
     reset();
   }

@@ -18,6 +18,9 @@
   --tool-bg: #0d1117;
   --radius: 12px;
   --radius-sm: 6px;
+  /* Notch / status-bar inset, readable from JS to keep the shell modal clear
+     of the top chrome when pinned to the visual viewport. */
+  --sat: env(safe-area-inset-top, 0px);
 }
 
 html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1.5; }
