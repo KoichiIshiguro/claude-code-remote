@@ -1053,6 +1053,8 @@
     </div>
     <div class="shell-term" id="shellTerm"></div>
     <div class="shell-keys">
+      <button id="shellCopyKey" title="選択範囲をコピー">⧉ Copy</button>
+      <button id="shellPasteKey" title="クリップボードを貼り付け">📋 Paste</button>
       <button data-seq="tab">Tab</button>
       <button data-seq="ctrlc">^C</button>
       <button data-seq="esc">Esc</button>
@@ -3719,6 +3721,63 @@ document.querySelectorAll('.shell-keys [data-seq]').forEach(b => {
     if (shellTerm) shellTerm.focus();
   });
 });
+// Copy the current terminal selection. Uses the async Clipboard API on a
+// secure origin (https / localhost) and falls back to a hidden-textarea
+// execCommand('copy') for plain-HTTP LAN access where navigator.clipboard is
+// unavailable.
+async function clipboardWrite(text) {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
+
+function flashShellKey(btn, label) {
+  const old = btn.textContent;
+  btn.textContent = label;
+  setTimeout(() => { btn.textContent = old; }, 900);
+}
+
+async function shellCopy() {
+  if (!shellTerm) return;
+  const sel = shellTerm.getSelection();
+  const btn = document.getElementById('shellCopyKey');
+  if (!sel) { flashShellKey(btn, '選択なし'); return; }
+  const ok = await clipboardWrite(sel);
+  flashShellKey(btn, ok ? '✓ コピー' : '✗ 失敗');
+  shellTerm.focus();
+}
+
+async function shellPaste() {
+  if (!shellTerm) return;
+  let text = '';
+  try {
+    if (navigator.clipboard && window.isSecureContext && navigator.clipboard.readText) {
+      text = await navigator.clipboard.readText();
+    }
+  } catch {}
+  // Insecure origin (or denied permission): the browser blocks programmatic
+  // clipboard reads, so ask the user to drop the text in manually.
+  if (!text) text = prompt('貼り付ける内容:') || '';
+  if (text) wsSend({ type: 'shell_input', data: text });
+  shellTerm.focus();
+}
+
+document.getElementById('shellCopyKey').addEventListener('click', shellCopy);
+document.getElementById('shellPasteKey').addEventListener('click', shellPaste);
 document.getElementById('shellCtrlKey').addEventListener('click', () => { setShellMod('ctrl', !shellCtrlOn); if (shellTerm) shellTerm.focus(); });
 document.getElementById('shellAltKey').addEventListener('click', () => { setShellMod('alt', !shellAltOn); if (shellTerm) shellTerm.focus(); });
 document.getElementById('shellClose').addEventListener('click', closeShellModal);
