@@ -3691,6 +3691,47 @@ function shellResize() {
   wsSend({ type: 'shell_resize', cols: shellTerm.cols, rows: shellTerm.rows });
 }
 
+// On mobile the on-screen keyboard overlays the page without changing the
+// layout viewport, so a fixed 88vh modal keeps its full height and its bottom —
+// prompt line + soft-keys — hides behind the keyboard. Pin the modal to the
+// *visual* viewport instead: when the keyboard is up we shrink the modal to the
+// visible area and re-fit xterm, so the console area genuinely gets smaller
+// (fewer rows) and sits right above the keyboard rather than just scrolling.
+function applyShellViewport() {
+  const overlay = document.getElementById('shellOverlay');
+  const modal = overlay.querySelector('.shell-modal');
+  const vv = window.visualViewport;
+  const reset = () => {
+    overlay.style.top = ''; overlay.style.height = '';
+    overlay.style.bottom = ''; overlay.style.padding = '';
+    if (modal) modal.style.height = '';
+  };
+  if (!shellModalOpen || !vv) { reset(); return; }
+  const kbUp = (window.innerHeight - vv.height) > 100;
+  if (kbUp) {
+    overlay.style.top = vv.offsetTop + 'px';
+    overlay.style.bottom = 'auto';
+    overlay.style.height = vv.height + 'px';
+    overlay.style.padding = '6px';
+    if (modal) modal.style.height = Math.max(180, vv.height - 12) + 'px';
+  } else {
+    reset();
+  }
+  shellResize();
+  if (shellTerm) shellTerm.scrollToBottom();
+}
+
+function bindShellViewport() {
+  if (!window.visualViewport) return;
+  window.visualViewport.addEventListener('resize', applyShellViewport);
+  window.visualViewport.addEventListener('scroll', applyShellViewport);
+}
+function unbindShellViewport() {
+  if (!window.visualViewport) return;
+  window.visualViewport.removeEventListener('resize', applyShellViewport);
+  window.visualViewport.removeEventListener('scroll', applyShellViewport);
+}
+
 function openShellModal() {
   if (!sessionId) { alert('セッションがまだありません'); return; }
   if (typeof Terminal === 'undefined') { alert('ターミナルの読み込みに失敗しました（ネットワーク?）'); return; }
@@ -3699,8 +3740,10 @@ function openShellModal() {
   shellEnsureTerm();
   shellModalOpen = true;
   setShellMod('ctrl', false); setShellMod('alt', false);
+  bindShellViewport();
   // Let the modal lay out before measuring rows/cols.
   setTimeout(() => {
+    applyShellViewport();
     shellResize();
     wsSend({ type: 'shell_attach', sessionId, directory: fbSessionRoot || '', cols: shellTerm.cols, rows: shellTerm.rows });
     shellTerm.focus();
@@ -3710,6 +3753,8 @@ function openShellModal() {
 function closeShellModal() {
   document.getElementById('shellOverlay').classList.remove('on');
   shellModalOpen = false;
+  unbindShellViewport();
+  applyShellViewport(); // clears the keyboard-fit inline styles
   wsSend({ type: 'shell_detach' });
   // Clear so a later re-attach repaints cleanly from tmux's redraw-on-attach.
   if (shellTerm) shellTerm.reset();
@@ -3787,7 +3832,7 @@ document.getElementById('shellCleanBtn').addEventListener('click', () => {
   }
 });
 document.getElementById('shellBtn').addEventListener('click', openShellModal);
-window.addEventListener('resize', () => { if (shellModalOpen) shellResize(); });
+window.addEventListener('resize', () => { if (shellModalOpen) applyShellViewport(); });
 </script>
 </body>
 </html>
