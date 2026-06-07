@@ -197,6 +197,32 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
   proc.stderr.on('data', d => { stderr += d.toString(); });
   proc.stderr.on('error', () => {});
 
+  // claude's `result` event is the authoritative end-of-turn. Normally claude
+  // then exits on its own and stdout hits EOF within a few ms — but a child it
+  // backgrounded during the turn (e.g. a leaked `npm run dev`) can inherit and
+  // hold claude's stdout pipe open, so this loop never sees EOF, `close` never
+  // fires, and the turn hangs forever on "Working". After `result` we give
+  // claude a short grace to exit cleanly (the normal case — nothing is killed,
+  // so its final jsonl writes aren't interrupted); only if it's still alive past
+  // the grace is an orphan holding the pipe, so we reap the whole process GROUP
+  // (claude + orphans) to close the pipe and finalize the turn. `sawResult` then
+  // suppresses the cancelled/error yields below so this self-induced kill isn't
+  // reported as a user cancel.
+  let sawResult = false, reapTimer = null;
+  const scheduleReap = (ev) => {
+    if (!ev || ev.type !== 'result' || sawResult) return;
+    sawResult = true;
+    reapTimer = setTimeout(() => {
+      if (proc.exitCode !== null || proc.signalCode !== null) return; // already exited cleanly
+      procTracker.killTree(proc, 'SIGTERM');
+      const t = setTimeout(() => {
+        if (proc.exitCode === null && proc.signalCode === null) procTracker.killTree(proc, 'SIGKILL');
+      }, 3000);
+      t.unref?.();
+    }, 1500);
+    reapTimer.unref?.();
+  };
+
   let buffer = '';
   try {
     for await (const chunk of proc.stdout) {
@@ -206,18 +232,28 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
       for (const line of lines) {
         const t = line.trim();
         if (!t) continue;
-        try { yield JSON.parse(t); } catch { /* skip non-JSON */ }
+        let ev;
+        try { ev = JSON.parse(t); } catch { continue; /* skip non-JSON */ }
+        yield ev;
+        scheduleReap(ev);
       }
     }
   } catch { /* SIGTERM/cancel */ }
 
   if (buffer.trim()) {
-    try { yield JSON.parse(buffer.trim()); } catch { /* ignore */ }
+    try {
+      const ev = JSON.parse(buffer.trim());
+      yield ev;
+      scheduleReap(ev);
+    } catch { /* ignore */ }
   }
 
   await new Promise(r => proc.on('close', r));
+  if (reapTimer) clearTimeout(reapTimer);
 
-  if (proc.signalCode === 'SIGTERM' || proc.signalCode === 'SIGKILL') {
+  if (sawResult) {
+    // Turn completed normally; any signal/exit code is from our own reap above.
+  } else if (proc.signalCode === 'SIGTERM' || proc.signalCode === 'SIGKILL') {
     yield { type: 'cancelled' };
   } else if (proc.exitCode !== 0 && stderr) {
     yield { type: 'error', message: stderr.trim() };

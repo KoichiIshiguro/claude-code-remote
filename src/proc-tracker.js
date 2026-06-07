@@ -70,4 +70,4 @@ function runningKeys() {
   return [...procs.keys()];
 }
 
-module.exports = { register, get, cancel, rekey, isRunning, runningKeys };
+module.exports = { register, get, cancel, rekey, isRunning, runningKeys, killTree };
