@@ -1277,11 +1277,35 @@ function handleMessage(msg) {
         document.getElementById('messages').appendChild(note);
       }
       for (const e of msg.history) renderHistoryEntry(e);
-      // Re-apply display-only optimistic state wiped by this jsonl repaint.
-      // A mid-turn reconnect repaints from jsonl alone — which during an
-      // (auto-)compact has neither the just-sent prompt nor the compact marker
-      // yet — so without this the user bubble and "compacting…" note vanish.
-      if (_inflightUser && !historyHasUserText(msg.history, _inflightUser.text)) {
+      // Reconstruct an in-flight turn from the server's live buffer. A turn's
+      // jsonl isn't written until stream_end, so a full reload / project switch
+      // mid-turn (which wipes the client-side _inflightUser below) would
+      // otherwise lose the just-sent prompt AND the response streamed so far.
+      // The server keeps both until the turn ends; replay them here.
+      const live = msg.liveTurn || null;
+      if (live) {
+        const p = live.prompt || '';
+        // Skip a bare /compact: its bubble is noise and the compact note covers it.
+        if (p && p.trim() !== '/compact' && !historyHasUserText(msg.history, p)) {
+          // Live image paths are server-side and not browser-resolvable on a
+          // fresh load, so just replay the prompt text.
+          appendUserMsg(p, [], false);
+        }
+        // Compact output is suppressed in the UI (the compact note below stands
+        // in for it), so only replay a normal turn's assistant output. Replaying
+        // also seeds renderedEventUuids so the ongoing live stream dedups cleanly.
+        if (!live.compact) {
+          for (const ev of (live.events || [])) handleStreamEvent(ev);
+          finalizeText(); // drop the streaming cursor on the replayed tail
+        }
+      }
+      // Re-apply display-only optimistic state wiped by this jsonl repaint, but
+      // only when the server's live buffer didn't already supply the in-flight
+      // turn above (avoids a duplicate user bubble). A mid-turn reconnect
+      // repaints from jsonl alone — which during an (auto-)compact has neither
+      // the just-sent prompt nor the compact marker yet — so without this the
+      // user bubble and "compacting…" note vanish.
+      if (!live && _inflightUser && !historyHasUserText(msg.history, _inflightUser.text)) {
         appendUserMsg(_inflightUser.text, _inflightUser.images, false);
       }
       // Server is authoritative about an in-flight compaction (msg.compacting),

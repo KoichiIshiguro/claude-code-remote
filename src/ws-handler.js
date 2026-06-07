@@ -11,6 +11,7 @@ const archiveStore = require('./archive-store');
 const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
+const liveTurn = require('./live-turn');
 const shell = require('./shell-manager');
 const gitInfo = require('./git-info');
 
@@ -196,6 +197,15 @@ function broadcastQueue(key) {
   broadcast(key, queueStateMsg(key));
 }
 
+// Snapshot of the in-flight turn for a reconnecting/switching client to replay,
+// so the just-sent prompt and the assistant output so far survive a reload
+// before this turn's jsonl is written. null when no turn is streaming.
+function liveTurnPayload(key) {
+  const t = liveTurn.get(key);
+  if (!t) return null;
+  return { prompt: t.prompt, images: t.images, compact: t.compact, events: t.events };
+}
+
 // Idempotent: starts a runner for `key` if one isn't already draining it.
 function kickRunner(key, directory) {
   if (runners.has(key)) return;
@@ -239,18 +249,24 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
 
   if (!isNewSession && sm.shouldAutoCompact(key, directory)) {
     compactingKeys.set(key, { auto: true });
+    // Buffer the REAL user prompt (not '/compact') with compact:true, so a reload
+    // during the auto-compact phase still shows the user's pending prompt bubble
+    // alongside the "compacting…" note (the compact output itself is suppressed).
+    liveTurn.begin(key, { prompt, images: imagePaths, compact: true });
     broadcast(key, { type: 'stream_start', sessionId: key, autoCompact: true });
     try {
       for await (const event of sm.runPrompt({
         directory, prompt: '/compact',
         resumeSessionId: key, processKey: key, model, effort,
       })) {
+        liveTurn.record(key, event);
         broadcast(key, { type: 'stream_event', sessionId: key, event });
       }
     } catch (err) {
       broadcast(key, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId: key });
     } finally {
       compactingKeys.delete(key);
+      liveTurn.end(key);
       broadcast(key, { type: 'stream_end', sessionId: key });
     }
   }
@@ -259,6 +275,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   // show a "compacting…" indicator (auto-compact above sets its own flag).
   const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
   if (isCompactCmd) compactingKeys.set(key, { auto: false });
+  liveTurn.begin(key, { prompt, images: imagePaths, compact: isCompactCmd });
   broadcast(key, { type: 'stream_start', sessionId: key, compact: isCompactCmd });
 
   // AskUserQuestion intercept — the tool can't be answered in `-p` mode, so we
@@ -280,6 +297,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
         procTracker.rekey(key, resolvedSessionId);
         rekeySubscribers(key, resolvedSessionId);
         promptQueue.rekey(key, resolvedSessionId);
+        liveTurn.rekey(key, resolvedSessionId);
         // Re-key the pending record to the REAL id instead of deleting it. Claude
         // emits `init` before it has necessarily flushed the session jsonl to
         // disk, so deleting here left a window where the sidebar had neither the
@@ -309,6 +327,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
       }
 
       const bk = resolvedSessionId || key;
+      liveTurn.record(bk, event);
       broadcast(bk, { type: 'stream_event', sessionId: bk, event });
     }
   } catch (err) {
@@ -354,6 +373,8 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
 
     compactingKeys.delete(key);
     compactingKeys.delete(bk);
+    liveTurn.end(key);
+    liveTurn.end(bk);
     broadcast(bk, { type: 'stream_end', sessionId: bk });
     if (isNewSession) {
       if (resolvedSessionId) {
@@ -600,6 +621,7 @@ function handleConnection(ws /*, req */) {
             directory: entry.directory,
             history: [],
             streaming: procTracker.isRunning(sid),
+            liveTurn: liveTurnPayload(sid),
             currentEntry: null,
             allowedTools: null,
             lastTokens: null,
@@ -635,6 +657,7 @@ function handleConnection(ws /*, req */) {
           truncated,
           streaming: procTracker.isRunning(sid),
           compacting: compactingKeys.has(sid) ? compactingKeys.get(sid) : null,
+          liveTurn: liveTurnPayload(sid),
           currentEntry: null,
           allowedTools: null,
           lastTokens,
@@ -655,6 +678,7 @@ function handleConnection(ws /*, req */) {
         procTracker.cancel(msg.sessionId);
         if (msg.sessionId) {
           promptQueue.clear(msg.sessionId);
+          liveTurn.end(msg.sessionId);
           broadcastQueue(msg.sessionId);
           // Always flip every live client off "Working", even if the process
           // had already finished (so cancel() was a no-op and no stream_end
