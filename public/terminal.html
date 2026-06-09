@@ -1369,9 +1369,6 @@ function handleMessage(msg) {
     }
     case 'stream_start': {
       isStreaming = true;
-      // The runner just pulled the queued prompts into this turn — drop their
-      // "⏳ queued" markers since they're now being processed.
-      document.querySelectorAll('.queued-label').forEach(el => el.remove());
       const isCompact = !!(msg.autoCompact || msg.compact);
       setStreamingUI(true, isCompact);
       if (isCompact) {
@@ -1383,6 +1380,15 @@ function handleMessage(msg) {
         _compacting = { auto: !!msg.autoCompact };
         currentAssistantEl = null;
       } else {
+        // The runner just pulled the queued prompt(s) into this turn. A queued
+        // prompt has no chat bubble while it waits (it lives only in the queue
+        // area), so draw it now that it's a real message — unless an immediate
+        // (non-queued) send already drew it. The queue_state broadcast that
+        // precedes this clears it from the queue area.
+        if (msg.prompt && !(_inflightUser && _inflightUser.text === msg.prompt)) {
+          appendUserMsg(msg.prompt, [], false);
+          _inflightUser = { text: msg.prompt, images: [] };
+        }
         currentAssistantEl = createAssistantMessage();
       }
       currentTextEl = null; streamingText = ''; currentToolEls = {};
@@ -1852,9 +1858,10 @@ function buildAskCard(block, live) {
         btn.classList.add('chosen'); card.querySelector('.ask-note').textContent = '✓ Selected';
         const chosen = block.options[+btn.dataset.i];
         // After an AskUserQuestion intercept the stream was cancelled, so this
-        // normally runs immediately; if a turn is somehow still live it queues.
-        appendUserMsg(chosen, [], isStreaming);
-        dispatchPrompt(chosen, []);
+        // normally runs immediately (draw the bubble now); if a turn is somehow
+        // still live it queues, and the bubble is drawn at stream_start instead.
+        if (!isStreaming) appendUserMsg(chosen, [], false);
+        dispatchPrompt(chosen, [], [], isStreaming);
       });
     });
   }
@@ -1941,17 +1948,21 @@ async function sendPrompt() {
     catch(e) { appendError('Upload failed: '+e.message); return; }
   }
   clearImgPreviews();
-  // Always hand the prompt to the server queue. If a turn is streaming it'll
-  // be batched into the next one (and shows faded); otherwise it runs now.
-  appendUserMsg(text, previewUrls, isStreaming);
-  dispatchPrompt(text, uploadedPaths, previewUrls);
+  // Hand the prompt to the server queue. If a turn is streaming, it's queued and
+  // shown ONLY in the queue area (no chat bubble until it starts processing —
+  // a queued prompt isn't a message yet). Otherwise it runs now, so draw its
+  // bubble immediately. In both cases the bubble for a queued prompt is drawn
+  // later by the stream_start handler when the turn picks it up.
+  if (!isStreaming) appendUserMsg(text, previewUrls, false);
+  dispatchPrompt(text, uploadedPaths, previewUrls, isStreaming);
   if (isStreaming) setStreamingUI(true);
 }
-function dispatchPrompt(text, paths, previewImages) {
-  // Remember the latest prompt for display-only re-rendering across a reconnect.
-  // Overwriting on each send is intentional: only the most-recent prompt can be
-  // mid-flight / unwritten to jsonl at any moment.
-  _inflightUser = { text, images: previewImages || [] };
+function dispatchPrompt(text, paths, previewImages, queued) {
+  // Only an immediately-running prompt is "in-flight" for optimistic redraw
+  // across a reconnect. A queued one is server-authoritative (serverQueue) and
+  // gets its bubble + _inflightUser when stream_start reports it's being
+  // processed — so don't claim it here.
+  if (!queued) _inflightUser = { text, images: previewImages || [] };
   wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths});
 }
 

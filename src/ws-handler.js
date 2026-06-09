@@ -276,7 +276,11 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
   if (isCompactCmd) compactingKeys.set(key, { auto: false });
   liveTurn.begin(key, { prompt, images: imagePaths, compact: isCompactCmd });
-  broadcast(key, { type: 'stream_start', sessionId: key, compact: isCompactCmd });
+  // Carry the prompt text being processed so the client can draw its user bubble
+  // now. Queued prompts aren't shown as bubbles while waiting (only in the queue
+  // area), so this is the moment they become a real message. Suppressed for a
+  // /compact (it's a maintenance action, not a message).
+  broadcast(key, { type: 'stream_start', sessionId: key, compact: isCompactCmd, prompt: isCompactCmd ? null : prompt });
 
   // AskUserQuestion intercept — the tool can't be answered in `-p` mode, so we
   // surface the question, cancel the stream, and write a synthetic tool_result
