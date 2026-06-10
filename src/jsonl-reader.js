@@ -104,6 +104,26 @@ function isMetaUserText(text) {
   return false;
 }
 
+// A prompt with attachments is sent to claude as `path1\npath2\n\n<prompt>`
+// (session-manager prepends the upload paths), so the jsonl user text carries
+// those leading .upload-files paths. Split them back out: return the displayable
+// prompt text plus the attachment basenames (the client rebuilds /attachment
+// URLs from session + dir). Only leading consecutive path lines are consumed, so
+// a path mentioned inside the actual prompt is left untouched.
+function splitAttachments(text) {
+  if (!text) return { text: '', images: [] };
+  const lines = text.split('\n');
+  const images = [];
+  let i = 0;
+  while (i < lines.length && /\/\.upload-files\/[^/]+$/.test(lines[i].trim())) {
+    images.push(path.basename(lines[i].trim()));
+    i++;
+  }
+  if (!images.length) return { text, images: [] };
+  if (i < lines.length && lines[i].trim() === '') i++; // drop the blank separator
+  return { text: lines.slice(i).join('\n'), images };
+}
+
 function extractUserText(message) {
   if (!message) return '';
   if (typeof message === 'string') return message;
@@ -233,10 +253,12 @@ function applyEventToBlocks(history, event) {
       return attachToolResults(history, content);
     }
 
-    const text = extractUserText(event.message);
-    if (!text) return history;
-    if (isMetaUserText(text)) return history;
-    return [...history, { type: 'user', text, ts }];
+    const rawText = extractUserText(event.message);
+    if (!rawText) return history;
+    if (isMetaUserText(rawText)) return history;
+    const { text, images } = splitAttachments(rawText);
+    if (!text && !images.length) return history;
+    return [...history, { type: 'user', text, images, ts }];
   }
 
   if (event.type === 'assistant') {

@@ -10,6 +10,8 @@ node_modules/
 data/
 uploads/*
 !uploads/.gitkeep
+# Persisted prompt attachments (moved here from <project>/.upload-files on turn end)
+attachments/
 
 # Logs
 *.log

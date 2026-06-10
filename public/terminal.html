@@ -625,6 +625,13 @@
   /* ── msg-cancelled ── */
   .msg-cancelled .bubble { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3); color: var(--yellow); padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px; }
 
+  /* ── Prompt attachments (image previews + lightbox) ── */
+  .img-previews { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-bottom: 4px; }
+  .att-img { max-width: 160px; max-height: 160px; border-radius: var(--radius-sm); border: 1px solid var(--border); object-fit: cover; cursor: zoom-in; }
+  .img-lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 600; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; }
+  .img-lightbox.on { display: flex; }
+  .img-lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--radius-sm); box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+
   /* ── Permissions modal ── */
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 500; align-items: center; justify-content: center; padding: 20px; }
   .modal-overlay.on { display: flex; }
@@ -1068,6 +1075,8 @@
   </div>
 </div>
 
+<div class="img-lightbox" id="imgLightbox"><img alt=""></div>
+
 <script>
 'use strict';
 
@@ -1284,12 +1293,14 @@ function handleMessage(msg) {
       // The server keeps both until the turn ends; replay them here.
       const live = msg.liveTurn || null;
       if (live) {
-        const p = live.prompt || '';
         // Skip a bare /compact: its bubble is noise and the compact note covers it.
-        if (p && p.trim() !== '/compact' && !historyHasUserText(msg.history, p)) {
-          // Live image paths are server-side and not browser-resolvable on a
-          // fresh load, so just replay the prompt text.
-          appendUserMsg(p, [], false);
+        const p = (live.prompt || '').trim() === '/compact' ? '' : (live.prompt || '');
+        const liveUrls = (live.images || []).map(attachmentUrl);
+        // Draw the in-flight prompt bubble + its image previews (a files-only
+        // prompt has no text but still shows images). Skip if the text already
+        // landed in the jsonl history above (claude can flush mid-turn).
+        if ((p || liveUrls.length) && !(p && historyHasUserText(msg.history, p))) {
+          appendUserMsg(p, liveUrls, false);
         }
         // Compact output is suppressed in the UI (the compact note below stands
         // in for it), so only replay a normal turn's assistant output. Replaying
@@ -1382,12 +1393,16 @@ function handleMessage(msg) {
       } else {
         // The runner just pulled the queued prompt(s) into this turn. A queued
         // prompt has no chat bubble while it waits (it lives only in the queue
-        // area), so draw it now that it's a real message — unless an immediate
-        // (non-queued) send already drew it. The queue_state broadcast that
-        // precedes this clears it from the queue area.
-        if (msg.prompt && !(_inflightUser && _inflightUser.text === msg.prompt)) {
-          appendUserMsg(msg.prompt, [], false);
-          _inflightUser = { text: msg.prompt, images: [] };
+        // area), so draw it now that it's a real message — including its image
+        // previews (a files-only prompt has no text but still shows its images).
+        // Skip if an immediate (non-queued) send already drew it. The queue_state
+        // broadcast that precedes this clears it from the queue area.
+        const ssPrompt = msg.prompt || '';
+        const ssUrls = (msg.images || []).map(attachmentUrl);
+        const alreadyDrawn = _inflightUser && _inflightUser.text === ssPrompt;
+        if ((ssPrompt || ssUrls.length) && !alreadyDrawn) {
+          appendUserMsg(ssPrompt, ssUrls, false);
+          _inflightUser = { text: ssPrompt, images: ssUrls };
         }
         currentAssistantEl = createAssistantMessage();
       }
@@ -1615,8 +1630,10 @@ function historyHasUserText(history, text) {
 function renderHistoryEntry(entry) {
   if (entry.type === 'user') {
     const m = document.createElement('div'); m.className = 'msg msg-user';
-    const imgs = entry.imageCount > 0 ? `<div style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">📎 ${entry.imageCount} file${entry.imageCount > 1 ? 's' : ''}</div>` : '';
-    m.innerHTML = `${imgs}<div class="bubble">${escHtml(entry.text)}</div>`;
+    const urls = (entry.images || []).map(attachmentUrl);
+    const imgs = urls.length ? `<div class="img-previews">${urls.map(u=>`<img src="${u}" class="att-img" onerror="this.style.display='none'">`).join('')}</div>` : '';
+    const bubble = entry.text ? `<div class="bubble">${escHtml(entry.text)}</div>` : '';
+    m.innerHTML = `${imgs}${bubble}`;
     document.getElementById('messages').appendChild(m);
   } else if (entry.type === 'assistant') {
     if (entry.uuid) renderedEventUuids.add(entry.uuid);
@@ -1871,14 +1888,39 @@ function buildThinking(text) {
   const b = document.createElement('div'); b.className = 'thinking-block';
   b.innerHTML = `<div class="label">Thinking</div><pre>${escHtml(text)}</pre>`; return b;
 }
+// Build a same-origin URL for a stored attachment from its basename. The server
+// resolves it against the per-session attachments store (after the turn) or the
+// project's .upload-files (while the turn is still in flight).
+function attachmentUrl(name) {
+  return '/attachment?session=' + encodeURIComponent(sessionId || '')
+    + '&dir=' + encodeURIComponent(curDirectory || '')
+    + '&name=' + encodeURIComponent(name);
+}
 function appendUserMsg(text, images, queued) {
   const m = document.createElement('div'); m.className = 'msg msg-user';
-  const imgs = images?.length ? `<div class="img-previews">${images.map(u=>`<img src="${u}">`).join('')}</div>` : '';
+  const imgs = images?.length ? `<div class="img-previews">${images.map(u=>`<img src="${u}" class="att-img" onerror="this.style.display='none'">`).join('')}</div>` : '';
   const lbl = queued ? `<div class="queued-label" style="font-size:11px;color:var(--text-muted);text-align:right;margin-bottom:3px">⏳ queued</div>` : '';
-  m.innerHTML = `${lbl}${imgs}<div class="bubble">${escHtml(text)}</div>`;
+  // A files-only message has no text — don't render an empty bubble.
+  const bubble = text ? `<div class="bubble">${escHtml(text)}</div>` : '';
+  m.innerHTML = `${lbl}${imgs}${bubble}`;
   // User just sent — always snap to bottom (forces auto-follow back on).
   document.getElementById('messages').appendChild(m); scrollToBottomNow();
 }
+
+// Click any in-thread attachment preview to zoom it in a fullscreen lightbox.
+// Delegated on #messages so it covers both jsonl-rendered and live-appended imgs.
+(function initImgLightbox(){
+  const box = document.getElementById('imgLightbox');
+  if (!box) return;
+  const big = box.querySelector('img');
+  const close = () => { box.classList.remove('on'); big.src = ''; };
+  document.getElementById('messages').addEventListener('click', (e) => {
+    const t = e.target;
+    if (t && t.classList && t.classList.contains('att-img')) { big.src = t.src; box.classList.add('on'); }
+  });
+  box.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && box.classList.contains('on')) close(); });
+})();
 function appendError(text) {
   const m = document.createElement('div'); m.className = 'msg msg-error';
   m.innerHTML = `<div class="bubble">⚠ ${escHtml(text)}</div>`;

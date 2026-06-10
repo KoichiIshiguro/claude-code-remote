@@ -20,6 +20,7 @@ const { flushPendingSave } = require('./src/session-manager');
 const { migrateIfNeeded } = require('./src/migrate');
 const projectsStore = require('./src/projects-store');
 const fsOps = require('./src/fs-ops');
+const { ATTACH_DIR, sessionDir } = require('./src/attachments');
 
 // One-shot CLI mode: `node server.js --reset-auth` wipes admin.json and
 // exits, forcing /setup on the next normal start so the user can pick a
@@ -203,6 +204,29 @@ app.post('/upload', requireAuth, upload.array('images', 10), (req, res) => {
     return p;
   });
   res.json({ paths });
+});
+
+// Serve a prompt attachment for in-thread previews / the lightbox. Read-only and
+// locked down: `name` is reduced to a basename (no traversal), `session` to a
+// safe segment, and the only directories we ever read from are the per-session
+// attachments store and — while a turn is still in flight, before the file has
+// been moved — an ALLOWED project's .upload-files. Anything else is a 404.
+app.get('/attachment', requireAuth, (req, res) => {
+  const name = path.basename(String(req.query.name || ''));
+  if (!name || name === '.' || name === '..') return res.status(400).end();
+  const session = String(req.query.session || '');
+  const dir = typeof req.query.dir === 'string' ? req.query.dir : '';
+
+  const candidates = [];
+  if (session) candidates.push(path.join(sessionDir(session), name));
+  if (dir && projectsStore.isAllowedPath(dir)) {
+    candidates.push(path.join(dir, '.upload-files', name));
+  }
+  for (const f of candidates) {
+    try { if (fs.existsSync(f) && fs.statSync(f).isFile()) return res.sendFile(f); }
+    catch {}
+  }
+  return res.status(404).end();
 });
 
 // Lightweight auth probe — returns 200/401 with no redirect so the client

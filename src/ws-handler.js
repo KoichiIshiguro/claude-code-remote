@@ -12,6 +12,7 @@ const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
 const liveTurn = require('./live-turn');
+const { sessionDir } = require('./attachments');
 const shell = require('./shell-manager');
 const gitInfo = require('./git-info');
 
@@ -203,7 +204,9 @@ function broadcastQueue(key) {
 function liveTurnPayload(key) {
   const t = liveTurn.get(key);
   if (!t) return null;
-  return { prompt: t.prompt, images: t.images, compact: t.compact, events: t.events };
+  // Basenames only; the client builds /attachment URLs from session + dir.
+  const images = (t.images || []).map(p => path.basename(p));
+  return { prompt: t.prompt, images, compact: t.compact, events: t.events };
 }
 
 // Idempotent: starts a runner for `key` if one isn't already draining it.
@@ -280,7 +283,12 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   // now. Queued prompts aren't shown as bubbles while waiting (only in the queue
   // area), so this is the moment they become a real message. Suppressed for a
   // /compact (it's a maintenance action, not a message).
-  broadcast(key, { type: 'stream_start', sessionId: key, compact: isCompactCmd, prompt: isCompactCmd ? null : prompt });
+  broadcast(key, {
+    type: 'stream_start', sessionId: key, compact: isCompactCmd,
+    prompt: isCompactCmd ? null : prompt,
+    // Basenames only; the client builds /attachment URLs from session + dir.
+    images: isCompactCmd ? [] : imagePaths.map(p => path.basename(p)),
+  });
 
   // AskUserQuestion intercept — the tool can't be answered in `-p` mode, so we
   // surface the question, cancel the stream, and write a synthetic tool_result
@@ -338,8 +346,20 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     const bk = resolvedSessionId || key;
     broadcast(bk, { type: 'error', message: err.message, sessionId: bk });
   } finally {
-    for (const p of imagePaths) { try { fs.unlinkSync(p); } catch {} }
     const bk = resolvedSessionId || key;
+    // Persist attachments instead of deleting them: move each out of the
+    // project's .upload-files (keeping the working dir clean) into the
+    // server-managed attachments/<session>/ store, so they stay viewable later
+    // via GET /attachment. Best-effort — a failure just leaves the file in place.
+    for (const p of imagePaths) {
+      try {
+        const destDir = sessionDir(bk);
+        fs.mkdirSync(destDir, { recursive: true });
+        const dest = path.join(destDir, path.basename(p));
+        try { fs.renameSync(p, dest); }
+        catch { fs.copyFileSync(p, dest); fs.unlinkSync(p); } // cross-device
+      } catch {}
+    }
 
     if (interceptedAUQ && bk) {
       try {
