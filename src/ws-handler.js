@@ -250,7 +250,12 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   const resumeSessionId = isNewSession ? null : key;
   const processKey = key;
 
-  if (!isNewSession && sm.shouldAutoCompact(key, directory)) {
+  // A manual /compact must NOT be preceded by an auto-compact: that would
+  // compact twice (the auto-compact pre-phase, then the manual /compact
+  // itself). Detect it up front so the auto-compact pre-check can skip it.
+  const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
+
+  if (!isNewSession && !isCompactCmd && sm.shouldAutoCompact(key, directory)) {
     compactingKeys.set(key, { auto: true });
     // Buffer the REAL user prompt (not '/compact') with compact:true, so a reload
     // during the auto-compact phase still shows the user's pending prompt bubble
@@ -276,7 +281,6 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
 
   // Tag the stream when the prompt itself is a manual /compact so the UI can
   // show a "compacting…" indicator (auto-compact above sets its own flag).
-  const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
   if (isCompactCmd) compactingKeys.set(key, { auto: false });
   liveTurn.begin(key, { prompt, images: imagePaths, compact: isCompactCmd });
   // Carry the prompt text being processed so the client can draw its user bubble
