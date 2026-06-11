@@ -36,6 +36,32 @@ function broadcast(key, obj) {
   for (const c of clients) if (c.readyState === 1) c.send(data);
 }
 
+// ── Available slash commands ────────────────────────────────────────────────
+// The stream-json `init` event reports the slash commands valid in this `-p`
+// environment (skills + built-ins like /compact). They're environment-wide and
+// effectively static, so we cache the latest list, persist it (survives restart
+// → available on the very next page load), and push it to whoever's viewing the
+// session so the prompt-box picker populates without a reload.
+const SLASH_FILE = path.join(__dirname, '..', 'data', 'slash-commands.json');
+let slashCommandsCache = (() => {
+  try { const a = JSON.parse(fs.readFileSync(SLASH_FILE, 'utf8')); return Array.isArray(a) ? a.filter(c => typeof c === 'string') : []; }
+  catch { return []; }
+})();
+
+function getSlashCommands() { return slashCommandsCache; }
+
+function recordSlashCommands(key, list) {
+  if (!Array.isArray(list)) return;
+  const next = list.filter(c => typeof c === 'string');
+  if (!next.length) return;
+  const changed = next.length !== slashCommandsCache.length || next.some((c, i) => c !== slashCommandsCache[i]);
+  if (changed) {
+    slashCommandsCache = next;
+    try { fs.writeFileSync(SLASH_FILE, JSON.stringify(next)); } catch {}
+  }
+  broadcast(key, { type: 'slash_commands', commands: next });
+}
+
 function subscribe(key, ws) {
   if (!key) return;
   if (!sessionClients.has(key)) sessionClients.set(key, new Set());
@@ -303,6 +329,10 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     for await (const event of sm.runPrompt({
       directory, prompt, imagePaths, resumeSessionId, processKey, model, effort,
     })) {
+      // Every init (new or resumed) carries the env's slash command list.
+      if (event.type === 'system' && event.subtype === 'init' && Array.isArray(event.slash_commands)) {
+        recordSlashCommands(key, event.slash_commands);
+      }
       if (isNewSession && !resolvedSessionId
           && event.type === 'system' && event.subtype === 'init' && event.session_id) {
         resolvedSessionId = event.session_id;
@@ -926,4 +956,4 @@ function handleConnection(ws /*, req */) {
   });
 }
 
-module.exports = { handleConnection };
+module.exports = { handleConnection, getSlashCommands };

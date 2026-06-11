@@ -15,7 +15,7 @@ const {
   isSetupComplete, saveAdmin, saveConfig, loadConfig,
   resetAdmin, ADMIN_FILE,
 } = require('./src/auth');
-const { handleConnection } = require('./src/ws-handler');
+const { handleConnection, getSlashCommands } = require('./src/ws-handler');
 const { flushPendingSave } = require('./src/session-manager');
 const { migrateIfNeeded } = require('./src/migrate');
 const projectsStore = require('./src/projects-store');
@@ -580,6 +580,11 @@ app.get('/api/settings', requireAuth, (req, res) => {
     effort: typeof cfg.effort === 'string' ? cfg.effort : null,
     effortLevels: sm.EFFORT_LEVELS,
   });
+});
+// Slash commands valid in the `-p` environment, captured from the latest
+// stream-json `init` event. The prompt box uses this to autocomplete `/…`.
+app.get('/api/slash-commands', requireAuth, (req, res) => {
+  res.json({ commands: getSlashCommands() });
 });
 app.post('/api/settings', requireAuth, (req, res) => {
   const sm = require('./src/session-manager');

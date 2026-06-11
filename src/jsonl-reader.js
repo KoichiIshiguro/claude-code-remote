@@ -233,6 +233,29 @@ function toolTitle(name, input) {
   try { return JSON.stringify(input).slice(0, 80); } catch { return name; }
 }
 
+// Files worth surfacing inline in the chat as a preview (images) or download
+// link (everything else): a Write/Edit target is a produced/updated artifact;
+// image paths inside a Bash command catch screenshots (screencapture, headless
+// browser, imagemagick, …). The client classifies by extension and resolves
+// relative paths against the session directory. Computed here so the SAME data
+// is available on reload (history) as during live streaming.
+function artifactCandidates(name, input) {
+  if (!input) return [];
+  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit') {
+    return input.file_path ? [input.file_path] : [];
+  }
+  if (name === 'Bash' && typeof input.command === 'string') {
+    const out = [];
+    const re = /[~./][^\s'"`;|&)>]*\.(?:png|jpe?g|gif|webp|bmp|svg|avif)\b/gi;
+    let m;
+    while ((m = re.exec(input.command)) && out.length < 6) {
+      if (!out.includes(m[0])) out.push(m[0]);
+    }
+    return out;
+  }
+  return [];
+}
+
 // Pure function: fold one jsonl event into the running history array.
 // Returns the new history (does not mutate input). Unknown event types are
 // passed through unchanged.
@@ -276,6 +299,7 @@ function applyEventToBlocks(history, event) {
           title: toolTitle(b.name, b.input),
           toolId: b.id,
           result: null,
+          artifacts: artifactCandidates(b.name, b.input),
         });
       }
     }

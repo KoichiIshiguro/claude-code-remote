@@ -631,6 +631,14 @@
   .img-lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 600; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; }
   .img-lightbox.on { display: flex; }
   .img-lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--radius-sm); box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+  /* Files produced by a tool (Write/Edit target, Bash screenshot): inline image
+     previews + download links, surfaced under the tool card. */
+  .tool-artifacts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0 2px; }
+  .artifact-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+    color: var(--accent); text-decoration: none; padding: 4px 8px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--surface2); max-width: 260px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .artifact-link:hover { border-color: var(--accent); }
 
   /* ── Permissions modal ── */
   .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 500; align-items: center; justify-content: center; padding: 20px; }
@@ -676,6 +684,16 @@
   .bnav-btn .bnav-icon { font-size: 22px; line-height: 1; }
   .bnav-btn.active { color: var(--accent); }
   .bnav-btn:hover { color: var(--text); }
+
+  /* Slash-command autocomplete popover (fixed-positioned above the prompt box). */
+  #slashMenu { position: fixed; z-index: 500; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.35); max-height: 240px; overflow-y: auto; }
+  #slashMenu[hidden] { display: none; }
+  .slash-item { padding: 7px 10px; border-radius: 5px; font-size: 13px; color: var(--text);
+    cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .slash-item.active, .slash-item:hover { background: var(--accent); color: #fff; }
 
   @media (max-width: 767px) {
     .bottom-nav { display: block; }
@@ -745,6 +763,7 @@
     </div>
     <div class="input-row">
       <textarea id="promptInput" placeholder="Message Claude…" rows="3"></textarea>
+      <div id="slashMenu" hidden></div>
       <div class="input-actions">
         <button class="btn-icon" id="imgBtn" title="Attach file" aria-label="Attach file">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1436,6 +1455,9 @@ function handleMessage(msg) {
       // independent) and will emit the next stream_start itself.
       setStreamingUI(false);
       break;
+    case 'slash_commands':
+      if (Array.isArray(msg.commands)) availableSlashCommands = msg.commands;
+      break;
     case 'queue_state':
       // Server is the source of truth for the queue. Only react to our own
       // session's state (we're only subscribed to it, but guard anyway).
@@ -1679,6 +1701,7 @@ function renderBlocks(container, blocks) {
     } else if (b.kind === 'tool') {
       const card = buildToolCard(b.name, b.title);
       if (b.result !== null) card.querySelector('.tool-card-body pre').textContent = b.result;
+      appendArtifacts(card, b.artifacts || []);
       container.appendChild(card);
     } else if (b.kind === 'thinking') {
       container.appendChild(buildThinking(b.text));
@@ -1729,6 +1752,7 @@ function handleStreamEvent(event) {
             currentToolEls[blk.id] = card; c.appendChild(card);
           } else {
             const card = buildToolCard(blk.name, getToolTitle(blk.name, blk.input));
+            card._toolMeta = { name: blk.name, input: blk.input || {} };
             currentToolEls[blk.id] = card.querySelector('.tool-card-body pre'); c.appendChild(card);
           }
         } else if (blk.type === 'thinking') { finalizeText(); c.appendChild(buildThinking(blk.thinking)); }
@@ -1740,6 +1764,8 @@ function handleStreamEvent(event) {
         const r = typeof event.content === 'string' ? event.content : JSON.stringify(event.content, null, 2);
         ref.textContent = r.length > 4000 ? r.slice(0, 4000) + '\n…(truncated)' : r;
       }
+      const tcard = ref && ref.closest ? ref.closest('.tool-card') : null;
+      if (tcard && tcard._toolMeta) appendArtifacts(tcard, artifactCandidates(tcard._toolMeta.name, tcard._toolMeta.input));
       break;
     }
     case 'result':
@@ -1873,6 +1899,55 @@ function finalizeCompactNote(el, failed) {
   else { el.className = 'compact-note done'; el.innerHTML = '⊟ コンテキストを圧縮しました ✓'; }
   scrollToBottom();
 }
+// ── Tool artifacts (image previews + download links) ─────────────────────────
+const ARTIFACT_IMG_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif)\b/i;
+// Mirror of jsonl-reader.artifactCandidates for the LIVE path (history carries
+// the precomputed list on each tool block instead).
+function artifactCandidates(name, input) {
+  if (!input) return [];
+  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit') return input.file_path ? [input.file_path] : [];
+  if (name === 'Bash' && typeof input.command === 'string') {
+    const out = []; const re = /[~./][^\s'"`;|&)>]*\.(?:png|jpe?g|gif|webp|bmp|svg|avif)\b/gi; let m;
+    while ((m = re.exec(input.command)) && out.length < 6) if (!out.includes(m[0])) out.push(m[0]);
+    return out;
+  }
+  return [];
+}
+// Tool paths may be absolute or relative to the session dir; /api/file/raw does
+// path.resolve server-side, so a bare relative path would resolve wrong — make
+// it absolute against curDirectory here.
+function resolveArtifactPath(p) {
+  if (!p) return p;
+  if (p[0] === '/' || p[0] === '~') return p;
+  const base = (curDirectory || '').replace(/\/+$/, '');
+  return base ? base + '/' + p.replace(/^\.\//, '') : p;
+}
+function appendArtifacts(cardEl, paths) {
+  if (!cardEl || cardEl._artifactsDone || !paths || !paths.length) return;
+  cardEl._artifactsDone = true;
+  const wrap = document.createElement('div');
+  wrap.className = 'tool-artifacts';
+  const seen = new Set();
+  for (const p of paths.slice(0, 6)) {
+    const abs = resolveArtifactPath(p);
+    if (!abs || seen.has(abs)) continue; seen.add(abs);
+    const url = '/api/file/raw?path=' + encodeURIComponent(abs);
+    if (ARTIFACT_IMG_RE.test(p)) {
+      const img = document.createElement('img');
+      img.className = 'att-img'; img.src = url; img.alt = p.split('/').pop() || p;
+      img.addEventListener('error', () => img.remove());
+      wrap.appendChild(img);
+    } else {
+      const a = document.createElement('a');
+      a.className = 'artifact-link'; a.href = url + '&download=1';
+      a.target = '_blank'; a.rel = 'noopener';
+      a.textContent = '📎 ' + (p.split('/').pop() || p);
+      wrap.appendChild(a);
+    }
+  }
+  if (wrap.children.length) cardEl.appendChild(wrap);
+}
+
 function buildToolCard(toolName, title) {
   const bm = {Bash:'badge-bash',Read:'badge-read',Write:'badge-write',Edit:'badge-edit',MultiEdit:'badge-edit',LS:'badge-ls'};
   const card = document.createElement('div'); card.className = 'tool-card';
@@ -1992,7 +2067,7 @@ async function sendPrompt() {
   // Allow a files-only send: the attachments are the message. Block only when
   // there's neither text nor an attachment (the server applies the same rule).
   if (!text && pendingImages.length === 0) return;
-  inp.value = ''; autoResize(inp); syncSendBtn();
+  inp.value = ''; autoResize(inp); syncSendBtn(); hideSlashMenu();
   let uploadedPaths = [];
   const previewUrls = pendingImages.map(p => p.dataUrl);
   if (pendingImages.length > 0) {
@@ -2205,14 +2280,98 @@ function renderImgPreviews() {
 function clearImgPreviews() { pendingImages = []; document.getElementById('imagePreviews').innerHTML = ''; syncSendBtn(); }
 
 // ── Input events ──────────────────────────────────────────────────────────────
+// ── Slash-command autocomplete ────────────────────────────────────────────────
+// Commands valid in the `-p` environment, reported by the server from the
+// stream-json `init` event. Typing `/…` pops a filterable picker; the list
+// refreshes live (WS `slash_commands`) and persists across reloads (HTTP).
+let availableSlashCommands = [];
+let slashMenuMatches = [];
+let slashMenuIdx = -1;
+let slashMenuNavigated = false;
+
+async function loadSlashCommands() {
+  try {
+    const r = await fetch('/api/slash-commands');
+    if (!r.ok) return;
+    const d = await r.json();
+    if (Array.isArray(d.commands)) availableSlashCommands = d.commands;
+  } catch {}
+}
+function slashMenuEl() { return document.getElementById('slashMenu'); }
+function hideSlashMenu() {
+  const el = slashMenuEl();
+  if (el) { el.hidden = true; el.innerHTML = ''; }
+  slashMenuMatches = []; slashMenuIdx = -1; slashMenuNavigated = false;
+}
+function positionSlashMenu() {
+  const el = slashMenuEl(); if (!el || el.hidden) return;
+  const r = document.getElementById('promptInput').getBoundingClientRect();
+  el.style.left = r.left + 'px';
+  el.style.width = r.width + 'px';
+  el.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+}
+function renderSlashMenu() {
+  const el = slashMenuEl(); if (!el) return;
+  el.innerHTML = slashMenuMatches.map((c, i) =>
+    `<div class="slash-item${i === slashMenuIdx ? ' active' : ''}" data-i="${i}">/${c}</div>`
+  ).join('');
+  el.hidden = false;
+  positionSlashMenu();
+}
+// Show the picker only while the prompt is a bare `/token` (no space/newline yet).
+function updateSlashMenu() {
+  const v = document.getElementById('promptInput').value;
+  const m = /^\/([a-zA-Z0-9_-]*)$/.exec(v);
+  if (!m || !availableSlashCommands.length) { hideSlashMenu(); return; }
+  const q = m[1].toLowerCase();
+  slashMenuMatches = availableSlashCommands.filter(c => c.toLowerCase().startsWith(q)).slice(0, 8);
+  if (!slashMenuMatches.length) { hideSlashMenu(); return; }
+  if (slashMenuIdx < 0 || slashMenuIdx >= slashMenuMatches.length) slashMenuIdx = 0;
+  renderSlashMenu();
+}
+function acceptSlashItem(i) {
+  const c = slashMenuMatches[i]; if (!c) return;
+  const ta = document.getElementById('promptInput');
+  ta.value = '/' + c + ' ';
+  hideSlashMenu();
+  ta.focus(); autoResize(ta); syncSendBtn();
+}
+// Returns true when it consumed the key. Enter is only stolen once the user has
+// actually navigated the list, so typing `/compact` + Enter still sends.
+function handleSlashMenuKey(e) {
+  const el = slashMenuEl();
+  if (!el || el.hidden || !slashMenuMatches.length) return false;
+  if (e.key === 'ArrowDown') { e.preventDefault(); slashMenuNavigated = true; slashMenuIdx = (slashMenuIdx + 1) % slashMenuMatches.length; renderSlashMenu(); return true; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); slashMenuNavigated = true; slashMenuIdx = (slashMenuIdx - 1 + slashMenuMatches.length) % slashMenuMatches.length; renderSlashMenu(); return true; }
+  if (e.key === 'Tab') { e.preventDefault(); acceptSlashItem(slashMenuIdx < 0 ? 0 : slashMenuIdx); return true; }
+  if (e.key === 'Escape') { e.preventDefault(); hideSlashMenu(); return true; }
+  if (e.key === 'Enter' && slashMenuNavigated) { e.preventDefault(); acceptSlashItem(slashMenuIdx < 0 ? 0 : slashMenuIdx); return true; }
+  return false;
+}
+(function initSlashMenu() {
+  const el = slashMenuEl();
+  if (el) el.addEventListener('mousedown', ev => {
+    const item = ev.target.closest('.slash-item');
+    if (!item) return;
+    ev.preventDefault(); // keep textarea focus
+    acceptSlashItem(parseInt(item.dataset.i, 10));
+  });
+  const ta = document.getElementById('promptInput');
+  if (ta) ta.addEventListener('blur', () => setTimeout(hideSlashMenu, 120));
+  window.addEventListener('resize', positionSlashMenu);
+  document.getElementById('messages')?.addEventListener('scroll', positionSlashMenu);
+  loadSlashCommands();
+})();
+
 document.getElementById('sendBtn').addEventListener('click', sendPrompt);
 document.getElementById('promptInput').addEventListener('keydown', e => {
   if (e.isComposing || e.keyCode === 229) return;
+  if (handleSlashMenuKey(e)) return; // arrow/tab/enter/esc while the picker is open
   // Mobile: Enter inserts newline; only ↑ send button submits.
   if (isMobile()) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
 });
-document.getElementById('promptInput').addEventListener('input', e => { autoResize(e.target); syncSendBtn(); });
+document.getElementById('promptInput').addEventListener('input', e => { autoResize(e.target); syncSendBtn(); updateSlashMenu(); });
 // Disable the send button only when there's nothing to send — no prompt text
 // (whitespace-only counts as empty) AND no attachment. A files-only send is
 // valid, so attachments alone keep the button live.
