@@ -880,6 +880,20 @@ function handleConnection(ws /*, req */) {
           return;
         }
 
+        // Drop a duplicate /compact: a double-tapped compact button (the second
+        // tap slips through before the server's stream_start flips the client's
+        // isStreaming) would otherwise queue two /compact and run two compact
+        // turns. Also avoids dequeueAll joining them into "/compact\n\n/compact",
+        // which isCompactCmd wouldn't recognise as a compact at all.
+        if (typeof prompt === 'string' && prompt.trim() === '/compact') {
+          const pending = promptQueue.list(sessionId) || [];
+          if (compactingKeys.has(sessionId)
+              || pending.some(i => (i.text || '').trim() === '/compact')) {
+            broadcastQueue(sessionId);
+            break;
+          }
+        }
+
         // Enqueue and (re)start the runner. If a turn is already streaming this
         // prompt accumulates and is batched into the next turn; otherwise the
         // runner picks it up immediately. The runner is browser-independent —

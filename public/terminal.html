@@ -1890,6 +1890,11 @@ function createAssistantMessage() {
 // Inline note shown while /compact runs (manual or auto). Replaces the raw
 // /compact output so the user sees a clear "compacting…" state, then a result.
 function appendCompactNote(auto) {
+  // Idempotent: only ever one live "compacting…" note. A duplicate stream_start
+  // (double-tapped compact, reconnect race) reuses it instead of orphaning the
+  // first as a stuck spinner.
+  const existing = document.querySelector('#messages .compact-note.running');
+  if (existing) return existing;
   const m = document.createElement('div'); m.className = 'compact-note running';
   m.innerHTML = `<span class="compact-spin">⊟</span> コンテキストを圧縮中…${auto ? ' <small>(自動)</small>' : ''}`;
   document.getElementById('messages').appendChild(m); scrollToBottomNow(); return m;
@@ -2111,9 +2116,15 @@ document.getElementById('cancelBtn').addEventListener('click', () => {
 // /compact — summarize the conversation to shrink context. Routed through the
 // normal send_prompt path (the server treats it as a slash command, same as
 // auto-compact). No user bubble: it's a maintenance action, not a message.
+let _compactSentAt = 0;
 document.getElementById('compactBtn').addEventListener('click', () => {
   if (isStreaming) return; // a turn is already running; let it finish
   if (!sessionId) return;
+  // isStreaming only flips true once the server's stream_start round-trips, so a
+  // fast double-tap would slip through twice and queue /compact twice. Debounce.
+  const now = Date.now();
+  if (now - _compactSentAt < 3000) return;
+  _compactSentAt = now;
   dispatchPrompt('/compact', []);
 });
 
