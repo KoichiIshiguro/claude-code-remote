@@ -195,7 +195,9 @@ function getLatestAiTitle(sessionId, directory, maxBytes = 65536) {
 // Cheap tail-scan: read the last `maxBytes` of a jsonl, walk lines backward,
 // return the input-token total from the most recent assistant event with usage.
 // Used by shouldAutoCompact() to avoid a full re-parse before every prompt.
-function getLastTokens(sessionId, directory, maxBytes = 65536) {
+// 256KB tail: enough to clear a large compact summary entry so the
+// compact_boundary line just above it stays inside the window.
+function getLastTokens(sessionId, directory, maxBytes = 262144) {
   const p = jsonlPathFor(sessionId, directory);
   let fd;
   try {
@@ -210,6 +212,15 @@ function getLastTokens(sessionId, directory, maxBytes = 65536) {
       const t = lines[i].trim();
       if (!t) continue;
       let e; try { e = JSON.parse(t); } catch { continue; }
+      // Scanning from the end: whichever comes first wins. A compact_boundary
+      // seen before any assistant usage means a /compact ran and no real turn
+      // has happened since — its postTokens is the true current context size
+      // (the pre-compact assistant usage further up is stale-large). If a real
+      // turn ran after the compact, we hit its (already-small) usage first.
+      if (e.type === 'system' && e.subtype === 'compact_boundary'
+          && typeof e.compactMetadata?.postTokens === 'number') {
+        return e.compactMetadata.postTokens;
+      }
       if (e.type === 'assistant' && e.message?.usage) {
         const u = e.message.usage;
         return (u.input_tokens || 0)
@@ -389,6 +400,13 @@ function readHistory(sessionId, directory, maxUserTurns = 100) {
       lastTokens = (u.input_tokens || 0)
                  + (u.cache_read_input_tokens || 0)
                  + (u.cache_creation_input_tokens || 0);
+    } else if (e.type === 'system' && e.subtype === 'compact_boundary'
+               && typeof e.compactMetadata?.postTokens === 'number') {
+      // A /compact just shrank the context to postTokens. The pre-compact
+      // assistant usage above is stale-large; adopt the real post-compact size.
+      // A later real turn's usage (forward iteration → last write wins) will
+      // override this once one runs.
+      lastTokens = e.compactMetadata.postTokens;
     }
     history = applyEventToBlocks(history, e);
   }
