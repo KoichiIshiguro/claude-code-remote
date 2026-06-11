@@ -82,15 +82,15 @@ function rekeySubscribers(oldKey, newKey) {
   else sessionClients.set(newKey, set);
 }
 
-// ── Reactive branch tracking ────────────────────────────────────────────────
-// Clients viewing a directory get pushed a `branch_changed` whenever that
-// directory's git HEAD moves — e.g. Claude runs `git checkout` mid-turn, or the
-// branch is switched from another client. Poll-based: simpler and more robust
-// than fs.watch across worktrees / HEAD-file replacement, and the live client
-// count here is tiny.
+// ── Branch tracking ─────────────────────────────────────────────────────────
+// Clients viewing a directory get pushed a `branch_changed` only when the branch
+// is switched explicitly from within the app (switch_branch handler). The old
+// 2.5s background poll that also caught HEAD moves from outside the app (e.g.
+// Claude running `git checkout` mid-turn) was removed — it wasn't worth the
+// constant `git` spawns. The branch pill still shows the value loaded with the
+// session; it just won't auto-refresh on out-of-band HEAD changes until reload.
 const dirClients = new Map(); // absDir → Set<ws> currently viewing it
 const dirBranch = new Map();  // absDir → last branch we broadcast (string|null)
-let branchPollTimer = null;
 
 function broadcastBranch(absDir, branch) {
   const set = dirClients.get(absDir);
@@ -99,19 +99,8 @@ function broadcastBranch(absDir, branch) {
   for (const c of set) if (c.readyState === 1) c.send(data);
 }
 
-function pollBranches() {
-  for (const [dir, set] of dirClients) {
-    if (set.size === 0) continue;
-    const b = gitInfo.currentBranch(dir);
-    if (b !== dirBranch.get(dir)) {
-      dirBranch.set(dir, b);
-      broadcastBranch(dir, b);
-    }
-  }
-}
-
-// Point `ws` at `dir` for branch updates, dropping whatever it watched before
-// (a client only ever views one session/dir at a time).
+// Point `ws` at `dir` so an in-app branch switch can be broadcast to it, dropping
+// whatever it watched before (a client only ever views one session/dir at a time).
 function watchDir(dir, ws) {
   unwatchWs(ws);
   if (!dir) return;
@@ -119,20 +108,12 @@ function watchDir(dir, ws) {
   if (!dirClients.has(absDir)) dirClients.set(absDir, new Set());
   dirClients.get(absDir).add(ws);
   if (!dirBranch.has(absDir)) dirBranch.set(absDir, gitInfo.currentBranch(absDir));
-  if (!branchPollTimer) {
-    branchPollTimer = setInterval(pollBranches, 2500);
-    branchPollTimer.unref?.();
-  }
 }
 
 function unwatchWs(ws) {
   for (const [dir, set] of dirClients) {
     set.delete(ws);
     if (set.size === 0) { dirClients.delete(dir); dirBranch.delete(dir); }
-  }
-  if (dirClients.size === 0 && branchPollTimer) {
-    clearInterval(branchPollTimer);
-    branchPollTimer = null;
   }
 }
 
