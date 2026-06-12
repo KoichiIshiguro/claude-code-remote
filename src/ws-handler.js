@@ -11,6 +11,7 @@ const archiveStore = require('./archive-store');
 const nameStore = require('./name-store');
 const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
+const scheduledPrompts = require('./scheduled-prompts');
 const liveTurn = require('./live-turn');
 const { sessionDir } = require('./attachments');
 const shell = require('./shell-manager');
@@ -205,6 +206,32 @@ function broadcastQueue(key) {
   broadcast(key, queueStateMsg(key));
 }
 
+function scheduledStateMsg(key) {
+  return {
+    type: 'scheduled_state',
+    sessionId: key,
+    scheduled: scheduledPrompts.listFor(key).map(i => ({ id: i.id, text: i.text, fireAt: i.fireAt })),
+  };
+}
+
+function broadcastScheduled(key) {
+  broadcast(key, scheduledStateMsg(key));
+}
+
+// Fire due reservations by feeding them into the normal prompt queue — from
+// there the existing runner machinery takes over (batching, placeholder rekey,
+// browser-independence). 30s granularity is plenty for minute-level scheduling.
+function checkScheduledPrompts() {
+  for (const item of scheduledPrompts.takeDue(Date.now())) {
+    promptQueue.enqueue(item.sessionId, { text: item.text, imagePaths: item.imagePaths });
+    broadcastQueue(item.sessionId);
+    broadcastScheduled(item.sessionId);
+    kickRunner(item.sessionId, item.directory);
+  }
+}
+const schedTimer = setInterval(checkScheduledPrompts, 30000);
+schedTimer.unref?.();
+
 // Snapshot of the in-flight turn for a reconnecting/switching client to replay,
 // so the just-sent prompt and the assistant output so far survive a reload
 // before this turn's jsonl is written. null when no turn is streaming.
@@ -324,6 +351,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
         procTracker.rekey(key, resolvedSessionId);
         rekeySubscribers(key, resolvedSessionId);
         promptQueue.rekey(key, resolvedSessionId);
+        scheduledPrompts.rekey(key, resolvedSessionId);
         liveTurn.rekey(key, resolvedSessionId);
         // Re-key the pending record to the REAL id instead of deleting it. Claude
         // emits `init` before it has necessarily flushed the session jsonl to
@@ -666,6 +694,7 @@ function handleConnection(ws /*, req */) {
             lastTokens: null,
           });
           send(ws, queueStateMsg(sid));
+        send(ws, scheduledStateMsg(sid));
           return;
         }
 
@@ -702,6 +731,7 @@ function handleConnection(ws /*, req */) {
           lastTokens,
         });
         send(ws, queueStateMsg(sid));
+        send(ws, scheduledStateMsg(sid));
         break;
       }
 
@@ -898,6 +928,47 @@ function handleConnection(ws /*, req */) {
         if (msg.sessionId) {
           promptQueue.clear(msg.sessionId);
           broadcastQueue(msg.sessionId);
+        }
+        break;
+      }
+
+      // ─── Scheduled (reserved) prompts ─────────────────────────────────────
+
+      case 'schedule_prompt': {
+        const { prompt, imagePaths = [], fireAt } = msg;
+        const { sessionId } = msg;
+        let directory = msg.directory;
+
+        if (!prompt && imagePaths.length === 0) { send(ws, { type: 'error', message: 'prompt required' }); return; }
+        if (!sessionId) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
+        if (typeof fireAt !== 'number' || !isFinite(fireAt)) { send(ws, { type: 'error', message: 'fireAt (epoch ms) required' }); return; }
+
+        const placeholder = pendingSessions.get(sessionId);
+        if (placeholder) directory = directory || placeholder.directory;
+        else if (!directory) directory = findDirectoryForSessionId(sessionId);
+        if (!directory) {
+          send(ws, { type: 'error', message: 'directory could not be determined', sessionId });
+          return;
+        }
+
+        subscribe(sessionId, ws);
+        // Already due (clock skew / picked a past time): run it now via the
+        // normal queue instead of waiting for the next timer tick.
+        if (fireAt <= Date.now()) {
+          promptQueue.enqueue(sessionId, { text: prompt, imagePaths });
+          broadcastQueue(sessionId);
+          kickRunner(sessionId, directory);
+          break;
+        }
+        scheduledPrompts.add({ sessionId, directory, text: prompt, imagePaths, fireAt });
+        broadcastScheduled(sessionId);
+        break;
+      }
+
+      case 'cancel_scheduled': {
+        if (msg.sessionId && msg.id) {
+          scheduledPrompts.remove(msg.sessionId, msg.id);
+          broadcastScheduled(msg.sessionId);
         }
         break;
       }

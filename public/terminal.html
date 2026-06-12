@@ -756,6 +756,8 @@
     <div class="status-bar">
       <button class="btn-stop" id="cancelBtn">■ Stop</button>
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
+      <button class="sched-badge" id="schedBadge" title="予約送信">⏰ <span id="schedCount">0</span> 予約</button>
+      <div id="schedList" hidden></div>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
       <span class="branch-pill" id="branchPill" title="現在の git ブランチ"></span>
       <button class="model-pill" id="modelPill" title="モデル / 工数 (タップで設定)">既定</button>
@@ -772,7 +774,11 @@
             <path d="M21 16l-5-5L5 21"/>
           </svg>
         </button>
-        <button class="btn-send" id="sendBtn" aria-label="Send">↑</button>
+        <div class="send-split">
+          <button class="btn-send" id="sendBtn" aria-label="Send">↑</button>
+          <button class="btn-send-menu" id="sendMenuBtn" aria-label="予約送信" title="予約送信">▾</button>
+        </div>
+        <div id="sendMenu" hidden></div>
       </div>
     </div>
     <input type="file" id="fileInput" multiple style="display:none">
@@ -1458,6 +1464,10 @@ function handleMessage(msg) {
     case 'slash_commands':
       if (Array.isArray(msg.commands)) availableSlashCommands = msg.commands;
       break;
+    case 'scheduled_state':
+      serverScheduled = Array.isArray(msg.scheduled) ? msg.scheduled : [];
+      renderScheduled();
+      break;
     case 'queue_state':
       // Server is the source of truth for the queue. Only react to our own
       // session's state (we're only subscribed to it, but guard anyway).
@@ -1772,6 +1782,7 @@ function handleStreamEvent(event) {
       // Turn-level totals from `claude -p`: cost in USD (incl. background Haiku
       // calls), aggregate token usage, and wall-clock. Append a small footer to
       // the current assistant message.
+      if (typeof event.result === 'string') scanLimitReset(event.result);
       appendTurnCost(c, event);
       break;
     case 'cancelled': finalizeText(); appendCancelled(); break;
@@ -2018,6 +2029,7 @@ function appendUserMsg(text, images, queued) {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && box.classList.contains('on')) close(); });
 })();
 function appendError(text) {
+  scanLimitReset(text);
   const m = document.createElement('div'); m.className = 'msg msg-error';
   m.innerHTML = `<div class="bubble">⚠ ${escHtml(text)}</div>`;
   document.getElementById('messages').appendChild(m); scrollToBottom();
@@ -2374,6 +2386,160 @@ function handleSlashMenuKey(e) {
   loadSlashCommands();
 })();
 
+// ── Scheduled send (Gmail-style "send later") ────────────────────────────────
+// Reservations live on the SERVER (data/scheduled-prompts.json + a 30s timer
+// that feeds due items into the normal prompt queue), so they fire with the
+// browser closed and survive a server restart. The client only creates/cancels
+// them and renders the server-broadcast scheduled_state.
+let serverScheduled = [];      // [{id, text, fireAt}] for the current session
+let lastLimitReset = null;     // epoch ms parsed from "…session limit · resets 2:50am"
+
+// Parse "resets 2:50am" / "resets 14:00" out of a session-limit message and
+// remember the NEXT occurrence of that wall-clock time (+10min safety margin).
+function scanLimitReset(text) {
+  if (typeof text !== 'string' || !/session limit/i.test(text)) return;
+  const m = text.match(/resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!m) return;
+  let h = parseInt(m[1], 10);
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  const ap = (m[3] || '').toLowerCase();
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  const d = new Date();
+  d.setHours(h, min, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  lastLimitReset = d.getTime() + 10 * 60 * 1000; // fire 10min after the reset
+}
+
+function fmtWhen(ts) {
+  const d = new Date(ts), now = new Date();
+  const hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return hm;
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return '明日 ' + hm;
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
+
+// Mirror of sendPrompt, but hands the prompt to the server's reservation store
+// instead of the live queue. No chat bubble — it isn't a message yet.
+async function scheduleSend(fireAt) {
+  const inp = document.getElementById('promptInput');
+  const text = inp.value.trim();
+  if (!text && pendingImages.length === 0) return;
+  if (!sessionId) return;
+  hideSendMenu();
+  inp.value = ''; autoResize(inp); syncSendBtn(); hideSlashMenu();
+  let uploadedPaths = [];
+  if (pendingImages.length > 0) {
+    const fd = new FormData();
+    if (fbSessionRoot) fd.append('directory', fbSessionRoot);
+    for (const p of pendingImages) fd.append('images', p.file);
+    try { const r = await fetch('/upload', { method: 'POST', body: fd }); uploadedPaths = (await r.json()).paths || []; }
+    catch (e) { appendError('Upload failed: ' + e.message); return; }
+  }
+  clearImgPreviews();
+  wsSend({ type: 'schedule_prompt', sessionId, prompt: text, imagePaths: uploadedPaths, fireAt, directory: curDirectory || fbSessionRoot || undefined });
+}
+
+function hideSendMenu() { const el = document.getElementById('sendMenu'); el.hidden = true; }
+
+function openSendMenu() {
+  const el = document.getElementById('sendMenu');
+  if (!el.hidden) { hideSendMenu(); return; }
+  const now = Date.now();
+  const presets = [];
+  if (lastLimitReset && lastLimitReset > now) {
+    presets.push({ label: 'リミット解除後に送信', ts: lastLimitReset });
+  }
+  presets.push(
+    { label: '30分後', ts: now + 30 * 60 * 1000 },
+    { label: '1時間後', ts: now + 60 * 60 * 1000 },
+    { label: '3時間後', ts: now + 3 * 60 * 60 * 1000 },
+  );
+  el.innerHTML = '';
+  const title = document.createElement('div');
+  title.className = 'send-menu-title'; title.textContent = '予約送信';
+  el.appendChild(title);
+  for (const p of presets) {
+    const b = document.createElement('button');
+    b.className = 'send-menu-item';
+    b.innerHTML = '<span></span><span class="when"></span>';
+    b.firstChild.textContent = p.label;
+    b.lastChild.textContent = fmtWhen(p.ts);
+    b.addEventListener('click', () => scheduleSend(p.ts));
+    el.appendChild(b);
+  }
+  const custom = document.createElement('div');
+  custom.className = 'send-menu-custom';
+  const dt = document.createElement('input');
+  dt.type = 'datetime-local';
+  const def = new Date(now + 60 * 60 * 1000); def.setSeconds(0, 0);
+  dt.value = new Date(def.getTime() - def.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  const ok = document.createElement('button');
+  ok.textContent = '予約';
+  ok.addEventListener('click', () => {
+    const ts = new Date(dt.value).getTime();
+    if (!isFinite(ts)) return;
+    if (ts <= Date.now()) { alert('過去の日時は指定できません'); return; }
+    scheduleSend(ts);
+  });
+  custom.appendChild(dt); custom.appendChild(ok);
+  el.appendChild(custom);
+  el.hidden = false;
+  // Pull-up: anchor above the ▾ button, right-aligned.
+  const r = document.getElementById('sendMenuBtn').getBoundingClientRect();
+  el.style.left = 'auto';
+  el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  el.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+}
+
+function renderScheduled() {
+  const badge = document.getElementById('schedBadge');
+  document.getElementById('schedCount').textContent = serverScheduled.length;
+  badge.classList.toggle('on', serverScheduled.length > 0);
+  const list = document.getElementById('schedList');
+  if (!serverScheduled.length) { list.hidden = true; return; }
+  if (!list.hidden) renderSchedList();
+}
+
+function renderSchedList() {
+  const list = document.getElementById('schedList');
+  list.innerHTML = '';
+  for (const it of serverScheduled) {
+    const row = document.createElement('div');
+    row.className = 'sched-item';
+    row.innerHTML = '<span class="when"></span><span class="txt"></span><button class="x" title="予約を取り消す">✕</button>';
+    row.querySelector('.when').textContent = '⏰ ' + fmtWhen(it.fireAt);
+    row.querySelector('.txt').textContent = it.text || '(添付ファイルのみ)';
+    row.querySelector('.x').addEventListener('click', () => {
+      wsSend({ type: 'cancel_scheduled', sessionId, id: it.id });
+    });
+    list.appendChild(row);
+  }
+}
+
+document.getElementById('sendMenuBtn').addEventListener('click', e => {
+  e.preventDefault();
+  openSendMenu();
+});
+document.getElementById('schedBadge').addEventListener('click', () => {
+  const list = document.getElementById('schedList');
+  if (!list.hidden) { list.hidden = true; return; }
+  renderSchedList();
+  list.hidden = false;
+  const r = document.getElementById('schedBadge').getBoundingClientRect();
+  list.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 280)) + 'px';
+  list.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+});
+// Tap-away closes either popover.
+document.addEventListener('mousedown', e => {
+  const sm = document.getElementById('sendMenu');
+  if (!sm.hidden && !sm.contains(e.target) && e.target.id !== 'sendMenuBtn') sm.hidden = true;
+  const sl = document.getElementById('schedList');
+  if (!sl.hidden && !sl.contains(e.target) && !document.getElementById('schedBadge').contains(e.target)) sl.hidden = true;
+});
+
 document.getElementById('sendBtn').addEventListener('click', sendPrompt);
 document.getElementById('promptInput').addEventListener('keydown', e => {
   if (e.isComposing || e.keyCode === 229) return;
@@ -2387,8 +2553,11 @@ document.getElementById('promptInput').addEventListener('input', e => { autoResi
 // (whitespace-only counts as empty) AND no attachment. A files-only send is
 // valid, so attachments alone keep the button live.
 function syncSendBtn() {
+  const empty = !document.getElementById('promptInput').value.trim() && pendingImages.length === 0;
   const btn = document.getElementById('sendBtn');
-  if (btn) btn.disabled = !document.getElementById('promptInput').value.trim() && pendingImages.length === 0;
+  if (btn) btn.disabled = empty;
+  const mbtn = document.getElementById('sendMenuBtn');
+  if (mbtn) mbtn.disabled = empty;
 }
 syncSendBtn();
 

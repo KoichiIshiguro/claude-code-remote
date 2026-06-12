@@ -159,6 +159,34 @@ a { color: var(--accent); text-decoration: none; }
 .btn-send:hover { opacity: .85; }
 .btn-send:disabled { opacity: .4; cursor: not-allowed; }
 
+/* ── Split send button (Gmail-style): main = send now, ▾ = schedule ── */
+.send-split { display: flex; flex-direction: column; gap: 2px; }
+.send-split .btn-send { border-radius: var(--radius-sm) var(--radius-sm) 3px 3px; }
+.btn-send-menu { width: 40px; height: 18px; border: none; border-radius: 3px 3px var(--radius-sm) var(--radius-sm); background: var(--accent); color: var(--bg); cursor: pointer; font-size: 10px; line-height: 1; display: flex; align-items: center; justify-content: center; opacity: .85; transition: opacity .15s; }
+.btn-send-menu:hover { opacity: 1; }
+.btn-send-menu:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Pull-up schedule menu */
+#sendMenu { position: fixed; z-index: 500; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 6px; min-width: 230px; }
+#sendMenu .send-menu-title { font-size: 11px; color: var(--text-muted); padding: 4px 8px 6px; }
+#sendMenu .send-menu-item { display: flex; justify-content: space-between; gap: 12px; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-size: 13px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+#sendMenu .send-menu-item:hover, #sendMenu .send-menu-item:active { background: var(--surface2); }
+#sendMenu .send-menu-item .when { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+#sendMenu .send-menu-custom { display: flex; gap: 6px; padding: 6px 8px 4px; border-top: 1px solid var(--border); margin-top: 4px; }
+#sendMenu .send-menu-custom input { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; padding: 6px 8px; color-scheme: dark; }
+#sendMenu .send-menu-custom button { background: var(--accent); border: none; color: var(--bg); border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+
+/* Scheduled (reserved) prompts badge + list */
+.sched-badge { display: none; align-items: center; gap: 5px; padding: 4px 10px; background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; }
+.sched-badge.on { display: inline-flex; }
+#schedList { position: fixed; z-index: 500; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 6px; min-width: 260px; max-width: 86vw; }
+#schedList .sched-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; font-size: 13px; }
+#schedList .sched-item + .sched-item { border-top: 1px solid var(--border); }
+#schedList .sched-item .when { color: var(--accent); font-size: 12px; white-space: nowrap; }
+#schedList .sched-item .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+#schedList .sched-item .x { background: none; border: none; color: var(--text-muted); font-size: 14px; cursor: pointer; padding: 2px 6px; }
+#schedList .sched-item .x:hover { color: var(--red, #f85149); }
+
 /* ── Drag & drop overlay ── */
 body.drag-over::after {
   content: 'Drop files to attach';
