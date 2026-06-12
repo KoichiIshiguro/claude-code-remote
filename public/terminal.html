@@ -53,6 +53,10 @@
   }
   .side-resize-handle:hover { background: rgba(255,154,60,.12); border-left-color: var(--accent); }
   .side-resize-handle.resizing { background: rgba(255,154,60,.25); border-left-color: var(--accent); }
+  /* Left panel: handle hugs the RIGHT edge instead, so mirror the borders. */
+  .side-resize-handle.handle-right { left: auto; right: 0; border-left: none; border-right: 1px solid transparent; }
+  .side-resize-handle.handle-right:hover { border-right-color: var(--accent); }
+  .side-resize-handle.handle-right.resizing { border-right-color: var(--accent); }
 
   /* Mobile: transform-based drawers, full screen width.
      Stop above the bottom-nav so Projects/Chat/Files stay reachable. */
@@ -716,6 +720,7 @@
 
 <!-- ── Left sidebar: Projects ── -->
 <aside class="side side-left" id="sideL">
+  <div class="side-resize-handle handle-right" id="sideL-resize" aria-label="Resize projects panel" title="Drag to resize"></div>
   <div class="side-hdr">
     <span>Projects</span>
     <button class="side-close" id="sysSettingsBtn" title="システム設定" aria-label="システム設定">⚙</button>
@@ -2594,6 +2599,9 @@ function toggleSide(id) {
   const sideR = document.getElementById('sideR');
   const savedW = localStorage.getItem('sideR-width');
   if (savedW && !isMobile()) sideR.style.width = savedW;
+  const sideL = document.getElementById('sideL');
+  const savedLW = localStorage.getItem('sideL-width');
+  if (savedLW && !isMobile()) sideL.style.width = savedLW;
 
   if (isMobile()) {
     // mobile: never auto-open
@@ -2644,6 +2652,47 @@ function toggleSide(id) {
   // Listen on both the handle and window — once we set pointer capture, events
   // come back to the handle, but window listeners are the safety net for the
   // case where capture is denied (some browsers throw on contextmenu / focus loss).
+  handle.addEventListener('pointermove', onMove);
+  window.addEventListener('pointermove', onMove);
+  handle.addEventListener('pointerup', onEnd);
+  window.addEventListener('pointerup', onEnd);
+  handle.addEventListener('pointercancel', onEnd);
+})();
+
+// Left sidebar resize (desktop only) — mirror of the right one, handle on the right edge.
+(function setupLeftResize() {
+  const sideL = document.getElementById('sideL');
+  const handle = document.getElementById('sideL-resize');
+  let resizing = false, pointerId = null;
+
+  const onMove = (e) => {
+    if (!resizing) return;
+    const newWidth = e.clientX;
+    const clamped = Math.max(180, Math.min(window.innerWidth - 320, newWidth));
+    sideL.style.width = clamped + 'px';
+    e.preventDefault();
+  };
+  const onEnd = (e) => {
+    if (!resizing) return;
+    resizing = false;
+    handle.classList.remove('resizing');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    try { handle.releasePointerCapture(pointerId); } catch {}
+    pointerId = null;
+    localStorage.setItem('sideL-width', sideL.style.width);
+  };
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (isMobile()) return;
+    resizing = true;
+    pointerId = e.pointerId;
+    handle.classList.add('resizing');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    try { handle.setPointerCapture(e.pointerId); } catch {}
+    e.preventDefault();
+  });
   handle.addEventListener('pointermove', onMove);
   window.addEventListener('pointermove', onMove);
   handle.addEventListener('pointerup', onEnd);
