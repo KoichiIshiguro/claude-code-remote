@@ -760,7 +760,8 @@
       <div id="schedList" hidden></div>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
       <span class="branch-pill" id="branchPill" title="現在の git ブランチ"></span>
-      <button class="model-pill" id="modelPill" title="モデル / 工数 (タップで設定)">既定</button>
+      <button class="model-pill" id="modelPill" title="モデル / 工数">既定</button>
+      <div id="modelMenu" hidden></div>
       <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
     <div class="input-row">
@@ -1660,7 +1661,10 @@ function setModelControls(model) {
   if (model && !known) { sel.value = ''; custom.value = model; }
   else { sel.value = model || ''; custom.value = ''; }
 }
+let _curModel = '', _curEffort = '';
 function updateModelPill(model, effort) {
+  _curModel = model || '';
+  _curEffort = effort || '';
   const pill = document.getElementById('modelPill');
   if (!pill) return;
   const m = MODEL_LABELS[model || ''] || model || '既定';
@@ -2538,6 +2542,8 @@ document.addEventListener('mousedown', e => {
   if (!sm.hidden && !sm.contains(e.target) && e.target.id !== 'sendMenuBtn') sm.hidden = true;
   const sl = document.getElementById('schedList');
   if (!sl.hidden && !sl.contains(e.target) && !document.getElementById('schedBadge').contains(e.target)) sl.hidden = true;
+  const mm = document.getElementById('modelMenu');
+  if (!mm.hidden && !mm.contains(e.target) && !document.getElementById('modelPill').contains(e.target)) mm.hidden = true;
 });
 
 document.getElementById('sendBtn').addEventListener('click', sendPrompt);
@@ -3822,7 +3828,79 @@ branchOverlay.addEventListener('click', e => { if (e.target === e.currentTarget)
 
 // Settings is reachable from the model pill (the ⚙ header button was replaced
 // by the shell button).
-document.getElementById('modelPill').addEventListener('click', openSettingsModal);
+// ── Model/effort quick picker ────────────────────────────────────────────────
+// Pull-up on the model pill: tap a model to apply it immediately (partial POST
+// to /api/settings — the endpoint patches only the fields present). The 工数
+// pulldown applies the same way. The ↗ in the header opens the full settings
+// modal (custom model name, auto-compact threshold).
+const QUICK_MODELS = ['', 'opus', 'sonnet', 'haiku', 'fable',
+  'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
+
+function hideModelMenu() { document.getElementById('modelMenu').hidden = true; }
+
+async function applyQuickSetting(patch) {
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || ('HTTP ' + r.status)); }
+    updateModelPill('model' in patch ? patch.model : _curModel,
+                    'effort' in patch ? patch.effort : _curEffort);
+  } catch (err) {
+    alert('設定を保存できませんでした: ' + err.message);
+  }
+  hideModelMenu();
+}
+
+function openModelMenu() {
+  const el = document.getElementById('modelMenu');
+  if (!el.hidden) { hideModelMenu(); return; }
+  el.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'mm-head';
+  const title = document.createElement('span');
+  title.className = 'mm-title'; title.textContent = 'モデル';
+  const gear = document.createElement('button');
+  gear.className = 'mm-gear'; gear.title = '詳細設定'; gear.textContent = '↗';
+  gear.addEventListener('click', () => { hideModelMenu(); openSettingsModal(); });
+  head.appendChild(title); head.appendChild(gear);
+  el.appendChild(head);
+  // A custom (free-text) model not in the quick list still shows, checked, so
+  // the picker never hides the active choice.
+  const models = QUICK_MODELS.includes(_curModel) ? QUICK_MODELS : [_curModel, ...QUICK_MODELS];
+  for (const v of models) {
+    const b = document.createElement('button');
+    b.className = 'mm-item';
+    b.innerHTML = '<span></span><span class="chk"></span>';
+    b.firstChild.textContent = MODEL_LABELS[v] || v;
+    b.lastChild.textContent = v === _curModel ? '✓' : '';
+    b.addEventListener('click', () => applyQuickSetting({ model: v || null }));
+    el.appendChild(b);
+  }
+  const eff = document.createElement('div');
+  eff.className = 'mm-effort';
+  const lab = document.createElement('label');
+  lab.textContent = '工数';
+  const sel = document.createElement('select');
+  for (const [v, t] of [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']]) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    sel.appendChild(o);
+  }
+  sel.value = _curEffort;
+  sel.addEventListener('change', () => applyQuickSetting({ effort: sel.value || null }));
+  eff.appendChild(lab); eff.appendChild(sel);
+  el.appendChild(eff);
+  el.hidden = false;
+  const r = document.getElementById('modelPill').getBoundingClientRect();
+  el.style.left = 'auto';
+  el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  el.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+}
+
+document.getElementById('modelPill').addEventListener('click', openModelMenu);
 document.getElementById('permClose').addEventListener('click', closeSettingsModal);
 document.getElementById('permCancel').addEventListener('click', closeSettingsModal);
 document.getElementById('permSave').addEventListener('click', saveSettings);

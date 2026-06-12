@@ -37,7 +37,11 @@
 - 📄 **In-browser file viewer** with Markdown rendering and a refresh button
 - ⚡ **Stateless prompt model** — spawns a fresh `claude` per turn, no zombies to babysit
 - 📊 **Context size indicator** — a status-bar meter shows the real input-token count from the last API call (matches what the TUI shows)
-- 🗜️ **Auto-compact at TUI threshold** — when context hits 167k (Claude Code TUI's ~83.5% trigger on 200k models), `/compact` runs automatically before the next prompt
+- 🗜️ **Auto-compact at TUI threshold** — when context hits 167k (Claude Code TUI's ~83.5% trigger on 200k models), `/compact` runs automatically before the next prompt. After any compact it reads the post-compact token count back from Claude's `compact_boundary` metadata, so a fresh `/compact` doesn't immediately re-trigger
+- ⏰ **Scheduled prompts (send-later)** — a Gmail-style split send button: the button still just sends, the `▾` reserves the prompt for a chosen time. Reservations run **server-side** so they fire with the browser closed and survive a restart; one preset auto-targets the moment a `session limit · resets …` window clears, so a queued follow-up resumes by itself
+- 🎚️ **Inline model & effort picker** — tap the status-bar pill for a quick pull-up to switch model (Opus / Sonnet / Haiku / Fable, or a custom model name) and reasoning effort, without opening settings
+- ⌨️ **Slash-command autocomplete** — type `/` to pick from the commands your `-p` environment actually exposes (skills + built-ins like `/compact`)
+- 🖼️ **Inline artifacts** — screenshots and files Claude writes (`Write`/`Edit`, or image paths in `Bash`) render in the thread as previews or download links
 
 ## 📸 Screenshots
 
@@ -169,6 +173,7 @@ If you want to expose this on the open internet instead of Tailscale, **don't** 
 - **Images are passed as file paths** (`/abs/path/to/image.png`) embedded in the prompt — the same way Claude Code's TUI handles drag-and-drop.
 - **No build step.** The frontend is `<script>` + Vanilla JS + a single `marked` import. You can `npm install` over a flaky mobile tether and still ship.
 - **Context tracked from per-call `usage`.** Each `assistant` stream event carries the actual input-token count of that API call (not a turn-aggregate); the meter and the auto-compact decision both read from it, so behavior matches Claude Code TUI's own `/compact` threshold.
+- **The prompt queue lives on the server, not the browser.** Prompts sent while a turn is streaming accumulate in a per-session queue and the runner drains them browser-independently — close the tab and they still fire. The live queue is in-memory (a restart clears it, by design); **scheduled prompts** are the persistent cousin, saved to `data/scheduled-prompts.json` and fed into that same queue by a 30 s server timer when due.
 
 ---
 
