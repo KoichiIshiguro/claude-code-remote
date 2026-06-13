@@ -12,7 +12,9 @@
 [![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8?logo=pwa&logoColor=white)](#)
 [![~3k LOC](https://img.shields.io/badge/code-~3k_LOC-lightgrey)](#)
 
-![Chat view](docs/screenshots/chat.png)
+<img src="docs/demo.gif" alt="Drive your own machine's Claude from your phone — reserve a prompt to fire after the rate limit resets" width="300">
+
+<sub>Real session, mid-task, on a phone — reserve a follow-up to fire after the limit resets, switch model/effort inline.</sub>
 
 </div>
 
@@ -33,6 +35,11 @@ When Claude returns *"session limit · resets 2:50am,"* the app reads that reset
 **3. One context, one progress — shared across every device.**
 Because there's a single agent on a single machine, your **history, context, and in-flight progress are identical everywhere.** Start a task at your desk, check it from your phone on the train, finish it on a laptop at a café — it's literally the same session, mid-thought.
 *Compare: pointing several machines at a shared drive shares the files but not Claude's history — each machine keeps its own `~/.claude`, so the context doesn't follow you. Here it does, because you never left the one machine.*
+
+<div align="center">
+<img src="docs/sync.gif" alt="The same session mirrored live across a desktop and a phone — send from one device, watch it stream on both" width="760">
+<br><sub>One live session on two devices at once: send from the phone, and it streams on the desk PC at the same moment — same agent, one context. (Real broadcast over WebSocket, not a reload.)</sub>
+</div>
 
 ---
 
