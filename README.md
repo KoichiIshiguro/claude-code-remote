@@ -4,7 +4,7 @@
 
 # 🤖 Claude Code Remote
 
-**A minimal, self-hosted web UI for [Claude Code](https://github.com/anthropics/claude-code) — drive Claude from any browser, any phone, anywhere.**
+**Your own main PC's AI, operable from anywhere.** A minimal, self-hosted web UI for [Claude Code](https://github.com/anthropics/claude-code) — one agent running on your machine, driven from any browser or phone, with your files, context, and progress all in one place.
 
 [![CI](https://github.com/KoichiIshiguro/claude-code-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/KoichiIshiguro/claude-code-remote/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -16,7 +16,27 @@
 
 </div>
 
-> **Why?** Other Claude Code web UIs are 30–50k LOC React/Tauri monsters. This one is **vanilla JS + Express in ~3,000 lines of backend** — readable in an afternoon, hackable in a weekend, and battle-tested on real iOS Safari.
+## 💡 What it really is — your main PC, operable from anywhere
+
+This isn't "Claude in a browser tab." It turns the PC you already work on into an **always-on workstation you can drive from your phone, your laptop, or any other machine** — without copying files, sessions, or context around.
+
+The agent runs on **one machine** (your PC). Every device is just a window into it. That single design choice is what makes the three things below actually work:
+
+**1. Your real Claude, your subscription — not a metered API key.**
+It drives the real `claude` CLI in `-p` (headless) mode, so it runs on the **Pro/Max plan you already pay for** — same login, same usage allowance as the TUI. No separate API billing, no per-token surprises.
+*Example: you're out with just your phone. You open the same Claude that's mid-refactor on your desk, still signed in to your plan — nothing to re-auth, no API key to paste.*
+
+**2. Hit a rate limit? Reserve the work for the moment it clears.**
+When Claude returns *"session limit · resets 2:50am,"* the app reads that reset time. Type your next prompt, tap the send button's **`▾`**, and a one-tap **"send after the limit clears"** preset is already waiting (pre-filled with the detected time). The reservation then fires **server-side, shortly after the reset** (a ~10-minute safety margin past 2:50am) — you don't have to be awake, the browser doesn't have to be open, and your restored quota isn't left sitting idle.
+*Example: at 2am you reserve "run the test suite and fix what's red" before bed; by the time you wake up it already ran on its own once the window reopened. (Reserving is a deliberate one-tap action — a normal send still sends immediately, so nothing is deferred behind your back.)*
+
+**3. One context, one progress — shared across every device.**
+Because there's a single agent on a single machine, your **history, context, and in-flight progress are identical everywhere.** Start a task at your desk, check it from your phone on the train, finish it on a laptop at a café — it's literally the same session, mid-thought.
+*Compare: pointing several machines at a shared drive shares the files but not Claude's history — each machine keeps its own `~/.claude`, so the context doesn't follow you. Here it does, because you never left the one machine.*
+
+---
+
+> **Why so small?** Other Claude Code web UIs are 30–50k LOC React/Tauri monsters. This one is **vanilla JS + Express in ~3,000 lines of backend** — readable in an afternoon, hackable in a weekend, and battle-tested on real iOS Safari.
 
 ---
 
@@ -38,7 +58,7 @@
 - ⚡ **Stateless prompt model** — spawns a fresh `claude` per turn, no zombies to babysit
 - 📊 **Context size indicator** — a status-bar meter shows the real input-token count from the last API call (matches what the TUI shows)
 - 🗜️ **Auto-compact at TUI threshold** — when context hits 167k (Claude Code TUI's ~83.5% trigger on 200k models), `/compact` runs automatically before the next prompt. After any compact it reads the post-compact token count back from Claude's `compact_boundary` metadata, so a fresh `/compact` doesn't immediately re-trigger
-- ⏰ **Scheduled prompts (send-later)** — a Gmail-style split send button: the button still just sends, the `▾` reserves the prompt for a chosen time. Reservations run **server-side** so they fire with the browser closed and survive a restart; one preset auto-targets the moment a `session limit · resets …` window clears, so a queued follow-up resumes by itself
+- ⏰ **Scheduled prompts (send-later)** — a Gmail-style split send button: the button still just sends, the `▾` reserves the prompt for a chosen time. Reservations run **server-side** so they fire with the browser closed and survive a restart. When a `session limit · resets …` message is seen, the `▾` menu pre-fills a **"send after the limit clears"** preset (detected time + a ~10-min safety margin), so one tap reserves your follow-up to fire itself once the window reopens
 - 🎚️ **Inline model & effort picker** — tap the status-bar pill for a quick pull-up to switch model (Opus / Sonnet / Haiku / Fable, or a custom model name) and reasoning effort, without opening settings
 - ⌨️ **Slash-command autocomplete** — type `/` to pick from the commands your `-p` environment actually exposes (skills + built-ins like `/compact`)
 - 🖼️ **Inline artifacts** — screenshots and files Claude writes (`Write`/`Edit`, or image paths in `Bash`) render in the thread as previews or download links
