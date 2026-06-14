@@ -154,6 +154,52 @@ After setup, sign in from your phone at `http://<tailscale-ip>:4000` (the wizard
 > and a **QR code** to scan from your phone. (It detects Tailscale even when the
 > `tailscale` CLI isn't on your PATH, e.g. the macOS GUI app.)
 
+### 5. (Strongly recommended) Give the server a long-lived auth token
+
+The server runs the real `claude` CLI in headless `-p` mode — a fresh `claude`
+process **per prompt**. Each of those processes authenticates from the OAuth
+credentials Claude persists on disk / in your login Keychain, and **those stored
+credentials go stale over time**: the short-lived access token expires and the
+saved refresh token eventually gets rotated out and rejected by the server. When
+that happens every prompt fails with:
+
+```
+401 Invalid authentication credentials
+```
+
+…**even when you started the server by hand on your own GUI machine.** The
+confusing part: the *interactive* `claude` TUI keeps working the whole time — a
+long-running session refreshes its token in memory at startup and never writes it
+back — so "the TUI still logs in fine" does **not** mean the server's `-p` calls
+do. (Background launchd/systemd services have it worse: they run outside your GUI
+login session and can't read the Keychain at all.)
+
+The robust fix, for **any** deployment, is a **long-lived token** that doesn't
+depend on the stored credentials. On the machine, in a real terminal (a TTY is
+required — this opens a browser):
+
+```bash
+claude setup-token        # authorize in the browser; prints sk-ant-oat01-...
+```
+
+Put the printed token in this directory's `.env` and (re)start the server:
+
+```bash
+echo 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...' >> .env
+npm start
+```
+
+`.env` is gitignored, so the token stays on this machine. The server forwards it
+to every spawned `claude`, so auth no longer depends on the (possibly stale)
+Keychain copy. To sanity-check the token on its own:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-... claude -p "reply with: ok"
+```
+
+If that prints `ok`, the server will authenticate too. The token is long-lived;
+you only redo this if you revoke it or rotate your credentials.
+
 ### Forgot your username or password?
 
 There is no recovery email and no "forgot password" link by design (single-user, personal-use). To reset:
@@ -168,22 +214,12 @@ This deletes `data/admin.json` and exits. The next `npm start` will redirect to 
 
 If you want the server to come up automatically when the machine restarts, wire it up with launchd (macOS), systemd (Linux), or the Windows Task Scheduler — pointing at `node server.js` in this directory.
 
-> **⚠️ Background services need a long-lived auth token.** When `claude` runs
-> interactively it reads its OAuth credentials from your login Keychain. A
-> launchd/systemd background agent runs *outside* your GUI login session and
-> **cannot read that Keychain**, so it falls back to a stale token and every
-> prompt fails with `401 Invalid authentication credentials`. Fix it once:
-> on your everyday GUI machine, open a real terminal and run
-> ```bash
-> claude setup-token        # opens a browser to authorize — needs a TTY
-> ```
-> then put the printed token in this directory's `.env` and restart the service:
-> ```bash
-> echo 'CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...' >> .env
-> ```
-> The server passes it straight to each spawned `claude`, so auth no longer
-> depends on the Keychain. (Running `node server.js` by hand in your own shell
-> doesn't need this — that shell already has Keychain access.)
+> **⚠️ Background services *must* have the long-lived token from
+> [step 5](#5-strongly-recommended-give-the-server-a-long-lived-auth-token).** A
+> launchd/systemd agent runs *outside* your GUI login session and can't read the
+> login Keychain at all, so without `CLAUDE_CODE_OAUTH_TOKEN` in `.env` every
+> prompt fails with `401 Invalid authentication credentials`. Set up the token as
+> shown in step 5 **before** registering the service.
 
 ### (Optional) Public HTTPS
 
@@ -256,7 +292,7 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 |---|---|
 | `PORT` | HTTP port. Default `4000` |
 | `CLAUDE_PATH` | Absolute path to `claude` — set when PATH isn't inherited (PM2 / systemd / launchd) |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Long-lived auth token from `claude setup-token`. **Required when running under launchd/systemd**, which can't read the login Keychain — without it every prompt 401s. See *Run on boot* above |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Long-lived auth token from `claude setup-token`. **Strongly recommended for any server run** (the persisted Keychain/disk OAuth creds go stale and `claude -p` then 401s even on your own machine), and **required under launchd/systemd** (can't read the Keychain at all). See step 5 above |
 | `SESSION_SECRET` | Override the auto-generated one (useful for shared cookie domains across deployments) |
 | `CLAUDE_AUTO_COMPACT_THRESHOLD` | Input-token count that triggers an auto-`/compact` before the next prompt. Default `167000` (TUI's ~83.5% trigger on 200k-context models). Set to e.g. `835000` for 1M tiers |
 | `TMUX_PATH` | Absolute path to `tmux` for the built-in terminal — set when it isn't on PATH. Auto-detected via `which tmux` otherwise; falls back to a plain shell if tmux is absent |
