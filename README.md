@@ -90,9 +90,45 @@ Because there's a single agent on a single machine, your **history, context, and
 ### 1. Install prerequisites
 
 - **Node.js ≥ 18**, **git**, **[Claude CLI](https://docs.claude.com/en/docs/claude-code/quickstart)** signed in with your Pro/Max account
-- (Optional but recommended) **[Tailscale](https://tailscale.com/download)** so you can reach the server from your phone
 
-### 2. Clone & install
+### 2. Set up Tailscale — this is what makes "from anywhere" work 🔑
+
+> **Don't skip this.** This app runs on your main PC and is reached from your
+> phone/laptop over a **private network**, never the open internet. **[Tailscale](https://tailscale.com/)**
+> is what stitches your devices into that private network (a "tailnet") — with
+> zero port-forwarding, zero firewall config, and an always-on encrypted tunnel.
+> If you get stuck here, the rest of the app can't reach you, so let's get it
+> right in 3 minutes.
+
+**It really is just "make an account and log in on both devices."** Concretely:
+
+1. **Create a free account** → [tailscale.com](https://tailscale.com/) → *Get started*.
+   The free **Personal** plan is plenty (up to 100 devices). You sign in with
+   Google / Microsoft / GitHub / Apple / email — no credit card.
+2. **Install Tailscale on your main PC** (the machine that will run this server)
+   and **log in** → [Download](https://tailscale.com/download). On macOS/Windows
+   it's a normal app; on Linux it's `curl -fsSL https://tailscale.com/install.sh | sh` then `sudo tailscale up`.
+3. **Install Tailscale on your phone** ([iOS](https://apps.apple.com/app/tailscale/id1470499037) /
+   [Android](https://play.google.com/store/apps/details?id=com.tailscale.ipn)) and
+   **log in with the *same* account.**
+
+That's the whole setup. Both devices are now on your private tailnet and can see
+each other. **MagicDNS is on by default**, so you don't even need to memorize an
+IP — you can use your PC's machine name. No ports to open, no router settings.
+
+**How do I find my PC's address?** On the main PC, run:
+
+```bash
+tailscale ip -4        # → e.g. 100.101.102.103  (your tailnet IP)
+```
+
+You'll reach the app from your phone at `http://100.101.102.103:4000` — or, with
+MagicDNS, `http://<your-pc-name>:4000` (the name shown in the Tailscale app /
+[admin console](https://login.tailscale.com/admin/machines)). The first-run
+wizard (next step) also prints this URL **with a QR code** so you can just point
+your phone's camera at the screen.
+
+### 3. Clone & install
 
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
@@ -100,7 +136,7 @@ cd claude-code-remote
 npm install
 ```
 
-### 3. Run it
+### 4. Run it
 
 ```bash
 npm start
@@ -109,6 +145,14 @@ npm start
 Open `http://localhost:4000` — you'll be redirected to `/setup`, the first-run wizard. Pick a username, password, and an access scope (a single folder to sandbox to, or full disk access on a trusted tailnet). Done.
 
 After setup, sign in from your phone at `http://<tailscale-ip>:4000` (the wizard shows you the URL + a QR code).
+
+> **Forgot the address, or didn't write it down?** You don't need to re-run
+> setup. Open the app on the machine, click the **⚙ (system settings)** button at
+> the top of the left "Projects" sidebar, and hit **📡 アドレスを確認 (Check
+> address)**. It lists every URL this server is reachable at — Tailscale IP &
+> MagicDNS name, LAN, localhost (port included) — with a one-tap **copy** button
+> and a **QR code** to scan from your phone. (It detects Tailscale even when the
+> `tailscale` CLI isn't on your PATH, e.g. the macOS GUI app.)
 
 ### Forgot your username or password?
 

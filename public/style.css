@@ -190,7 +190,7 @@ a { color: var(--accent); text-decoration: none; }
 #modelMenu .mm-effort select { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; padding: 6px 8px; }
 
 /* Scheduled (reserved) prompts badge + list */
-.sched-badge { display: none; align-items: center; gap: 5px; padding: 4px 10px; background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; }
+.sched-badge { display: none; align-items: center; gap: 5px; padding: 4px 10px; background: transparent; border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius-sm); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .sched-badge.on { display: inline-flex; }
 #schedList { position: fixed; z-index: 500; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 6px; min-width: 260px; max-width: 86vw; }
 #schedList .sched-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; font-size: 13px; }

@@ -90,9 +90,45 @@ Claude が *「session limit · resets 2:50am」* を返すと、アプリがそ
 ### 1. 前提ソフト
 
 - **Node.js ≥ 18**、**git**、**[Claude CLI](https://docs.claude.com/en/docs/claude-code/quickstart)**（Pro / Max でログイン済み）
-- （推奨）**[Tailscale](https://tailscale.com/download)** — スマホから自宅 PC に届くため
 
-### 2. クローン & インストール
+### 2. Tailscale を入れる — 「どこからでも」を成立させる肝 🔑
+
+> **ここは飛ばさないでください。** このアプリは自宅（メイン）PC 上で動き、スマホ
+> やノートからは**プライベートネットワーク経由**でアクセスします（インターネット
+> 公開は一切しません）。**[Tailscale](https://tailscale.com/)** が、その private な
+> ネットワーク（"tailnet"）に端末同士をつなぐ役割を担います — **ポート開放なし・
+> ファイアウォール設定なし**で、常時 暗号化トンネルが張られます。ここでつまづくと
+> アプリに届かなくなるので、3 分でサクッと済ませましょう。
+
+**やることは実質「アカウントを作って、両方の端末でログインするだけ」です。** 具体的には：
+
+1. **無料アカウントを作る** → [tailscale.com](https://tailscale.com/) の *Get started*。
+   無料の **Personal** プランで十分（端末 100 台まで）。ログインは
+   Google / Microsoft / GitHub / Apple / メール のいずれか — **クレカ不要**。
+2. **メイン PC（このサーバを動かす機械）に Tailscale を入れてログイン** →
+   [ダウンロード](https://tailscale.com/download)。macOS / Windows は普通のアプリ。
+   Linux は `curl -fsSL https://tailscale.com/install.sh | sh` → `sudo tailscale up`。
+3. **スマホにも Tailscale を入れて**（[iOS](https://apps.apple.com/app/tailscale/id1470499037) /
+   [Android](https://play.google.com/store/apps/details?id=com.tailscale.ipn)）、
+   **同じアカウントでログイン。**
+
+設定はこれで全部です。両端末が同じ tailnet 上に乗り、互いに見えるようになります。
+**MagicDNS が既定で有効**なので、IP を覚える必要すらなく PC のマシン名で届きます。
+ポート開放もルータ設定も不要です。
+
+**PC のアドレスはどう調べる？** メイン PC で次を実行：
+
+```bash
+tailscale ip -4        # → 例: 100.101.102.103  （tailnet 内の IP）
+```
+
+スマホからは `http://100.101.102.103:4000`、または MagicDNS で
+`http://<PC のマシン名>:4000` でアクセスできます（マシン名は Tailscale アプリや
+[管理コンソール](https://login.tailscale.com/admin/machines) に表示）。次のステップの
+初回ウィザードが、この URL を **QR コード付き**で表示するので、スマホのカメラを
+画面に向けるだけでも OK です。
+
+### 3. クローン & インストール
 
 ```bash
 git clone https://github.com/KoichiIshiguro/claude-code-remote.git
@@ -100,7 +136,7 @@ cd claude-code-remote
 npm install
 ```
 
-### 3. 起動
+### 4. 起動
 
 ```bash
 npm start
@@ -109,6 +145,13 @@ npm start
 `http://localhost:4000` を開く → `/setup` に自動リダイレクトされる初回ウィザードでユーザー名・パスワード・アクセススコープ（サンドボックスする単一フォルダ、または信頼できる tailnet 上でのフルアクセス）を設定すれば完了。
 
 セットアップ後、スマホからは `http://<Tailscale-IP>:4000` でアクセス（ウィザード画面に URL と QR コードが表示されます）。
+
+> **アドレスを控え忘れた／後で確認したい時** は、セットアップをやり直す必要は
+> ありません。PC でアプリを開き、左「Projects」サイドバー上部の **⚙（システム設定）**
+> → **📡 アドレスを確認** を押すだけ。このサーバに届く全 URL（Tailscale IP・
+> MagicDNS 名・LAN・localhost、いずれもポート込み）を、ワンタップ**コピー**ボタンと
+> スマホで読み取れる **QR コード**付きで一覧表示します。（macOS の GUI 版など
+> `tailscale` CLI が PATH に無い環境でも Tailscale を検出します。）
 
 ### ユーザー名・パスワードを忘れた時
 

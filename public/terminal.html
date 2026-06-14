@@ -553,7 +553,7 @@
   .btn-stop { display: none; align-items: center; gap: 6px; padding: 5px 12px; background: rgba(248,81,73,.15); border: 1px solid rgba(248,81,73,.4); color: var(--red); border-radius: var(--radius-sm); font-size: 13px; cursor: pointer; }
   .btn-stop.on { display: flex; }
   .btn-stop:hover { background: rgba(248,81,73,.28); }
-  .queue-badge { display: none; align-items: center; gap: 5px; padding: 4px 10px; background: var(--accent-dim); border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius-sm); font-size: 12px; }
+  .queue-badge { display: none; align-items: center; gap: 5px; padding: 4px 10px; background: var(--accent-dim); border: 1px solid var(--accent); color: var(--accent); border-radius: var(--radius-sm); font-size: 12px; white-space: nowrap; }
   .queue-badge.on { display: flex; }
   .queue-list { display: none; flex-direction: column; gap: 4px; margin-bottom: 6px; }
   .queue-list.on { display: flex; }
@@ -569,7 +569,14 @@
   .thread-queue { display: flex; flex-direction: column; gap: 4px; margin: 0 2px 10px; }
   .thread-queue:empty { display: none; }
   .thread-queue .queue-item { opacity: .9; }
-  .status-bar { display: flex; align-items: center; gap: 8px; padding: 4px 0 8px; min-height: 28px; }
+  /* Two stacked rows above the composer: row 1 = run state (Stop / queued /
+     予約) on the left, compact on the right; row 2 = branch + model on the
+     left, context size on the right. */
+  .status-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .status-bar-top { padding: 4px 0 0; }
+  .status-bar-meta { padding: 2px 0 8px; }
+  .status-bar-top #compactBtn { margin-left: auto; }   /* compact → far right of row 1 */
+  .status-bar-meta .ctx-meter { margin-left: auto; }    /* context → far right of row 2 */
   /* Inline "compacting…" note shown in the message stream while /compact runs. */
   .compact-note { align-self: center; max-width: 90%; margin: 8px auto; padding: 6px 14px;
     font-size: 12px; color: var(--text-muted); background: var(--surface2);
@@ -602,13 +609,11 @@
   .branch-row .bname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .branch-note { padding: 12px; color: var(--text-muted); font-size: 13px; }
   .branch-note.err { color: var(--red); white-space: pre-wrap; }
-  /* Model/effort pill — pushed to the right edge of the status bar, ctx-meter
-     follows it. */
-  .model-pill { margin-left: auto; font-size: 11px; color: var(--text-muted); white-space: nowrap;
+  /* Model/effort pill — sits next to the branch pill on the meta row (left). */
+  .model-pill { font-size: 11px; color: var(--text-muted); white-space: nowrap;
     background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 3px 9px; cursor: pointer; line-height: 1.4; }
   .model-pill:hover { color: var(--text); border-color: var(--accent); }
-  .model-pill + .ctx-meter { margin-left: 8px; }
   .ctx-meter { font-size: 11px; color: var(--text-muted); white-space: nowrap; opacity: .8; }
   .ctx-meter:empty { display: none; }
   /* Per-turn cost/usage footer under an assistant reply. */
@@ -758,12 +763,14 @@
       ↓ 最新へ<span class="count" id="scrollLatestCount" hidden></span>
     </button>
     <div class="image-previews" id="imagePreviews"></div>
-    <div class="status-bar">
+    <div class="status-bar status-bar-top">
       <button class="btn-stop" id="cancelBtn">■ Stop</button>
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
       <button class="sched-badge" id="schedBadge" title="予約送信">⏰ <span id="schedCount">0</span> 予約</button>
       <div id="schedList" hidden></div>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
+    </div>
+    <div class="status-bar status-bar-meta">
       <span class="branch-pill" id="branchPill" title="現在の git ブランチ"></span>
       <button class="model-pill" id="modelPill" title="モデル / 工数">既定</button>
       <div id="modelMenu" hidden></div>
@@ -884,7 +891,10 @@
   <div class="perm-modal" style="max-width:560px;">
     <div class="perm-hdr"><h3>システム設定</h3><button class="side-close" id="sysSettingsClose">×</button></div>
     <div class="perm-body" style="padding:14px;">
-      <div class="set-sec-title">書き込み許可フォルダ（全プロジェクト共通）</div>
+      <div class="set-sec-title">アクセスアドレス</div>
+      <div class="set-hint">スマホや別の PC からこのサーバに接続する URL（Tailscale IP・ポート込み）を表示します。</div>
+      <button class="wp-add" id="accessAddrBtn">📡 アドレスを確認</button>
+      <div class="set-sec-title" style="margin-top:18px;">書き込み許可フォルダ（全プロジェクト共通）</div>
       <div class="set-hint">サンドボックス内の Claude が書き込めるフォルダ。pnpm / cargo などのストアが作業フォルダの外にあるとき追加します。読み取りは元から全て許可されています。</div>
       <div class="wp-list" id="sysWpList"></div>
       <button class="wp-add" id="sysWpAdd">＋ フォルダを追加</button>
@@ -894,6 +904,21 @@
       <span class="set-saved" id="sysSaved"></span>
       <button class="btn-ghost" id="sysSettingsCancel">閉じる</button>
       <button class="btn-save" id="sysSettingsSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Access address: reachable URLs (Tailscale / LAN / localhost) + QR -->
+<div class="modal-overlay" id="accessAddrOverlay">
+  <div class="perm-modal" style="max-width:440px;">
+    <div class="perm-hdr"><h3>アクセスアドレス</h3><button class="side-close" id="accessAddrClose">×</button></div>
+    <div class="perm-body" style="padding:16px;">
+      <div id="accessAddrBody">
+        <div class="set-hint" style="text-align:center;padding:20px 0;">読み込み中…</div>
+      </div>
+    </div>
+    <div class="perm-ftr">
+      <button class="btn-ghost" id="accessAddrDone" style="margin-left:auto;">閉じる</button>
     </div>
   </div>
 </div>
@@ -3785,6 +3810,79 @@ document.getElementById('sysWpAdd').addEventListener('click', () => {
 });
 document.getElementById('sysSettingsSave').addEventListener('click', () => {
   wsSend({ type: 'system_settings_set', paths: _sysWp });
+});
+
+// — Access address (Tailscale / LAN / localhost + QR) —
+function closeAccessAddr() { document.getElementById('accessAddrOverlay').classList.remove('on'); }
+document.getElementById('accessAddrClose').addEventListener('click', closeAccessAddr);
+document.getElementById('accessAddrDone').addEventListener('click', closeAccessAddr);
+document.getElementById('accessAddrOverlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeAccessAddr(); });
+async function copyAddr(text, btn) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+  }
+  if (btn) { const o = btn.textContent; btn.textContent = '✓ コピー'; setTimeout(() => { btn.textContent = o; }, 1400); }
+}
+function renderAccessAddr(data) {
+  const body = document.getElementById('accessAddrBody');
+  body.innerHTML = '';
+  if (data.qrDataUrl) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'text-align:center;margin-bottom:14px;';
+    const img = document.createElement('img');
+    img.src = data.qrDataUrl; img.alt = 'QR';
+    img.style.cssText = 'width:200px;height:200px;border-radius:10px;background:#fff;padding:8px;';
+    const cap = document.createElement('div');
+    cap.className = 'set-hint';
+    cap.style.cssText = 'margin-top:6px;';
+    cap.textContent = 'スマホのカメラで読み取って接続';
+    wrap.appendChild(img); wrap.appendChild(cap);
+    body.appendChild(wrap);
+  }
+  if (!data.tailscaleRunning) {
+    const warn = document.createElement('div');
+    warn.className = 'set-hint';
+    warn.style.cssText = 'border:1px solid #7a5b1e;background:#2a2310;border-radius:8px;padding:8px 10px;margin-bottom:12px;color:#e8c97a;';
+    warn.innerHTML = 'Tailscale が検出できませんでした。スマホから外出先で繋ぐには <a href="https://tailscale.com/download" target="_blank" rel="noopener" style="color:#ffd479;">Tailscale</a> を両方の端末に入れて同じアカウントでログインしてください。下は同一 LAN 用のアドレスです。';
+    body.appendChild(warn);
+  }
+  (data.addresses || []).forEach(a => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border);';
+    const info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0;';
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:11px;color:var(--muted);';
+    lbl.textContent = a.label;
+    const url = document.createElement('div');
+    url.style.cssText = 'font-family:monospace;font-size:13px;word-break:break-all;color:var(--text);';
+    url.textContent = a.url;
+    info.appendChild(lbl); info.appendChild(url);
+    const btn = document.createElement('button');
+    btn.className = 'btn-ghost';
+    btn.style.cssText = 'flex:none;font-size:12px;padding:4px 10px;';
+    btn.textContent = 'コピー';
+    btn.addEventListener('click', () => copyAddr(a.url, btn));
+    row.appendChild(info); row.appendChild(btn);
+    body.appendChild(row);
+  });
+}
+document.getElementById('accessAddrBtn').addEventListener('click', async () => {
+  const body = document.getElementById('accessAddrBody');
+  body.innerHTML = '<div class="set-hint" style="text-align:center;padding:20px 0;">読み込み中…</div>';
+  document.getElementById('accessAddrOverlay').classList.add('on');
+  try {
+    const r = await fetch('/api/access-address');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderAccessAddr(await r.json());
+  } catch (e) {
+    body.innerHTML = '<div class="set-hint" style="text-align:center;padding:20px 0;color:#e88;">取得に失敗しました: ' + (e.message || e) + '</div>';
+  }
 });
 
 // — Project settings (write allow-list + archived-session restore) —

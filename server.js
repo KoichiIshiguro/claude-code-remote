@@ -236,6 +236,96 @@ app.get('/api/version', (req, res) => {
   res.json({ version: require('./package.json').version });
 });
 
+// Access-address helper for the "アドレスを確認" button in system settings.
+// Surfaces every URL this server can be reached at from another device —
+// Tailscale (IP + MagicDNS name) first, then LAN, then localhost — plus a QR
+// for the best one so a phone can just scan it.
+app.get('/api/access-address', requireAuth, async (req, res) => {
+  const port = parseInt(process.env.PORT, 10) || 4000;
+  const addresses = [];
+
+  // A Tailscale node IP lives in the CGNAT range 100.64.0.0/10 — recognising
+  // that lets us label/QR the right address even when the `tailscale` CLI is
+  // not on PATH (common with the macOS GUI app).
+  const isTailscaleIp = (ip) => {
+    const m = /^(\d+)\.(\d+)\./.exec(ip || '');
+    return m && +m[1] === 100 && +m[2] >= 64 && +m[2] <= 127;
+  };
+
+  // The macOS GUI app keeps the binary inside the bundle; try common spots.
+  const tailscaleBin = () => {
+    const cands = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+      '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale', '/usr/bin/tailscale'];
+    for (const bin of cands) {
+      try {
+        const out = execFileSync(bin, ['ip', '-4'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        const ip = out.split(/\s+/)[0];
+        if (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip)) return bin;
+      } catch {}
+    }
+    return null;
+  };
+
+  let tailscaleRunning = false;
+  const tsIps = new Set();
+
+  // First, the authoritative source: the CLI (IP + MagicDNS name).
+  const bin = tailscaleBin();
+  if (bin) {
+    try {
+      const out = execFileSync(bin, ['ip', '-4'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      for (const ip of out.split(/\s+/)) {
+        if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) { tsIps.add(ip); tailscaleRunning = true; addresses.push({ kind: 'tailscale', label: 'Tailscale IP', url: `http://${ip}:${port}` }); }
+      }
+    } catch {}
+    try {
+      const raw = execFileSync(bin, ['status', '--json'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
+      const dns = JSON.parse(raw)?.Self?.DNSName;
+      const host = dns ? String(dns).replace(/\.$/, '') : '';
+      if (host) addresses.push({ kind: 'tailscale', label: 'Tailscale MagicDNS', url: `http://${host}:${port}` });
+    } catch {}
+  }
+
+  // Then scan interfaces: CGNAT IPs are Tailscale (even with no CLI), the rest LAN.
+  try {
+    const ifaces = os.networkInterfaces();
+    for (const list of Object.values(ifaces)) {
+      for (const ni of list || []) {
+        if (ni.family !== 'IPv4' || ni.internal) continue;
+        if (isTailscaleIp(ni.address)) {
+          if (!tsIps.has(ni.address)) {
+            tsIps.add(ni.address); tailscaleRunning = true;
+            addresses.push({ kind: 'tailscale', label: 'Tailscale IP', url: `http://${ni.address}:${port}` });
+          }
+        } else {
+          addresses.push({ kind: 'lan', label: 'Local network (LAN)', url: `http://${ni.address}:${port}` });
+        }
+      }
+    }
+  } catch {}
+
+  // Always offer the on-box address last.
+  addresses.push({ kind: 'local', label: 'This machine', url: `http://localhost:${port}` });
+
+  // Show the most-useful-from-afar first: Tailscale, then LAN, then localhost.
+  const rank = { tailscale: 0, lan: 1, local: 2 };
+  addresses.sort((a, b) => (rank[a.kind] ?? 9) - (rank[b.kind] ?? 9));
+
+  // Best URL to QR: Tailscale IP if present, else first LAN, else localhost.
+  const primary = addresses.find(a => a.kind === 'tailscale' && /^http:\/\/\d/.test(a.url))
+    || addresses.find(a => a.kind === 'lan')
+    || addresses[addresses.length - 1];
+  let qrDataUrl = null;
+  try {
+    const QRCode = require('qrcode');
+    qrDataUrl = await QRCode.toDataURL(primary.url, { margin: 1, width: 360 });
+  } catch (e) {
+    console.warn('[access-address] qr generation skipped:', e.message);
+  }
+
+  res.json({ port, tailscaleRunning, addresses, primaryUrl: primary.url, qrDataUrl });
+});
+
 app.get('/api/auth/status', (req, res) => {
   if (req.session && req.session.user) {
     res.json({ authenticated: true, user: req.session.user.username });
