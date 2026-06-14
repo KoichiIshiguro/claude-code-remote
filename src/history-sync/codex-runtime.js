@@ -9,9 +9,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const compiler = require('../../codex-compiler');
 const { codexPathFor } = require('../../codex-compiler/codex-adapter');
+const { sandboxed } = require('../session-manager');
 
 function defaultCodexHome() {
   return process.env.CODEX_HOME
@@ -34,17 +35,38 @@ function materialize(transcript, opts = {}) {
   return { sessionId, rolloutPath, origLineCount, codexHome, cwd };
 }
 
-function run({ codexHome, cwd, sessionId, prompt, sandbox = 'read-only' }) {
+// Codex exec refuses to run outside a trusted git repo. Rather than passing
+// --skip-git-repo-check (which leaves the dir un-versioned and the user's edits
+// without a safety net), we make the project dir a real repo if it isn't one.
+// Idempotent: `git init` on an existing repo is a no-op.
+function ensureGitRepo(cwd) {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd, stdio: 'ignore',
+    });
+    return; // already inside a work tree
+  } catch { /* not a repo — init below */ }
+  try {
+    execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+  } catch { /* best effort; codex will surface its own error if this failed */ }
+}
+
+function run({ codexHome, cwd, sessionId, prompt, model, sandbox = 'danger-full-access' }) {
+  ensureGitRepo(cwd);
   return new Promise((resolve, reject) => {
-    const args = [
-      'exec',
-      '-s', sandbox,
-      '-C', cwd,
+    const args = ['exec', '-s', sandbox, '-C', cwd];
+    if (model) args.push('-m', model);
+    args.push(
       '-c', `projects.${JSON.stringify(cwd)}.trust_level="trusted"`,
       'resume', sessionId, prompt,
-    ];
-    // Codex self-sandboxes; the host must NOT nest it under another sandbox.
-    const child = spawn('codex', args, {
+    );
+    // Codex's OWN sandbox is off (danger-full-access) so it doesn't nest a second
+    // sandbox-exec; instead WE wrap it in the app Seatbelt — the single guard —
+    // confining writes to the project dir. codexHome lives outside the workdir but
+    // codex must append its rollout there, so it's added as an extra writable root.
+    const codexBin = process.env.CODEX_PATH || 'codex';
+    const [bin, spawnArgs] = sandboxed(codexBin, args, cwd, [codexHome]);
+    const child = spawn(bin, spawnArgs, {
       cwd,
       env: { ...process.env, CODEX_HOME: codexHome, CODEX_SANDBOX_MODE: 'danger-full-access' },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -79,6 +101,7 @@ async function turn(transcript, prompt, opts = {}) {
     cwd: mat.cwd,
     sessionId: mat.sessionId,
     prompt,
+    model: opts.model,
     sandbox: opts.sandbox,
   });
   const added = ingestDelta(transcript, mat.rolloutPath, mat.origLineCount);
@@ -90,4 +113,4 @@ async function turn(transcript, prompt, opts = {}) {
   return { added, sessionId: mat.sessionId };
 }
 
-module.exports = { materialize, run, ingestDelta, turn, defaultCodexHome };
+module.exports = { materialize, run, ingestDelta, turn, defaultCodexHome, ensureGitRepo };

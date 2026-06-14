@@ -615,11 +615,23 @@
     background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 3px 9px; cursor: pointer; line-height: 1.4; }
   .model-pill:hover { color: var(--text); border-color: var(--accent); }
+  /* Agent selector: a small [Claude | Codex] segmented control. The selected
+     segment is highlighted; clicking the other switches who runs the next turn
+     (history stays shared). Shown only on shared (xsync) sessions. */
+  .agent-seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    overflow: hidden; background: var(--surface2); }
+  .agent-seg[hidden] { display: none; }
+  .agent-seg-btn { font-size: 11px; line-height: 1.4; padding: 3px 9px; cursor: pointer;
+    background: transparent; color: var(--text-muted); border: 0; white-space: nowrap; }
+  .agent-seg-btn + .agent-seg-btn { border-left: 1px solid var(--border); }
+  .agent-seg-btn:hover { color: var(--text); }
+  .agent-seg-btn.active { background: var(--accent); color: #fff; font-weight: 600; }
+  /* Agent badge on queued / scheduled items. */
+  .q-agent { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 6px; white-space: nowrap; }
+  .q-agent.is-claude { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
+  .q-agent.is-codex { background: color-mix(in srgb, var(--green, #2ea043) 24%, transparent); color: var(--green, #2ea043); }
   .ctx-meter { font-size: 11px; color: var(--text-muted); white-space: nowrap; opacity: .8; }
   .ctx-meter:empty { display: none; }
-  /* Per-turn cost/usage footer under an assistant reply. */
-  .turn-cost { margin-top: 6px; font-size: 11px; color: var(--text-muted); opacity: .7;
-    font-family: 'SF Mono', ui-monospace, monospace; }
   .ctx-meter.warn { color: var(--accent); opacity: 1; }
   .ctx-meter.hot { color: var(--red); opacity: 1; font-weight: 500; }
 
@@ -770,12 +782,14 @@
       <button class="sched-badge" id="schedBadge" title="予約送信">⏰ <span id="schedCount">0</span> 予約</button>
       <div id="schedList" hidden></div>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
-      <button class="pill-btn" id="sharedBtn" title="このフォルダで Claude/Codex 共有セッションを開始 (alpha)">⇄ 共有(alpha)</button>
     </div>
     <div class="status-bar status-bar-meta">
       <span class="branch-pill" id="branchPill" title="現在の git ブランチ"></span>
       <button class="model-pill" id="modelPill" title="モデル / 工数">既定</button>
-      <button class="model-pill" id="agentPill" title="このセッションを次に実行するエージェント (claude/codex)。履歴は共有。" hidden>🤝 Claude</button>
+      <div class="agent-seg" id="agentSeg" title="このセッションを次に実行するエージェント (Claude / Codex)。履歴は共有。" hidden>
+        <button type="button" class="agent-seg-btn active" data-agent="claude">Claude</button>
+        <button type="button" class="agent-seg-btn" data-agent="codex">Codex</button>
+      </div>
       <div id="modelMenu" hidden></div>
       <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
@@ -935,6 +949,10 @@
       <div class="set-hint">このプロジェクトのセッションだけが書き込めるフォルダ。</div>
       <div class="wp-list" id="projWpList"></div>
       <button class="wp-add" id="projWpAdd">＋ フォルダを追加</button>
+      <div class="set-sec-title" style="margin-top:18px;">共有履歴の取り込み / 書き出し <span style="font-weight:400;color:var(--muted);font-size:11px;">alpha</span></div>
+      <div class="set-hint">既存の Claude / Codex セッションを共有履歴に取り込み（読み取りのみ）。共有セッションは各 CLI 形式に書き出せます。</div>
+      <button class="wp-add" id="portRefresh">↻ 取り込み・書き出し候補を読み込む</button>
+      <div id="portBody" class="wp-archived" style="display:none;"></div>
       <div class="set-sec-title" style="margin-top:18px;">アーカイブ済みセッション</div>
       <div class="set-hint">タップで復元します。</div>
       <div id="projArchivedBody" class="wp-archived">読み込み中…</div>
@@ -1180,40 +1198,61 @@ let curDirectory = '';
 const SYNC_PREFIX = 'xsync_';
 function isSyncSession() { return typeof sessionId === 'string' && sessionId.startsWith(SYNC_PREFIX); }
 let selectedAgent = 'claude';
+// Per-agent, per-session model choice. Empty → let that agent's CLI pick its own
+// default. For shared sessions this rides the send_prompt payload (it never
+// touches global /api/settings, which belongs to the native Claude path).
+const selectedModelByAgent = { claude: '', codex: '' };
+
 function updateAgentUI() {
-  const pill = document.getElementById('agentPill');
-  const sharedBtn = document.getElementById('sharedBtn');
-  if (pill) {
-    pill.hidden = !isSyncSession();
-    pill.textContent = selectedAgent === 'codex' ? '🤝 Codex' : '🤝 Claude';
-    pill.classList.toggle('shared-on', isSyncSession());
+  const seg = document.getElementById('agentSeg');
+  if (seg) {
+    seg.hidden = !isSyncSession();
+    seg.querySelectorAll('.agent-seg-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.agent === selectedAgent));
   }
-  if (sharedBtn) sharedBtn.classList.toggle('shared-on', isSyncSession());
+  // Codex has no /compact, no Claude slash commands, and no --effort. Hide those
+  // Claude-only affordances while Codex is the selected peer of a shared session.
+  const codex = isSyncSession() && selectedAgent === 'codex';
+  document.body.classList.toggle('agent-codex', codex);
+  const cb = document.getElementById('compactBtn');
+  if (cb) cb.hidden = codex;
+  // The model pill edits the GLOBAL Claude settings, which drive the native path
+  // only — shared turns run at each agent's own CLI default for now. Hide it on
+  // shared sessions so it doesn't imply control it doesn't have. (Per-agent model
+  // picker is a follow-up; the send_prompt payload already carries `model`.)
+  const mp = document.getElementById('modelPill');
+  if (mp) mp.hidden = isSyncSession();
 }
-function startSharedSession() {
-  if (!curDirectory) { alert('先にプロジェクト（フォルダ）を開いてください。共有セッションはそのフォルダで開始します。'); return; }
-  const dir = curDirectory;
+
+function setAgent(a) {
+  if (!isSyncSession()) return;
+  selectedAgent = (a === 'codex') ? 'codex' : 'claude';
+  if (typeof hideSlashMenu === 'function') hideSlashMenu();
+  updateAgentUI();
+}
+
+// Start a fresh shared (canonical) session in `dir` (defaults to the open
+// project). New sessions are shared by default so either agent can run them; the
+// session is agent-neutral until the first turn actually runs.
+function startSharedSession(dir) {
+  dir = dir || curDirectory;
+  if (!dir) { alert('先にプロジェクト（フォルダ）を開いてください。'); return; }
   sessionId = SYNC_PREFIX + (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(16).slice(2)));
   selectedAgent = 'claude';
   try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
   document.getElementById('messages').innerHTML = '';
   curDirectory = dir;
-  document.getElementById('dirLabel').textContent = dir;
+  const dl = document.getElementById('dirLabel'); if (dl) dl.textContent = dir;
   updateAgentUI();
   // Subscribe this socket to the new id. History is empty until the first turn
   // persists the cwd into the canonical store.
   wsSend({ type: 'attach', sessionId, directory: dir, agent: selectedAgent });
 }
-function toggleAgent() {
-  if (!isSyncSession()) return;
-  selectedAgent = selectedAgent === 'codex' ? 'claude' : 'codex';
-  updateAgentUI();
-}
+
 document.addEventListener('DOMContentLoaded', () => {
-  const sb = document.getElementById('sharedBtn');
-  if (sb) sb.addEventListener('click', startSharedSession);
-  const ap = document.getElementById('agentPill');
-  if (ap) ap.addEventListener('click', toggleAgent);
+  const seg = document.getElementById('agentSeg');
+  if (seg) seg.querySelectorAll('.agent-seg-btn').forEach(b =>
+    b.addEventListener('click', () => setAgent(b.dataset.agent)));
   updateAgentUI();
 });
 // No session → render an empty-state placeholder and auto-open the projects
@@ -1667,6 +1706,16 @@ function handleMessage(msg) {
       renderProjWritable(msg.writablePaths || []);
       if (msg.saved) flashSettingsSaved('projSaved');
       break;
+    case 'port_sources':
+      renderPortBody(msg);
+      break;
+    case 'port_imported':
+      flashPortMsg('取り込み完了: ' + (msg.title || msg.conversationId) + ' (' + msg.turns + ' 件) — サイドバーに共有セッションとして表示されます');
+      wsSend({ type: 'port_list_sources', projectId: _restoreProject && _restoreProject.id });
+      break;
+    case 'port_exported':
+      flashPortMsg((msg.agent === 'codex' ? 'Codex' : 'Claude') + ' 形式で書き出し: ' + msg.path);
+      break;
     case 'error':
       // Route errors into the open modal's error slot when relevant; only
       // bubble to the chat surface for actual stream-time errors.
@@ -1861,11 +1910,9 @@ function handleStreamEvent(event) {
       break;
     }
     case 'result':
-      // Turn-level totals from `claude -p`: cost in USD (incl. background Haiku
-      // calls), aggregate token usage, and wall-clock. Append a small footer to
-      // the current assistant message.
+      // Still scan for a session-limit reset hint, but the per-turn cost/token
+      // footer is intentionally not rendered (agent-dependent + noisy).
       if (typeof event.result === 'string') scanLimitReset(event.result);
-      appendTurnCost(c, event);
       break;
     case 'cancelled': finalizeText(); appendCancelled(); break;
   }
@@ -1953,26 +2000,6 @@ function finalizeText() {
 }
 function addCursor(el) { removeCursor(el); const c = document.createElement('span'); c.className = 'cursor'; el.appendChild(c); }
 function removeCursor(el) { el.querySelectorAll('.cursor').forEach(c => c.remove()); }
-
-// Per-turn cost/usage footer, appended to an assistant message on the `result`
-// event. Shows USD (when present), total input+output tokens, and seconds.
-function appendTurnCost(container, ev) {
-  if (!container || !ev) return;
-  const u = ev.usage || {};
-  const inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-  const outTok = u.output_tokens || 0;
-  const tot = inTok + outTok;
-  const parts = [];
-  if (typeof ev.total_cost_usd === 'number') parts.push('$' + ev.total_cost_usd.toFixed(4));
-  if (tot > 0) parts.push(`${(tot / 1000).toFixed(tot >= 100000 ? 0 : 1)}k tok`);
-  if (typeof ev.duration_ms === 'number') parts.push(`${(ev.duration_ms / 1000).toFixed(1)}s`);
-  if (!parts.length) return;
-  const el = document.createElement('div');
-  el.className = 'turn-cost';
-  el.textContent = parts.join(' · ');
-  el.title = `in ${inTok.toLocaleString()} / out ${outTok.toLocaleString()} tokens`;
-  container.appendChild(el);
-}
 
 // ── DOM builders ──────────────────────────────────────────────────────────────
 function createAssistantMessage() {
@@ -2144,7 +2171,7 @@ function appendAskUserQuestionBanner(questions) {
     }).join('') + '</ul>';
   }
   m.innerHTML = `<div class="bubble">
-    ⚠ Claude が対話モードでしか使えない質問ツールを呼び出したので中断しました。<br>
+    ⚠ 対話モードでしか使えない質問ツールが呼び出されたので中断しました。<br>
     回答に必要な情報を含めて再送してください。
     ${listHtml}
   </div>`;
@@ -2198,7 +2225,11 @@ function dispatchPrompt(text, paths, previewImages, queued) {
   const out = {type:'send_prompt',sessionId,prompt:text,imagePaths:paths};
   // Shared (alpha) conversation: carry the per-session agent choice and the cwd
   // (no native jsonl to infer it from). Native sessions ignore both.
-  if (isSyncSession()) { out.agent = selectedAgent; out.directory = curDirectory || undefined; }
+  if (isSyncSession()) {
+    out.agent = selectedAgent;
+    out.directory = curDirectory || undefined;
+    out.model = selectedModelByAgent[selectedAgent] || undefined;
+  }
   wsSend(out);
 }
 
@@ -2240,7 +2271,8 @@ function renderQueue() {
   document.getElementById('queueBadge').classList.add('on');
   serverQueue.forEach((item,i) => {
     const el = document.createElement('div'); el.className = 'queue-item';
-    el.innerHTML = `<span class="q-num">${i+1}</span><span class="q-text">${escHtml(item.text)}</span><button class="q-remove">×</button>`;
+    const aBadge = item.agent ? `<span class="q-agent ${item.agent==='codex'?'is-codex':'is-claude'}">${item.agent==='codex'?'Codex':'Claude'}</span>` : '';
+    el.innerHTML = `<span class="q-num">${i+1}</span>${aBadge}<span class="q-text">${escHtml(item.text)}</span><button class="q-remove">×</button>`;
     // Removal goes through the server so it stays consistent across devices.
     el.querySelector('.q-remove').addEventListener('click', () => { wsSend({type:'dequeue_item', sessionId, id:item.id}); });
     if (list) list.appendChild(el);
@@ -2429,6 +2461,9 @@ function renderSlashMenu() {
 }
 // Show the picker only while the prompt is a bare `/token` (no space/newline yet).
 function updateSlashMenu() {
+  // Slash commands come from Claude's init event — they don't apply to a Codex
+  // turn, so suppress the picker while Codex is the selected agent.
+  if (isSyncSession() && selectedAgent === 'codex') { hideSlashMenu(); return; }
   const v = document.getElementById('promptInput').value;
   const m = /^\/([a-zA-Z0-9_-]*)$/.exec(v);
   if (!m || !availableSlashCommands.length) { hideSlashMenu(); return; }
@@ -2525,7 +2560,11 @@ async function scheduleSend(fireAt) {
     catch (e) { appendError('Upload failed: ' + e.message); return; }
   }
   clearImgPreviews();
-  wsSend({ type: 'schedule_prompt', sessionId, prompt: text, imagePaths: uploadedPaths, fireAt, directory: curDirectory || fbSessionRoot || undefined });
+  const sched = { type: 'schedule_prompt', sessionId, prompt: text, imagePaths: uploadedPaths, fireAt, directory: curDirectory || fbSessionRoot || undefined };
+  // Capture the agent/model NOW so the reservation fires under what's selected at
+  // reserve time, not whatever is active when it fires (shared sessions only).
+  if (isSyncSession()) { sched.agent = selectedAgent; sched.model = selectedModelByAgent[selectedAgent] || undefined; }
+  wsSend(sched);
 }
 
 function hideSendMenu() { const el = document.getElementById('sendMenu'); el.hidden = true; }
@@ -2595,7 +2634,8 @@ function renderSchedList() {
   for (const it of serverScheduled) {
     const row = document.createElement('div');
     row.className = 'sched-item';
-    row.innerHTML = '<span class="when"></span><span class="txt"></span><button class="x" title="予約を取り消す">✕</button>';
+    const aBadge = it.agent ? `<span class="q-agent ${it.agent==='codex'?'is-codex':'is-claude'}">${it.agent==='codex'?'Codex':'Claude'}</span>` : '';
+    row.innerHTML = '<span class="when"></span>' + aBadge + '<span class="txt"></span><button class="x" title="予約を取り消す">✕</button>';
     row.querySelector('.when').textContent = '⏰ ' + fmtWhen(it.fireAt);
     row.querySelector('.txt').textContent = it.text || '(添付ファイルのみ)';
     row.querySelector('.x').addEventListener('click', () => {
@@ -2965,11 +3005,14 @@ function rerenderProjList() {
 
     const newBtn = document.createElement('button');
     newBtn.className = 'proj-new-btn-inline';
-    newBtn.title = 'New session in this folder';
+    newBtn.title = 'New session in this folder (Claude/Codex shared)';
     newBtn.textContent = '+';
     newBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      wsSend({ type: 'create_session', directory: p.path });
+      // New sessions are shared (canonical) by default: either agent can run
+      // them and the history stays in one provider-neutral transcript.
+      closeSide('sideL');
+      startSharedSession(p.path);
     });
     head.appendChild(newBtn);
     group.appendChild(head);
@@ -2991,7 +3034,8 @@ function rerenderProjList() {
         item.className = 'sess-item'
           + (s.streaming ? ' running' : '')
           + (isActive ? ' active' : '');
-        item.innerHTML = `<span class="sess-dot"></span><span class="sess-label">${escHtml(label)}</span>`;
+        const sharedBadge = s.shared ? '<span class="sess-shared" title="共有 (alpha) — Claude/Codex">⇄</span> ' : '';
+        item.innerHTML = `<span class="sess-dot"></span><span class="sess-label">${sharedBadge}${escHtml(label)}</span>`;
         item.addEventListener('click', () => {
           if (isActive) { closeSide('sideL'); return; }
           location.href = `/terminal?session=${s.id}`;
@@ -3969,6 +4013,8 @@ function openProjectSettings(project) {
   document.getElementById('projSaved').textContent = '';
   document.getElementById('projWpList').innerHTML = '';
   document.getElementById('projArchivedBody').innerHTML = '<div class="restore-empty">読み込み中…</div>';
+  const portBody = document.getElementById('portBody');
+  if (portBody) { portBody.style.display = 'none'; portBody.innerHTML = ''; }
   document.getElementById('projSettingsOverlay').classList.add('on');
   wsSend({ type: 'project_settings_get', projectId: project.id });
   wsSend({ type: 'list_archived', projectPath: project.path });
@@ -3990,6 +4036,74 @@ document.getElementById('projSettingsSave').addEventListener('click', () => {
   if (!_restoreProject) return;
   wsSend({ type: 'project_settings_set', projectId: _restoreProject.id, paths: _projWp });
 });
+
+// — Shared-history import / export (Phase 4) —
+function flashPortMsg(text) {
+  const el = document.getElementById('projSaved');
+  if (el) { el.textContent = text; }
+}
+document.getElementById('portRefresh').addEventListener('click', () => {
+  if (!_restoreProject) return;
+  const body = document.getElementById('portBody');
+  body.style.display = '';
+  body.innerHTML = '<div class="restore-empty">読み込み中…（Codex 履歴の走査に少し時間がかかることがあります）</div>';
+  wsSend({ type: 'port_list_sources', projectId: _restoreProject.id });
+});
+function portRow(label, sub, btns) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid var(--border);';
+  const info = document.createElement('div');
+  info.style.cssText = 'flex:1;min-width:0;';
+  const l = document.createElement('div');
+  l.style.cssText = 'font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  l.textContent = label || '(無題)';
+  const s = document.createElement('div');
+  s.style.cssText = 'font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+  s.textContent = sub || '';
+  info.appendChild(l); info.appendChild(s);
+  row.appendChild(info);
+  for (const b of btns) {
+    const btn = document.createElement('button');
+    btn.className = 'btn-ghost';
+    btn.style.cssText = 'flex:none;font-size:12px;padding:4px 10px;';
+    btn.textContent = b.label;
+    btn.addEventListener('click', b.onClick);
+    row.appendChild(btn);
+  }
+  return row;
+}
+function renderPortBody(msg) {
+  const body = document.getElementById('portBody');
+  body.style.display = '';
+  body.innerHTML = '';
+  const head = (t) => { const h = document.createElement('div'); h.className = 'set-hint'; h.style.cssText = 'margin:8px 0 2px;font-weight:600;color:var(--text);'; h.textContent = t; return h; };
+
+  // Export: shared sessions → native files
+  body.appendChild(head('書き出し（共有 → ネイティブ）'));
+  const shared = msg.shared || [];
+  if (!shared.length) body.appendChild(Object.assign(document.createElement('div'), { className: 'restore-empty', textContent: '共有セッションはまだありません' }));
+  for (const sh of shared) {
+    body.appendChild(portRow(sh.title || sh.conversationId, sh.turns + ' 件', [
+      { label: '→ Claude', onClick: () => wsSend({ type: 'port_export', conversationId: sh.conversationId, agent: 'claude', cwd: msg.cwd }) },
+      { label: '→ Codex', onClick: () => wsSend({ type: 'port_export', conversationId: sh.conversationId, agent: 'codex', cwd: msg.cwd }) },
+    ]));
+  }
+
+  // Import: native files → new shared session
+  body.appendChild(head('取り込み（ネイティブ → 共有）'));
+  const claude = msg.claude || [], codex = msg.codex || [];
+  if (!claude.length && !codex.length) body.appendChild(Object.assign(document.createElement('div'), { className: 'restore-empty', textContent: 'このフォルダの Claude / Codex セッションは見つかりませんでした' }));
+  for (const c of claude) {
+    body.appendChild(portRow('[Claude] ' + (c.title || c.preview || c.sessionId), c.preview && c.title ? c.preview : '', [
+      { label: '取り込む', onClick: () => wsSend({ type: 'port_import', projectId: _restoreProject.id, agent: 'claude', sessionId: c.sessionId }) },
+    ]));
+  }
+  for (const c of codex) {
+    body.appendChild(portRow('[Codex] ' + (c.title || c.preview || c.sessionId), c.preview && c.title ? c.preview : '', [
+      { label: '取り込む', onClick: () => wsSend({ type: 'port_import', projectId: _restoreProject.id, agent: 'codex', file: c.file }) },
+    ]));
+  }
+}
 
 // The center-header ⚙ button was removed — project settings are reached from
 // each project's ⚙ in the left sidebar (same openProjectSettings handler).

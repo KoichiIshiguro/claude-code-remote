@@ -243,3 +243,5 @@ body.drag-over::after {
   color: var(--accent);
 }
 #agentPill { cursor: pointer; }
+/* ⇄ badge on shared (alpha) conversations in the session sidebar. */
+.sess-shared { color: var(--accent); font-weight: 600; }

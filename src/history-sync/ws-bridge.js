@@ -87,8 +87,8 @@ function directoryFor(conversationId) {
 
 // Run one shared turn with the chosen agent, emitting the reply as Claude-shaped
 // stream events via onEvent so the existing live renderer paints it.
-async function runSyncTurn({ conversationId, agent, prompt, cwd, imagePaths, onEvent }) {
-  const res = await runTurn({ conversationId, agent, prompt, cwd });
+async function runSyncTurn({ conversationId, agent, prompt, cwd, model, imagePaths, onEvent }) {
+  const res = await runTurn({ conversationId, agent, prompt, cwd, model });
   const text = res.reply || '';
   // One assistant message event (ensureAssistantEl creates the bubble), then a
   // result event so the turn footer/usage hooks fire just like a Claude turn.

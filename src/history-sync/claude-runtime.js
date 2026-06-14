@@ -14,6 +14,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const compiler = require('../../codex-compiler');
 const { claudePathFor } = require('../../codex-compiler/claude-adapter');
+const { sandboxed } = require('../session-manager');
 
 function defaultClaudeHome() {
   // Claude auth is bound to the real ~/.claude (keychain + credentials), so we
@@ -51,7 +52,12 @@ function run({ cwd, sessionId, prompt, model, resume = true }) {
       : ['--session-id', sessionId, '-p', prompt];
     args.push('--dangerously-skip-permissions');
     if (model) args.push('--model', model);
-    const child = spawn('claude', args, {
+    // Confine writes to the project dir (+ ~/.claude, caches, temp) with the same
+    // Seatbelt the native path uses. claude materializes/appends its jsonl under
+    // ~/.claude, already covered by the profile.
+    const claudeBin = process.env.CLAUDE_PATH || 'claude';
+    const [bin, spawnArgs] = sandboxed(claudeBin, args, cwd);
+    const child = spawn(bin, spawnArgs, {
       cwd,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],

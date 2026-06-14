@@ -17,6 +17,9 @@ const { sessionDir } = require('./attachments');
 const shell = require('./shell-manager');
 const gitInfo = require('./git-info');
 const syncBridge = require('./history-sync/ws-bridge');
+const historyStore = require('./history-sync/store');
+const historyPort = require('./history-sync/port');
+const { segmentByAgent } = require('./history-sync/segment-by-agent');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -25,6 +28,11 @@ const sessionClients = new Map();
 // session (claude|codex). Per-session and independent — switching here changes
 // which peer runs the NEXT turn, while the canonical history stays shared.
 const sessionAgent = new Map();
+
+// Shared (alpha) conversations only: the model the client last selected for the
+// session, sent per-turn alongside the agent. Empty/unset → let the agent CLI use
+// its own default. Per-item model (Phase 2 queue) overrides this fallback.
+const sessionModel = new Map();
 
 // Placeholder sessions that haven't yet been written to a jsonl. Lost on
 // server restart — intentional. UI generates an id, server tracks the
@@ -150,6 +158,46 @@ function sessionToLegacyShape(s, projectPath) {
   };
 }
 
+// A shared (alpha) canonical conversation → the sidebar's legacy session shape.
+// These live in the history-sync store, not a native jsonl, so list_sessions /
+// listAllSessionsLegacy must fold them in explicitly or they're invisible.
+function sharedToLegacyShape(t) {
+  const turns = t.turns || [];
+  const firstUser = turns.find((x) => x.role === 'user');
+  const preview = firstUser
+    ? (firstUser.parts || []).filter((p) => p.type === 'text').map((p) => p.text).join(' ').trim().slice(0, 80)
+    : '';
+  return {
+    id: t.id,
+    sessionId: t.id,
+    directory: t.cwd || '',
+    lastActivity: new Date(t._mtime || Date.now()).toISOString(),
+    streaming: procTracker.isRunning(t.id),
+    allowedTools: null,
+    lastTokens: null,
+    aiTitle: t.title || '',
+    preview,
+    customName: nameStore.get(t.id),
+    shared: true,
+    agents: Object.keys(t.providerIds || {}),
+  };
+}
+
+// Shared conversations rooted at `projectPath` (or all, when omitted), already
+// filtered to real sync ids and not archived. `seen` lets callers dedupe.
+function sharedSessionsLegacy(projectPath, archived, seen) {
+  const out = [];
+  for (const t of historyStore.list()) {
+    if (!syncBridge.isSyncId(t.id)) continue;        // skip non-routable demo/scratch files
+    if (archived && archived.has(t.id)) continue;
+    if (seen && seen.has(t.id)) continue;
+    if (projectPath != null && (t.cwd || '') !== projectPath) continue;
+    if (seen) seen.add(t.id);
+    out.push(sharedToLegacyShape(t));
+  }
+  return out;
+}
+
 function pendingToLegacyShape(placeholderId, entry) {
   return {
     id: placeholderId,
@@ -182,6 +230,8 @@ function listAllSessionsLegacy() {
     if (seen.has(pid)) continue;
     out.push(pendingToLegacyShape(pid, entry));
   }
+  // Shared (alpha) conversations from the canonical store, across all folders.
+  out.push(...sharedSessionsLegacy(null, archived, seen));
   return out;
 }
 
@@ -204,7 +254,7 @@ function queueStateMsg(key) {
   return {
     type: 'queue_state',
     sessionId: key,
-    queue: promptQueue.list(key).map(i => ({ id: i.id, text: i.text })),
+    queue: promptQueue.list(key).map(i => ({ id: i.id, text: i.text, agent: i.agent })),
   };
 }
 
@@ -216,7 +266,7 @@ function scheduledStateMsg(key) {
   return {
     type: 'scheduled_state',
     sessionId: key,
-    scheduled: scheduledPrompts.listFor(key).map(i => ({ id: i.id, text: i.text, fireAt: i.fireAt })),
+    scheduled: scheduledPrompts.listFor(key).map(i => ({ id: i.id, text: i.text, fireAt: i.fireAt, agent: i.agent })),
   };
 }
 
@@ -268,21 +318,33 @@ function kickRunner(key, directory) {
         const due = scheduledPrompts.takeDueFor(activeKey, Date.now());
         if (due.length) broadcastScheduled(activeKey);
         const items = [
-          ...due.map(i => ({ id: i.id, text: i.text, imagePaths: i.imagePaths })),
+          ...due.map(i => ({ id: i.id, text: i.text, imagePaths: i.imagePaths, agent: i.agent, model: i.model })),
           ...promptQueue.dequeueAll(activeKey),
         ];
         if (!items.length) break;
         broadcastQueue(activeKey); // queue just drained → empty
-        const text = items.map(i => i.text).join('\n\n');
-        const images = items.flatMap(i => i.imagePaths || []);
-        const resolved = syncBridge.isSyncId(activeKey)
-          ? await runSyncTurn(activeKey, directory, text, images)
-          : await runOneTurn(activeKey, directory, text, images);
-        // A placeholder resolved to a real session id mid-run: the queue and
-        // runner membership were already migrated inside runOneTurn at init.
-        if (resolved && resolved !== activeKey) {
-          runners.delete(activeKey);
-          activeKey = resolved;
+        const sync = syncBridge.isSyncId(activeKey);
+        // Shared sessions: split into contiguous same-agent runs so a Claude batch
+        // and a Codex batch never merge into one turn — run them in order. Native
+        // sessions are always Claude → exactly one segment (old behaviour intact).
+        const segments = sync
+          ? segmentByAgent(items)
+          : [{ agent: 'claude', items }];
+        for (const seg of segments) {
+          const text = seg.items.map(i => i.text).join('\n\n');
+          const images = seg.items.flatMap(i => i.imagePaths || []);
+          // A batched segment runs under the model of its first item (all items
+          // share an agent; model is usually constant within a run).
+          const segModel = seg.items.find(i => i.model)?.model;
+          const resolved = sync
+            ? await runSyncTurn(activeKey, directory, text, images, seg.agent, segModel)
+            : await runOneTurn(activeKey, directory, text, images);
+          // A placeholder resolved to a real session id mid-run: the queue and
+          // runner membership were already migrated inside runOneTurn at init.
+          if (resolved && resolved !== activeKey) {
+            runners.delete(activeKey);
+            activeKey = resolved;
+          }
         }
       }
     } catch (e) {
@@ -488,8 +550,11 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
 // last selected for this session; both peers append to the same canonical store.
 // The reply is broadcast as Claude-shaped stream events so the existing renderer
 // paints it. The id is a stable conversation id, so it never re-keys → returns key.
-async function runSyncTurn(key, directory, prompt, imagePaths) {
-  const agent = sessionAgent.get(key) || 'claude';
+async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelArg) {
+  // Prefer the per-segment agent/model the runner passes (captured at enqueue
+  // time); fall back to the session's last-selected values for ad-hoc callers.
+  const agent = agentArg || sessionAgent.get(key) || 'claude';
+  const model = modelArg !== undefined ? modelArg : (sessionModel.get(key) || undefined);
   liveTurn.begin(key, { prompt, images: imagePaths, compact: false });
   broadcast(key, {
     type: 'stream_start', sessionId: key, compact: false, prompt,
@@ -497,7 +562,7 @@ async function runSyncTurn(key, directory, prompt, imagePaths) {
   });
   try {
     await syncBridge.runSyncTurn({
-      conversationId: key, agent, prompt, cwd: directory, imagePaths,
+      conversationId: key, agent, prompt, cwd: directory, model, imagePaths,
       onEvent: (event) => {
         liveTurn.record(key, event);
         broadcast(key, { type: 'stream_event', sessionId: key, event });
@@ -601,6 +666,58 @@ function handleConnection(ws /*, req */) {
         break;
       }
 
+      // ─── Shared-history import / export (forward-compat) ───────────────────
+
+      case 'port_list_sources': {
+        const proj = projectsStore.getProject(msg.projectId);
+        const cwd = (proj && proj.path) || msg.cwd;
+        if (!cwd) { send(ws, { type: 'error', message: 'project not found' }); break; }
+        try {
+          const sources = historyPort.listImportSources(cwd);
+          const shared = historyPort.listSharedFor(cwd);
+          send(ws, { type: 'port_sources', projectId: msg.projectId, cwd, ...sources, shared });
+        } catch (err) {
+          send(ws, { type: 'error', message: err.message });
+        }
+        break;
+      }
+
+      case 'port_import': {
+        const proj = projectsStore.getProject(msg.projectId);
+        const cwd = (proj && proj.path) || msg.cwd;
+        try {
+          const res = historyPort.importSession({
+            agent: msg.agent, sessionId: msg.sessionId, file: msg.file, cwd,
+          });
+          send(ws, { type: 'port_imported', ...res });
+          // Surface the new shared session in the sidebar immediately.
+          if (cwd) {
+            const archived = new Set(archiveStore.load());
+            const list = jsonlReader.listJsonlsForProject(cwd)
+              .filter(s => !archived.has(s.sessionId))
+              .map(s => sessionToLegacyShape(s, cwd));
+            list.push(...sharedSessionsLegacy(cwd, archived, null));
+            send(ws, { type: 'sessions_list', projectPath: cwd, sessions: list });
+          }
+        } catch (err) {
+          send(ws, { type: 'error', message: err.message });
+        }
+        break;
+      }
+
+      case 'port_export': {
+        const cwd = msg.cwd || syncBridge.directoryFor(msg.conversationId);
+        try {
+          const res = historyPort.exportSession({
+            conversationId: msg.conversationId, agent: msg.agent, cwd,
+          });
+          send(ws, { type: 'port_exported', conversationId: msg.conversationId, ...res });
+        } catch (err) {
+          send(ws, { type: 'error', message: err.message });
+        }
+        break;
+      }
+
       // ─── Session listing ───────────────────────────────────────────────────
 
       case 'list_sessions': {
@@ -609,6 +726,8 @@ function handleConnection(ws /*, req */) {
           const list = jsonlReader.listJsonlsForProject(msg.projectPath)
             .filter(s => !archived.has(s.sessionId))
             .map(s => sessionToLegacyShape(s, msg.projectPath));
+          // Fold in shared (alpha) conversations rooted at this folder.
+          list.push(...sharedSessionsLegacy(msg.projectPath, archived, null));
           send(ws, { type: 'sessions_list', projectPath: msg.projectPath, sessions: list });
         } else {
           send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
@@ -964,6 +1083,8 @@ function handleConnection(ws /*, req */) {
         if (syncBridge.isSyncId(sessionId)) {
           if (!directory) directory = syncBridge.directoryFor(sessionId);
           sessionAgent.set(sessionId, msg.agent === 'codex' ? 'codex' : 'claude');
+          if (typeof msg.model === 'string' && msg.model) sessionModel.set(sessionId, msg.model);
+          else sessionModel.delete(sessionId);
         }
 
         if (!directory) {
@@ -990,7 +1111,11 @@ function handleConnection(ws /*, req */) {
         // runner picks it up immediately. The runner is browser-independent —
         // it keeps draining even if this socket closes.
         subscribe(sessionId, ws);
-        promptQueue.enqueue(sessionId, { text: prompt, imagePaths });
+        const enqAgent = syncBridge.isSyncId(sessionId)
+          ? (msg.agent === 'codex' ? 'codex' : 'claude') : undefined;
+        const enqModel = syncBridge.isSyncId(sessionId) && typeof msg.model === 'string' && msg.model
+          ? msg.model : undefined;
+        promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: enqAgent, model: enqModel });
         broadcastQueue(sessionId);
         kickRunner(sessionId, directory);
         break;
@@ -1032,15 +1157,21 @@ function handleConnection(ws /*, req */) {
         }
 
         subscribe(sessionId, ws);
+        // Capture the agent/model at reserve time (shared sessions only) so the
+        // reservation fires under what was chosen now, not what's selected later.
+        const schedAgent = syncBridge.isSyncId(sessionId)
+          ? (msg.agent === 'codex' ? 'codex' : 'claude') : undefined;
+        const schedModel = syncBridge.isSyncId(sessionId) && typeof msg.model === 'string' && msg.model
+          ? msg.model : undefined;
         // Already due (clock skew / picked a past time): run it now via the
         // normal queue instead of waiting for the next timer tick.
         if (fireAt <= Date.now()) {
-          promptQueue.enqueue(sessionId, { text: prompt, imagePaths });
+          promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: schedAgent, model: schedModel });
           broadcastQueue(sessionId);
           kickRunner(sessionId, directory);
           break;
         }
-        scheduledPrompts.add({ sessionId, directory, text: prompt, imagePaths, fireAt });
+        scheduledPrompts.add({ sessionId, directory, text: prompt, imagePaths, agent: schedAgent, model: schedModel, fireAt });
         broadcastScheduled(sessionId);
         break;
       }

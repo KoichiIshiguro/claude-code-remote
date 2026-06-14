@@ -34,6 +34,25 @@ function load(conversationId, attrs = {}) {
   });
 }
 
+// All persisted canonical conversations, each tagged with its file mtime (ms)
+// as `_mtime` so callers can sort/display without re-stat'ing. Corrupt files are
+// skipped rather than throwing. Used to surface shared sessions in the sidebar.
+function list() {
+  let files = [];
+  try { files = fs.readdirSync(HISTORY_DIR); } catch { return []; }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    const fp = path.join(HISTORY_DIR, f);
+    try {
+      const t = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      t._mtime = fs.statSync(fp).mtimeMs;
+      out.push(t);
+    } catch { /* skip corrupt/partial */ }
+  }
+  return out;
+}
+
 function save(transcript) {
   fs.mkdirSync(HISTORY_DIR, { recursive: true });
   const file = pathFor(transcript.id);
@@ -43,4 +62,4 @@ function save(transcript) {
   return file;
 }
 
-module.exports = { HISTORY_DIR, pathFor, load, save };
+module.exports = { HISTORY_DIR, pathFor, load, list, save };

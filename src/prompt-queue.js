@@ -7,11 +7,21 @@
 // "stop / restart clears the queue".
 
 let seq = 0;
-const queues = new Map(); // key (sessionId | placeholderId) → [{ id, text, imagePaths }]
+// key (sessionId | placeholderId) → [{ id, text, imagePaths, agent, model }]
+// `agent`/`model` are set only for shared (xsync) sessions, captured at enqueue
+// time so a later agent/model switch doesn't retroactively change this item. The
+// runner groups consecutive same-agent items into one turn (see segment-by-agent).
+const queues = new Map();
 
 function enqueue(key, item) {
   if (!queues.has(key)) queues.set(key, []);
-  const entry = { id: `q${++seq}`, text: item.text, imagePaths: item.imagePaths || [] };
+  const entry = {
+    id: `q${++seq}`,
+    text: item.text,
+    imagePaths: item.imagePaths || [],
+    agent: item.agent,
+    model: item.model,
+  };
   queues.get(key).push(entry);
   return entry;
 }

@@ -38,7 +38,7 @@ const { jsonlPathFor, readHistory, getLastTokens } = require('./jsonl-reader');
 // would break claude itself. Rules are last-match-wins; re-allows follow denies.
 // macOS only; no-op elsewhere or when CLAUDE_SANDBOX=0.
 // Debug denials with: log stream --style compact --predicate 'sender=="Sandbox"'
-function buildSandboxProfile(workdir) {
+function buildSandboxProfile(workdir, extraWritable = []) {
   const home = os.homedir();
   const q = (p) => '"' + String(p).replace(/(["\\])/g, '\\$1') + '"';
   const sub = (...ps) => ps.map(q).map(s => `(subpath ${s})`).join(' ');
@@ -82,6 +82,9 @@ function buildSandboxProfile(workdir) {
     path.join(home, '.claude'),       // transcripts (--resume), auth, todos, logs
     ...cacheDirs,
     ...extraWrite,
+    ...extraWritable,                 // caller-supplied (e.g. the sync codex-home,
+                                      // which lives outside the workdir but must
+                                      // stay writable so codex can append its rollout)
     os.tmpdir(), '/private/var/folders', '/private/tmp', '/tmp',
     '/dev',                           // /dev/null, /dev/tty, /dev/stdout… — git and
                                       // most CLIs abort without writable /dev devices
@@ -107,11 +110,11 @@ function buildSandboxProfile(workdir) {
 // Returns [bin, args] for spawn() — wrapped in sandbox-exec on macOS so the
 // child can only touch `workdir` (+ ~/.claude + temp + runtime). Untouched on
 // non-macOS or when CLAUDE_SANDBOX=0.
-function sandboxed(bin, args, workdir) {
+function sandboxed(bin, args, workdir, extraWritable = []) {
   if (process.platform !== 'darwin' || process.env.CLAUDE_SANDBOX === '0') {
     return [bin, args];
   }
-  return ['/usr/bin/sandbox-exec', ['-p', buildSandboxProfile(workdir), bin, ...args]];
+  return ['/usr/bin/sandbox-exec', ['-p', buildSandboxProfile(workdir, extraWritable), bin, ...args]];
 }
 
 // Auto-compact threshold (input tokens incl. cache). 167k matches the TUI's
