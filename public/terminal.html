@@ -1628,6 +1628,7 @@ function handleMessage(msg) {
       if (msg.placeholderId === sessionId) {
         sessionId = msg.sessionId;
         try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
+        rerenderProjList();
       }
       break;
     case 'archived_list':
@@ -3028,7 +3029,9 @@ function rerenderProjList() {
       ev.stopPropagation();
       // New sessions are shared (canonical) by default: either agent can run
       // them and the history stays in one provider-neutral transcript.
-      closeSide('sideL');
+      // Do NOT close the sidebar here — shared sessions stay on the same page
+      // (no location.href navigation) so closeSide() would persist the closed
+      // state in localStorage with no automatic recovery.
       startSharedSession(p.path);
     });
     head.appendChild(newBtn);
