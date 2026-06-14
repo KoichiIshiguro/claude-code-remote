@@ -143,21 +143,6 @@ function findDirectoryForSessionId(sessionId) {
   return null;
 }
 
-function sessionToLegacyShape(s, projectPath) {
-  return {
-    id: s.sessionId,
-    sessionId: s.sessionId,
-    directory: projectPath,
-    lastActivity: new Date(s.mtime).toISOString(),
-    streaming: procTracker.isRunning(s.sessionId),
-    allowedTools: null,
-    lastTokens: null,
-    aiTitle: jsonlReader.getLatestAiTitle(s.sessionId, projectPath),
-    preview: jsonlReader.firstUserPreview(s.sessionId, projectPath),
-    customName: nameStore.get(s.sessionId),
-  };
-}
-
 // A shared (alpha) canonical conversation → the sidebar's legacy session shape.
 // These live in the history-sync store, not a native jsonl, so list_sessions /
 // listAllSessionsLegacy must fold them in explicitly or they're invisible.
@@ -211,26 +196,20 @@ function pendingToLegacyShape(placeholderId, entry) {
   };
 }
 
+// v2 is canonical-first: the sidebar lists ONLY shared (canonical) sessions.
+// Pre-v2 native jsonl sessions are legacy artifacts — never the truth, and
+// reachable solely through the per-project import modal (port_list_sources),
+// not as peer entries here. Pending placeholders are folded in only while a
+// turn is materializing them; they fall away once the canonical row exists.
 function listAllSessionsLegacy() {
   const archived = new Set(archiveStore.load());
   const out = [];
   const seen = new Set();
-  for (const p of projectsStore.loadProjects()) {
-    const ls = jsonlReader.listJsonlsForProject(p.path);
-    for (const s of ls) {
-      if (archived.has(s.sessionId)) continue;
-      seen.add(s.sessionId);
-      out.push(sessionToLegacyShape(s, p.path));
-    }
-  }
   for (const [pid, entry] of pendingSessions) {
     if (archived.has(pid)) continue;
-    // A just-resolved session is pending under its real id only until its jsonl
-    // is on disk; once the jsonl row exists, skip the transitional pending row.
-    if (seen.has(pid)) continue;
+    seen.add(pid);
     out.push(pendingToLegacyShape(pid, entry));
   }
-  // Shared (alpha) conversations from the canonical store, across all folders.
   out.push(...sharedSessionsLegacy(null, archived, seen));
   return out;
 }
@@ -690,13 +669,12 @@ function handleConnection(ws /*, req */) {
             agent: msg.agent, sessionId: msg.sessionId, file: msg.file, cwd,
           });
           send(ws, { type: 'port_imported', ...res });
-          // Surface the new shared session in the sidebar immediately.
+          // Surface the new shared session in the sidebar immediately. Canonical
+          // sessions only — the just-imported native source stays in the import
+          // modal, it is not promoted to a peer sidebar entry.
           if (cwd) {
             const archived = new Set(archiveStore.load());
-            const list = jsonlReader.listJsonlsForProject(cwd)
-              .filter(s => !archived.has(s.sessionId))
-              .map(s => sessionToLegacyShape(s, cwd));
-            list.push(...sharedSessionsLegacy(cwd, archived, null));
+            const list = sharedSessionsLegacy(cwd, archived, null);
             send(ws, { type: 'sessions_list', projectPath: cwd, sessions: list });
           }
         } catch (err) {
@@ -723,11 +701,9 @@ function handleConnection(ws /*, req */) {
       case 'list_sessions': {
         if (msg.projectPath) {
           const archived = new Set(archiveStore.load());
-          const list = jsonlReader.listJsonlsForProject(msg.projectPath)
-            .filter(s => !archived.has(s.sessionId))
-            .map(s => sessionToLegacyShape(s, msg.projectPath));
-          // Fold in shared (alpha) conversations rooted at this folder.
-          list.push(...sharedSessionsLegacy(msg.projectPath, archived, null));
+          // Canonical-only: native jsonl sessions live in the import modal, not
+          // the sidebar (see listAllSessionsLegacy).
+          const list = sharedSessionsLegacy(msg.projectPath, archived, null);
           send(ws, { type: 'sessions_list', projectPath: msg.projectPath, sessions: list });
         } else {
           send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });

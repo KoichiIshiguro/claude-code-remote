@@ -714,18 +714,21 @@ app.post('/api/settings', requireAuth, (req, res) => {
 // Page routes
 app.get('/', requireAuth, (req, res) => res.redirect('/terminal'));
 app.get('/terminal', requireAuth, (req, res) => {
-  // No session in URL → try to land the user on the most-recent visible jsonl.
-  // Falls through to the HTML (empty state, sidebar auto-opens) when none exist.
+  // No session in URL → land the user on the most-recent canonical (shared)
+  // session. v2 is canonical-first, so native jsonl sessions are NOT auto-opened
+  // here (they're legacy artifacts, reachable via the import modal). Falls
+  // through to the HTML (empty state, sidebar auto-opens) when none exist.
   if (!req.query.session) {
     try {
       const archived = new Set(require('./src/archive-store').load());
-      const jsonlReader = require('./src/jsonl-reader');
+      const historyStore = require('./src/history-sync/store');
+      const syncBridge = require('./src/history-sync/ws-bridge');
       let best = null;
-      for (const p of projectsStore.loadProjects()) {
-        for (const s of jsonlReader.listJsonlsForProject(p.path)) {
-          if (archived.has(s.sessionId)) continue;
-          if (!best || s.mtime > best.mtime) best = s;
-        }
+      for (const t of historyStore.list()) {
+        if (!syncBridge.isSyncId(t.id)) continue;
+        if (archived.has(t.id)) continue;
+        const mtime = t._mtime || 0;
+        if (!best || mtime > best.mtime) best = { sessionId: t.id, mtime };
       }
       if (best) return res.redirect(`/terminal?session=${best.sessionId}`);
     } catch { /* fall through to empty state */ }
