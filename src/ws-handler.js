@@ -16,9 +16,15 @@ const liveTurn = require('./live-turn');
 const { sessionDir } = require('./attachments');
 const shell = require('./shell-manager');
 const gitInfo = require('./git-info');
+const syncBridge = require('./history-sync/ws-bridge');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
+
+// Shared (alpha) conversations only: the agent the client last selected for the
+// session (claude|codex). Per-session and independent — switching here changes
+// which peer runs the NEXT turn, while the canonical history stays shared.
+const sessionAgent = new Map();
 
 // Placeholder sessions that haven't yet been written to a jsonl. Lost on
 // server restart — intentional. UI generates an id, server tracks the
@@ -269,7 +275,9 @@ function kickRunner(key, directory) {
         broadcastQueue(activeKey); // queue just drained → empty
         const text = items.map(i => i.text).join('\n\n');
         const images = items.flatMap(i => i.imagePaths || []);
-        const resolved = await runOneTurn(activeKey, directory, text, images);
+        const resolved = syncBridge.isSyncId(activeKey)
+          ? await runSyncTurn(activeKey, directory, text, images)
+          : await runOneTurn(activeKey, directory, text, images);
         // A placeholder resolved to a real session id mid-run: the queue and
         // runner membership were already migrated inside runOneTurn at init.
         if (resolved && resolved !== activeKey) {
@@ -473,6 +481,35 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   }
 
   return resolvedSessionId || key;
+}
+
+// Runs a single SHARED (alpha) turn for `key` — a canonical conversation whose id
+// carries the `xsync_` prefix. The agent (claude|codex) is whatever the client
+// last selected for this session; both peers append to the same canonical store.
+// The reply is broadcast as Claude-shaped stream events so the existing renderer
+// paints it. The id is a stable conversation id, so it never re-keys → returns key.
+async function runSyncTurn(key, directory, prompt, imagePaths) {
+  const agent = sessionAgent.get(key) || 'claude';
+  liveTurn.begin(key, { prompt, images: imagePaths, compact: false });
+  broadcast(key, {
+    type: 'stream_start', sessionId: key, compact: false, prompt,
+    images: imagePaths.map(p => path.basename(p)), agent,
+  });
+  try {
+    await syncBridge.runSyncTurn({
+      conversationId: key, agent, prompt, cwd: directory, imagePaths,
+      onEvent: (event) => {
+        liveTurn.record(key, event);
+        broadcast(key, { type: 'stream_event', sessionId: key, event });
+      },
+    });
+  } catch (err) {
+    broadcast(key, { type: 'error', message: `[${agent}] ${err.message}`, sessionId: key });
+  } finally {
+    liveTurn.end(key);
+    broadcast(key, { type: 'stream_end', sessionId: key });
+  }
+  return key;
 }
 
 // Every Claude session id currently reachable from the GUI (visible OR
@@ -691,6 +728,29 @@ function handleConnection(ws /*, req */) {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
 
+        // Shared (alpha) conversation: history comes from the canonical store, not
+        // a native jsonl. Entries are pre-normalized into the renderer's shape.
+        if (syncBridge.isSyncId(sid)) {
+          subscribe(sid, ws);
+          const { entries, directory } = syncBridge.loadHistoryEntries(sid, msg.directory);
+          if (directory) watchDir(directory, ws);
+          send(ws, {
+            type: 'history',
+            sessionId: sid,
+            directory: directory || '',
+            branch: directory ? gitInfo.currentBranch(directory) : '',
+            history: entries,
+            streaming: runners.has(sid),
+            liveTurn: liveTurnPayload(sid),
+            currentEntry: null,
+            allowedTools: null,
+            lastTokens: null,
+          });
+          send(ws, queueStateMsg(sid));
+          send(ws, scheduledStateMsg(sid));
+          return;
+        }
+
         if (pendingSessions.has(sid)) {
           subscribe(sid, ws);
           const entry = pendingSessions.get(sid);
@@ -898,6 +958,13 @@ function handleConnection(ws /*, req */) {
         const placeholder = pendingSessions.get(sessionId);
         if (placeholder) directory = directory || placeholder.directory;
         else if (!directory) directory = findDirectoryForSessionId(sessionId);
+
+        // Shared (alpha) sessions carry no native jsonl, so fall back to the cwd
+        // remembered in the canonical store, and record the per-turn agent choice.
+        if (syncBridge.isSyncId(sessionId)) {
+          if (!directory) directory = syncBridge.directoryFor(sessionId);
+          sessionAgent.set(sessionId, msg.agent === 'codex' ? 'codex' : 'claude');
+        }
 
         if (!directory) {
           send(ws, { type: 'error', message: 'directory could not be determined', sessionId });

@@ -44,3 +44,8 @@ engine.bin
 
 # Investor pitch materials (local only)
 pitch/
+
+# Local caches / scratch (history-sync dev)
+.pnpm-store/
+.upload-files/
+.codex-export/

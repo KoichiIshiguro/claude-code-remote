@@ -770,10 +770,12 @@
       <button class="sched-badge" id="schedBadge" title="予約送信">⏰ <span id="schedCount">0</span> 予約</button>
       <div id="schedList" hidden></div>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
+      <button class="pill-btn" id="sharedBtn" title="このフォルダで Claude/Codex 共有セッションを開始 (alpha)">⇄ 共有(alpha)</button>
     </div>
     <div class="status-bar status-bar-meta">
       <span class="branch-pill" id="branchPill" title="現在の git ブランチ"></span>
       <button class="model-pill" id="modelPill" title="モデル / 工数">既定</button>
+      <button class="model-pill" id="agentPill" title="このセッションを次に実行するエージェント (claude/codex)。履歴は共有。" hidden>🤝 Claude</button>
       <div id="modelMenu" hidden></div>
       <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
@@ -1168,6 +1170,52 @@ let sessionId = new URLSearchParams(location.search).get('session');
 // Directory of the session currently on screen — needed by the branch picker
 // to scope list/switch requests, and to filter incoming `branch_changed`.
 let curDirectory = '';
+
+// ── Shared (alpha) sessions ───────────────────────────────────────────────────
+// A shared conversation's id carries the `xsync_` prefix; the server routes it
+// through the history-sync engine (one provider-neutral canonical transcript).
+// `selectedAgent` is which peer runs the NEXT turn — switching it never forks the
+// history, it stays shared. The choice is sent with each send_prompt (and on the
+// initial attach), so the server always knows who to run.
+const SYNC_PREFIX = 'xsync_';
+function isSyncSession() { return typeof sessionId === 'string' && sessionId.startsWith(SYNC_PREFIX); }
+let selectedAgent = 'claude';
+function updateAgentUI() {
+  const pill = document.getElementById('agentPill');
+  const sharedBtn = document.getElementById('sharedBtn');
+  if (pill) {
+    pill.hidden = !isSyncSession();
+    pill.textContent = selectedAgent === 'codex' ? '🤝 Codex' : '🤝 Claude';
+    pill.classList.toggle('shared-on', isSyncSession());
+  }
+  if (sharedBtn) sharedBtn.classList.toggle('shared-on', isSyncSession());
+}
+function startSharedSession() {
+  if (!curDirectory) { alert('先にプロジェクト（フォルダ）を開いてください。共有セッションはそのフォルダで開始します。'); return; }
+  const dir = curDirectory;
+  sessionId = SYNC_PREFIX + (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(16).slice(2)));
+  selectedAgent = 'claude';
+  try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
+  document.getElementById('messages').innerHTML = '';
+  curDirectory = dir;
+  document.getElementById('dirLabel').textContent = dir;
+  updateAgentUI();
+  // Subscribe this socket to the new id. History is empty until the first turn
+  // persists the cwd into the canonical store.
+  wsSend({ type: 'attach', sessionId, directory: dir, agent: selectedAgent });
+}
+function toggleAgent() {
+  if (!isSyncSession()) return;
+  selectedAgent = selectedAgent === 'codex' ? 'claude' : 'codex';
+  updateAgentUI();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const sb = document.getElementById('sharedBtn');
+  if (sb) sb.addEventListener('click', startSharedSession);
+  const ap = document.getElementById('agentPill');
+  if (ap) ap.addEventListener('click', toggleAgent);
+  updateAgentUI();
+});
 // No session → render an empty-state placeholder and auto-open the projects
 // sidebar so the user can pick one. Server's /terminal route already tries to
 // redirect to the most-recent jsonl, so we only reach here when zero sessions
@@ -1334,6 +1382,7 @@ function handleMessage(msg) {
       const dir = msg.directory || '';
       curDirectory = dir;
       document.getElementById('dirLabel').textContent = dir || sessionId;
+      updateAgentUI();
       const branchPill = document.getElementById('branchPill');
       branchPill.textContent = msg.branch ? '⎇ ' + msg.branch : '';
       document.getElementById('messages').innerHTML = '';
@@ -2146,7 +2195,11 @@ function dispatchPrompt(text, paths, previewImages, queued) {
   // gets its bubble + _inflightUser when stream_start reports it's being
   // processed — so don't claim it here.
   if (!queued) _inflightUser = { text, images: previewImages || [] };
-  wsSend({type:'send_prompt',sessionId,prompt:text,imagePaths:paths});
+  const out = {type:'send_prompt',sessionId,prompt:text,imagePaths:paths};
+  // Shared (alpha) conversation: carry the per-session agent choice and the cwd
+  // (no native jsonl to infer it from). Native sessions ignore both.
+  if (isSyncSession()) { out.agent = selectedAgent; out.directory = curDirectory || undefined; }
+  wsSend(out);
 }
 
 document.getElementById('cancelBtn').addEventListener('click', () => {

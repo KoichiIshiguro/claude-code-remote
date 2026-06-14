@@ -234,3 +234,12 @@ body.drag-over::after {
   .side-left  { border-right-width: 1px; }
   .side-right { border-left-width: 1px; }
 }
+
+/* Shared (alpha) session controls — history-sync. The active pills get an accent
+   so it's obvious the session is a Claude/Codex shared conversation. */
+#sharedBtn.shared-on,
+#agentPill.shared-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+#agentPill { cursor: pointer; }
