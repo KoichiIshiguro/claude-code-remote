@@ -7,6 +7,7 @@
 // we wrote. See [[history-sync-keystone]].
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
@@ -51,8 +52,28 @@ function ensureGitRepo(cwd) {
   } catch { /* best effort; codex will surface its own error if this failed */ }
 }
 
+// The app runs codex against a dedicated CODEX_HOME (data/codex-home) that is
+// rebuilt/relocated independently of the user's personal ~/.codex. Codex reads
+// its credentials from <CODEX_HOME>/auth.json, so without this the first turn
+// after a codex-home rebuild dies with `401 Unauthorized: Missing bearer`. We
+// symlink (not copy) the user's real ~/.codex/auth.json in, so token refreshes
+// there are picked up automatically. Best-effort and idempotent: if auth.json
+// already exists (or the source is missing) we leave it alone and let codex
+// surface its own auth error.
+function ensureCodexAuth(codexHome) {
+  try {
+    const dest = path.join(codexHome, 'auth.json');
+    if (fs.existsSync(dest)) return; // already present (file or live symlink)
+    const src = path.join(os.homedir(), '.codex', 'auth.json');
+    if (!fs.existsSync(src)) return; // nothing to share
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.symlinkSync(src, dest);
+  } catch { /* best effort; codex will surface its own auth error if this failed */ }
+}
+
 function run({ codexHome, cwd, sessionId, prompt, model, sandbox = 'danger-full-access' }) {
   ensureGitRepo(cwd);
+  ensureCodexAuth(codexHome);
   return new Promise((resolve, reject) => {
     const args = ['exec', '-s', sandbox, '-C', cwd];
     if (model) args.push('-m', model);
@@ -113,4 +134,4 @@ async function turn(transcript, prompt, opts = {}) {
   return { added, sessionId: mat.sessionId };
 }
 
-module.exports = { materialize, run, ingestDelta, turn, defaultCodexHome, ensureGitRepo };
+module.exports = { materialize, run, ingestDelta, turn, defaultCodexHome, ensureGitRepo, ensureCodexAuth };
