@@ -73,6 +73,12 @@ function setupAuth(app) {
   const sessionSecret = process.env.SESSION_SECRET || cfg.sessionSecret;
 
   sessionMiddleware = session({
+    // Cookies are scoped by HOST, not port — two instances on the same host
+    // (e.g. v1 :4020 and v2 :4030 on localhost) would otherwise share the
+    // default `connect.sid` and clobber each other's login (each instance has
+    // its own secret/store, so the other's cookie fails to verify → logout).
+    // A port-derived name keeps every instance's session cookie independent.
+    name: process.env.SESSION_COOKIE_NAME || `ccr_sid_${process.env.PORT || '4000'}`,
     secret: sessionSecret,
     store: new FileSessionStore(SESSIONS_FILE),
     resave: false,

@@ -1237,16 +1237,16 @@ function setAgent(a) {
 function startSharedSession(dir) {
   dir = dir || curDirectory;
   if (!dir) { alert('先にプロジェクト（フォルダ）を開いてください。'); return; }
-  sessionId = SYNC_PREFIX + (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(16).slice(2)));
-  selectedAgent = 'claude';
-  try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
-  document.getElementById('messages').innerHTML = '';
-  curDirectory = dir;
-  const dl = document.getElementById('dirLabel'); if (dl) dl.textContent = dir;
-  updateAgentUI();
-  // Subscribe this socket to the new id. History is empty until the first turn
-  // persists the cwd into the canonical store.
-  wsSend({ type: 'attach', sessionId, directory: dir, agent: selectedAgent });
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    alert('サーバに接続中です。少し待って再度お試しください。');
+    return;
+  }
+  // The SERVER mints the id and persists an empty canonical transcript before
+  // replying with shared_session_created — so the session is durable the moment
+  // it's created (reload-safe, in the sidebar, visible to other devices) rather
+  // than living only in this browser's memory until the first turn. We commit
+  // the client UI when that reply arrives.
+  wsSend({ type: 'create_shared_session', directory: dir });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1603,6 +1603,23 @@ function handleMessage(msg) {
     case 'session_created':
       location.href = `/terminal?session=${msg.session.id}`;
       break;
+    case 'shared_session_created': {
+      // Server has persisted the new (empty) shared session and assigned its id.
+      // Commit the client UI now and attach normally to pull branch/queue/
+      // scheduled state (history is empty). The empty-state hides the composer,
+      // so we must restore it here.
+      sessionId = msg.sessionId;
+      selectedAgent = 'claude';
+      try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
+      document.getElementById('messages').innerHTML = '';
+      const inputArea = document.querySelector('.input-area');
+      if (inputArea) inputArea.style.display = '';
+      curDirectory = msg.directory || curDirectory;
+      const dl = document.getElementById('dirLabel'); if (dl) dl.textContent = curDirectory;
+      updateAgentUI();
+      wsSend({ type: 'attach', sessionId, directory: curDirectory, agent: selectedAgent });
+      break;
+    }
     case 'session_assigned':
       // A placeholder session created via create_session has just been
       // assigned its real Claude session id by the CLI's init event.

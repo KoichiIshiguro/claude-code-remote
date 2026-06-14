@@ -776,6 +776,26 @@ function handleConnection(ws /*, req */) {
         break;
       }
 
+      case 'create_shared_session': {
+        // Canonical-first new session. The SERVER mints the id and persists an
+        // empty transcript immediately (cwd-bound, provider-neutral) so the
+        // session is durable from the instant of creation — reload-safe, visible
+        // in the sidebar, and seen by other devices — instead of living only in
+        // one browser's memory until the first turn writes it.
+        const directory = msg.directory;
+        if (!directory) { send(ws, { type: 'error', message: 'directory required' }); return; }
+        const id = syncBridge.newSyncId();
+        const transcript = historyStore.load(id, { cwd: directory });
+        transcript.cwd = directory;
+        transcript.providerIds = {};
+        historyStore.save(transcript);
+        subscribe(id, ws);
+        watchDir(directory, ws);
+        send(ws, { type: 'shared_session_created', sessionId: id, directory });
+        send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
+        break;
+      }
+
       case 'delete_session': {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
