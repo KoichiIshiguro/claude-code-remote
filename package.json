@@ -1,6 +1,6 @@
 {
   "name": "claude-code-remote",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Self-hosted control plane for Claude Code — operate your own main PC's AI from any phone or browser. Runs on your Claude subscription via `claude -p`, reserves prompts to fire the moment a rate limit clears, and keeps one shared context and progress across every device.",
   "main": "server.js",
   "scripts": {

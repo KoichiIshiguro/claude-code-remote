@@ -25,7 +25,12 @@ function defaultClaudeHome() {
 
 function materialize(transcript, opts = {}) {
   const home = opts.home || defaultClaudeHome();
-  const cwd = opts.cwd || transcript.cwd || process.cwd();
+  // Claude derives its projects-dir name from the *real* (symlink-resolved) cwd,
+  // so canonicalize here. Otherwise a symlinked workdir (e.g. /tmp → /private/tmp)
+  // makes us read the jsonl at the un-resolved path while claude wrote it under
+  // the resolved one → ENOENT on ingest.
+  let cwd = opts.cwd || transcript.cwd || process.cwd();
+  try { cwd = fs.realpathSync(cwd); } catch { /* keep as-is if it can't be resolved */ }
   const sessionId = crypto.randomUUID();
   const hasHistory = (transcript.turns || []).length > 0;
   const jsonlPath = claudePathFor(home, cwd, sessionId);
