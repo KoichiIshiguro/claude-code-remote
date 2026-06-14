@@ -573,8 +573,8 @@
      予約) on the left, compact on the right; row 2 = branch + model on the
      left, context size on the right. */
   .status-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-  .status-bar-top { padding: 4px 0 0; }
-  .status-bar-meta { padding: 2px 0 8px; }
+  .status-bar-top { padding: 0 0 4px; }
+  .status-bar-meta { padding: 6px 0 6px; }
   .status-bar-top #compactBtn { margin-left: auto; }   /* compact → far right of row 1 */
   .status-bar-meta .ctx-meter { margin-left: auto; }    /* context → far right of row 2 */
   /* Inline "compacting…" note shown in the message stream while /compact runs. */
@@ -708,8 +708,8 @@
     .bottom-nav { display: block; }
     /* Hide desktop sidebar toggles, keep settings */
     .hdr-left-btn, .hdr-right-btn { display: none; }
-    /* Give input area bottom space so it's above safe area */
-    .input-area { padding-bottom: max(12px, env(safe-area-inset-bottom, 0px)); }
+    /* The bottom-nav below already pads for the safe area, so keep this tight. */
+    .input-area { padding-bottom: 8px; }
   }
 
   /* Desktop: hide bottom nav, show sidebar toggle buttons */
@@ -1651,9 +1651,7 @@ function updateCtxPill(tokens) {
   const cls = (_autoCompactEffective !== 0 && tokens > thr) ? 'hot' : tokens > warnAt ? 'warn' : '';
   if (meter) {
     const pct = Math.round((tokens / 200_000) * 100);
-    const tail = (_autoCompactEffective !== 0 && tokens > thr) ? ' · auto-compacting next turn'
-               : tokens > warnAt ? ` · ${pct}%`
-               : '';
+    const tail = tokens > warnAt ? ` · ${pct}%` : '';
     meter.textContent = `Context: ${k}k tokens${tail}`;
     meter.className = 'ctx-meter' + (cls ? ' ' + cls : '');
   }
