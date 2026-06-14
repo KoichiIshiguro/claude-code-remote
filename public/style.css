@@ -133,7 +133,7 @@ a { color: var(--accent); text-decoration: none; }
 .msg-error .bubble { background: rgba(248,81,73,.15); border: 1px solid rgba(248,81,73,.3); color: var(--red); padding: 10px 14px; border-radius: var(--radius-sm); }
 
 /* ── Input area ── */
-.input-area { padding: 6px 16px 8px; background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0; position: relative; }
+.input-area { padding: 8px 16px 8px; background: var(--surface); border-top: 1px solid var(--border); flex-shrink: 0; position: relative; }
 .image-previews { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .image-previews:empty { display: none; }   /* no dead space when nothing is attached */
 .image-previews .preview-item { position: relative; }
@@ -196,9 +196,9 @@ a { color: var(--accent); text-decoration: none; }
 #schedList { position: fixed; z-index: 500; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,.45); padding: 6px; min-width: 260px; max-width: 86vw; }
 #schedList .sched-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 6px; font-size: 13px; }
 #schedList .sched-item + .sched-item { border-top: 1px solid var(--border); }
-#schedList .sched-item .when { color: var(--accent); font-size: 12px; white-space: nowrap; }
-#schedList .sched-item .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-#schedList .sched-item .x { background: none; border: none; color: var(--text-muted); font-size: 14px; cursor: pointer; padding: 2px 6px; }
+#schedList .sched-item .when { flex: none; color: var(--accent); font-size: 12px; white-space: nowrap; }
+#schedList .sched-item .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+#schedList .sched-item .x { flex: none; background: none; border: none; color: var(--text-muted); font-size: 14px; cursor: pointer; padding: 2px 6px; }
 #schedList .sched-item .x:hover { color: var(--red, #f85149); }
 
 /* ── Drag & drop overlay ── */

@@ -68,6 +68,26 @@ function takeDue(now) {
   return due;
 }
 
+// Pull (and delete) the due reservations for a SINGLE session. The runner calls
+// this at the top of each turn so reservations that came due mid-turn fire the
+// moment the turn finishes — and only its own session's items are consumed, so
+// other sessions' due reservations are left for their own runners.
+function takeDueFor(sessionId, now) {
+  const due = items.filter(i => i.sessionId === sessionId && i.fireAt <= now);
+  if (due.length) {
+    const ids = new Set(due.map(d => d.id));
+    items = items.filter(i => !ids.has(i.id));
+    save();
+  }
+  return due;
+}
+
+// Peek (no removal) at everything due at `now` — used to decide which sessions
+// to wake. The actual consumption happens in the runner via takeDueFor.
+function listDue(now) {
+  return items.filter(i => i.fireAt <= now);
+}
+
 // Follow a placeholder→real session id rename, same contract as prompt-queue.
 function rekey(oldKey, newKey) {
   if (!oldKey || !newKey || oldKey === newKey) return;
@@ -78,4 +98,4 @@ function rekey(oldKey, newKey) {
   if (changed) save();
 }
 
-module.exports = { add, listFor, remove, takeDue, rekey };
+module.exports = { add, listFor, remove, takeDue, takeDueFor, listDue, rekey };

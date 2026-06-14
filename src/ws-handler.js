@@ -218,14 +218,19 @@ function broadcastScheduled(key) {
   broadcast(key, scheduledStateMsg(key));
 }
 
-// Fire due reservations by feeding them into the normal prompt queue — from
-// there the existing runner machinery takes over (batching, placeholder rekey,
-// browser-independence). 30s granularity is plenty for minute-level scheduling.
+// Wake any session that has a reservation due. We deliberately do NOT consume
+// the reservations here — the runner pulls its own due items (with priority over
+// the live queue) at the top of each turn. That single rule covers both cases:
+// an idle session gets a fresh runner that drains them immediately, and a busy
+// session's existing runner drains them the instant its current turn finishes.
+// Pulling in the runner (not here) also closes the race where a reservation
+// enqueued just as the runner is exiting would be orphaned with no one to drain
+// it. 30s granularity is plenty for minute-level scheduling.
 function checkScheduledPrompts() {
-  for (const item of scheduledPrompts.takeDue(Date.now())) {
-    promptQueue.enqueue(item.sessionId, { text: item.text, imagePaths: item.imagePaths });
-    broadcastQueue(item.sessionId);
-    broadcastScheduled(item.sessionId);
+  const woken = new Set();
+  for (const item of scheduledPrompts.listDue(Date.now())) {
+    if (woken.has(item.sessionId)) continue;
+    woken.add(item.sessionId);
     kickRunner(item.sessionId, item.directory);
   }
 }
@@ -251,7 +256,15 @@ function kickRunner(key, directory) {
   (async () => {
     try {
       while (true) {
-        const items = promptQueue.dequeueAll(activeKey);
+        // Reservations first: pull this session's due ones and batch them ahead
+        // of the live queue. Re-checked at the top of every turn, so a reserva-
+        // tion whose time passed mid-turn fires the moment this turn finishes.
+        const due = scheduledPrompts.takeDueFor(activeKey, Date.now());
+        if (due.length) broadcastScheduled(activeKey);
+        const items = [
+          ...due.map(i => ({ id: i.id, text: i.text, imagePaths: i.imagePaths })),
+          ...promptQueue.dequeueAll(activeKey),
+        ];
         if (!items.length) break;
         broadcastQueue(activeKey); // queue just drained → empty
         const text = items.map(i => i.text).join('\n\n');

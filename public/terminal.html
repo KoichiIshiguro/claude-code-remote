@@ -573,8 +573,9 @@
      予約) on the left, compact on the right; row 2 = branch + model on the
      left, context size on the right. */
   .status-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  /* Even 8px vertical rhythm: top edge → row1 → row2 → textarea all match. */
   .status-bar-top { padding: 0 0 4px; }
-  .status-bar-meta { padding: 6px 0 6px; }
+  .status-bar-meta { padding: 4px 0 8px; }
   .status-bar-top #compactBtn { margin-left: auto; }   /* compact → far right of row 1 */
   .status-bar-meta .ctx-meter { margin-left: auto; }    /* context → far right of row 2 */
   /* Inline "compacting…" note shown in the message stream while /compact runs. */
@@ -2116,7 +2117,7 @@ async function sendPrompt() {
   // Allow a files-only send: the attachments are the message. Block only when
   // there's neither text nor an attachment (the server applies the same rule).
   if (!text && pendingImages.length === 0) return;
-  inp.value = ''; autoResize(inp); syncSendBtn(); hideSlashMenu();
+  inp.value = ''; autoResize(inp); syncSendBtn(); hideSlashMenu(); clearDraft();
   let uploadedPaths = [];
   const previewUrls = pendingImages.map(p => p.dataUrl);
   if (pendingImages.length > 0) {
@@ -2561,7 +2562,8 @@ document.getElementById('schedBadge').addEventListener('click', () => {
   renderSchedList();
   list.hidden = false;
   const r = document.getElementById('schedBadge').getBoundingClientRect();
-  list.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 280)) + 'px';
+  const w = list.offsetWidth;
+  list.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
   list.style.bottom = (window.innerHeight - r.top + 6) + 'px';
 });
 // Tap-away closes either popover.
@@ -2582,7 +2584,30 @@ document.getElementById('promptInput').addEventListener('keydown', e => {
   if (isMobile()) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
 });
-document.getElementById('promptInput').addEventListener('input', e => { autoResize(e.target); syncSendBtn(); updateSlashMenu(); });
+document.getElementById('promptInput').addEventListener('input', e => { autoResize(e.target); syncSendBtn(); updateSlashMenu(); saveDraft(); });
+
+// ── Draft persistence ──────────────────────────────────────────────────────
+// Keep an unsent prompt across reloads / PWA refreshes / session switches
+// (switching sessions is a full page navigation, so this also covers that).
+// Scoped per session so each conversation keeps its own draft.
+function draftKey() { return 'ccr-draft:' + (sessionId || 'new'); }
+function saveDraft() {
+  try {
+    const v = document.getElementById('promptInput').value;
+    if (v) localStorage.setItem(draftKey(), v);
+    else localStorage.removeItem(draftKey());
+  } catch {}
+}
+function clearDraft() { try { localStorage.removeItem(draftKey()); } catch {} }
+function restoreDraft() {
+  try {
+    const ta = document.getElementById('promptInput');
+    if (ta.value) return;                 // never clobber text already present
+    const v = localStorage.getItem(draftKey());
+    if (v) { ta.value = v; autoResize(ta); syncSendBtn(); }
+  } catch {}
+}
+restoreDraft();
 // Disable the send button only when there's nothing to send — no prompt text
 // (whitespace-only counts as empty) AND no attachment. A files-only send is
 // valid, so attachments alone keep the button live.
