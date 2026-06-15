@@ -10,6 +10,10 @@ const {
   thinkingPart,
   toolCallPart,
   toolResultPart,
+  contextItem,
+  appendContextItem,
+  setProviderState,
+  contextText,
   textFromContent,
 } = require('./canonical');
 const { readJsonl, stringifyJsonl } = require('./claude-adapter');
@@ -25,6 +29,20 @@ function outputText(output) {
   if (output == null) return '';
   if (typeof output === 'string') return output;
   return JSON.stringify(output);
+}
+
+function payloadText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (typeof payload.message === 'string') return payload.message;
+  if (typeof payload.content === 'string') return payload.content;
+  if (Array.isArray(payload.content)) return textFromContent(payload.content);
+  if (payload.summary) {
+    if (typeof payload.summary === 'string') return payload.summary;
+    if (Array.isArray(payload.summary)) {
+      return payload.summary.map((s) => s && (s.text || s.content || '')).filter(Boolean).join('\n');
+    }
+  }
+  return '';
 }
 
 function isBootstrapMessage(payload) {
@@ -46,6 +64,7 @@ function codexToCanonical(input, opts = {}) {
   let updatedAt = '';
   const turns = [];
   const seenUserMessages = new Set();
+  let meta = {};
 
   for (const event of events) {
     if (!event || typeof event !== 'object') continue;
@@ -57,12 +76,26 @@ function codexToCanonical(input, opts = {}) {
       id = id || payload.id || '';
       cwd = cwd || payload.cwd || '';
       createdAt = createdAt || payload.timestamp || event.timestamp;
+      meta = setProviderState(meta, 'codex', {
+        sessionMeta: payload,
+        baseInstructions: payload.base_instructions,
+        modelProvider: payload.model_provider,
+        cliVersion: payload.cli_version,
+        threadSource: payload.thread_source,
+      });
       continue;
     }
 
     if (event.type === 'response_item') {
       const payload = event.payload || {};
-      if (isBootstrapMessage(payload)) continue;
+      if (isBootstrapMessage(payload)) {
+        meta = appendContextItem(meta, contextItem('codex', 'bootstrap', payloadText(payload), {
+          ts: event.timestamp,
+          role: payload.role || '',
+          raw: event,
+        }));
+        continue;
+      }
 
       if (payload.type === 'message') {
         const text = textFromContent(payload.content);
@@ -90,11 +123,17 @@ function codexToCanonical(input, opts = {}) {
       }
 
       if (payload.type === 'reasoning') {
-        const text = payload.summary?.map((s) => s.text || '').filter(Boolean).join('\n') || payload.content || '';
+        const text = payloadText(payload);
         if (text) {
           turns.push(makeTurn('assistant', [thinkingPart(text)], {
             ts: event.timestamp,
             providerMeta: { codex: event },
+          }));
+        } else {
+          meta = appendContextItem(meta, contextItem('codex', 'reasoning', '', {
+            ts: event.timestamp,
+            role: 'assistant',
+            raw: event,
           }));
         }
         continue;
@@ -121,16 +160,32 @@ function codexToCanonical(input, opts = {}) {
       continue;
     }
 
-    if (event.type === 'event_msg' && event.payload?.type === 'user_message') {
-      const text = event.payload.message || '';
-      if (text && !seenUserMessages.has(text)) {
-        seenUserMessages.add(text);
-        turns.push(makeTurn('user', [textPart(text)], {
+    if (event.type === 'event_msg') {
+      if (event.payload?.type === 'user_message') {
+        const text = event.payload.message || '';
+        if (text && !seenUserMessages.has(text)) {
+          seenUserMessages.add(text);
+          turns.push(makeTurn('user', [textPart(text)], {
+            ts: event.timestamp,
+            providerMeta: { codex: event },
+          }));
+        }
+        continue;
+      }
+      if (event.payload?.type === 'agent_message') {
+        meta = appendContextItem(meta, contextItem('codex', 'agent_message', event.payload.message || '', {
           ts: event.timestamp,
-          providerMeta: { codex: event },
+          role: 'assistant',
+          raw: event,
         }));
+        continue;
       }
     }
+
+    meta = appendContextItem(meta, contextItem('codex', event.type || 'unknown_event', payloadText(event.payload), {
+      ts: event.timestamp,
+      raw: event,
+    }));
   }
 
   return makeTranscript({
@@ -142,6 +197,7 @@ function codexToCanonical(input, opts = {}) {
     sourceProvider: 'codex',
     providerIds: { codex: id || '' },
     turns,
+    meta,
   });
 }
 
@@ -179,6 +235,22 @@ function canonicalToCodex(transcript, opts = {}) {
       },
     },
   }];
+
+  const preservedContext = contextText(transcript);
+  if (preservedContext) {
+    entries.push({
+      timestamp: createdAt,
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'developer',
+        content: [{
+          type: 'input_text',
+          text: `<shared-agent-context>\n${preservedContext}\n</shared-agent-context>`,
+        }],
+      },
+    });
+  }
 
   for (const turn of transcript.turns || []) {
     const ts = iso(turn.ts);

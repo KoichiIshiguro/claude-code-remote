@@ -41,7 +41,14 @@ const codexJsonl = compiler.canonicalToCodex(canonical);
 - The Codex persisted rollout format is observed from local Codex sessions, not
   a documented stable API.
 - Private reasoning/encrypted content is not converted into visible text.
-- Unknown metadata is kept only in canonical provider metadata during a single
-  conversion run.
+- Non-visible provider context is preserved in canonical `meta.contextItems`
+  where possible, including compact summaries, bootstrap/developer messages,
+  agent progress messages, system metadata, and unknown events. Context-bearing
+  items are materialized back into synthetic native sessions as
+  `<shared-agent-context>` metadata so the target agent has the background
+  without turning it into normal visible chat history.
+- Provider-specific state such as Codex `session_meta` is preserved under
+  canonical `meta.providerState`, but private/internal CLI semantics are still
+  best-effort.
 - Generated output should be validated with each CLI before enabling automatic
   sync in the main app.

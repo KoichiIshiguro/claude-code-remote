@@ -35,7 +35,7 @@ function stableHash(value) {
 function makeTranscript(attrs = {}) {
   const createdAt = iso(attrs.createdAt || attrs.timestamp);
   return {
-    version: 1,
+    version: attrs.version || 2,
     id: attrs.id || newId(),
     cwd: attrs.cwd || '',
     createdAt,
@@ -44,7 +44,18 @@ function makeTranscript(attrs = {}) {
     sourceProvider: attrs.sourceProvider || '',
     providerIds: attrs.providerIds || {},
     turns: Array.isArray(attrs.turns) ? attrs.turns : [],
-    meta: attrs.meta || {},
+    // Provider-neutral metadata that is not a normal visible chat turn but may
+    // matter when materializing a synthetic native session for another agent.
+    //
+    // Shape:
+    //   {
+    //     contextItems: [
+    //       { id, provider, kind, role, ts, text, private, raw }
+    //     ],
+    //     providerState: { claude: {...}, codex: {...} },
+    //     selection: {...} // used by the main app
+    //   }
+    meta: attrs.meta && typeof attrs.meta === 'object' ? attrs.meta : {},
   };
 }
 
@@ -85,6 +96,71 @@ function toolResultPart(toolCallId, text, isError = false) {
   };
 }
 
+function contextItem(provider, kind, text, attrs = {}) {
+  return {
+    id: attrs.id || newId(),
+    provider: provider || attrs.provider || '',
+    kind: kind || attrs.kind || 'metadata',
+    role: attrs.role || '',
+    ts: iso(attrs.ts || attrs.timestamp),
+    text: text == null ? '' : String(text),
+    private: attrs.private !== undefined ? !!attrs.private : true,
+    raw: attrs.raw,
+  };
+}
+
+function appendContextItem(meta, item) {
+  if (!item) return meta && typeof meta === 'object' ? meta : {};
+  const out = meta && typeof meta === 'object' ? { ...meta } : {};
+  const list = Array.isArray(out.contextItems) ? out.contextItems.slice() : [];
+  list.push(item);
+  out.contextItems = list;
+  return out;
+}
+
+function setProviderState(meta, provider, state) {
+  const out = meta && typeof meta === 'object' ? { ...meta } : {};
+  const providerState = out.providerState && typeof out.providerState === 'object'
+    ? { ...out.providerState }
+    : {};
+  providerState[provider] = {
+    ...(providerState[provider] && typeof providerState[provider] === 'object' ? providerState[provider] : {}),
+    ...(state && typeof state === 'object' ? state : {}),
+  };
+  out.providerState = providerState;
+  return out;
+}
+
+function contextText(transcript, opts = {}) {
+  const items = transcript && transcript.meta && Array.isArray(transcript.meta.contextItems)
+    ? transcript.meta.contextItems
+    : [];
+  const allowedKinds = new Set(opts.kinds || [
+    'system',
+    'bootstrap',
+    'compact_summary',
+    'summary',
+    'agent_message',
+    'handoff',
+    'task_state',
+  ]);
+  const chunks = [];
+  for (const item of items) {
+    if (!item || !allowedKinds.has(item.kind)) continue;
+    const text = String(item.text || '').trim();
+    if (!text) continue;
+    const label = [item.provider, item.kind].filter(Boolean).join(':');
+    chunks.push(label ? `### ${label}\n${text}` : text);
+  }
+  if (!chunks.length) return '';
+  return [
+    'The following provider-neutral context was preserved from non-visible or provider-specific session metadata.',
+    'Use it only as background for continuing this shared conversation.',
+    '',
+    chunks.join('\n\n'),
+  ].join('\n');
+}
+
 function visibleText(turn) {
   return (turn.parts || [])
     .filter((part) => part.type === 'text')
@@ -117,6 +193,10 @@ module.exports = {
   thinkingPart,
   toolCallPart,
   toolResultPart,
+  contextItem,
+  appendContextItem,
+  setProviderState,
+  contextText,
   visibleText,
   transcriptSummary,
 };

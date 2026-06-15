@@ -70,7 +70,7 @@ Introduce a provider-neutral internal model under `src/transcripts/`:
 
 ```js
 {
-  version: 1,
+  version: 2,
   id: "session id",
   cwd: "/absolute/project/path",
   createdAt: "ISO timestamp",
@@ -78,6 +78,24 @@ Introduce a provider-neutral internal model under `src/transcripts/`:
   title: "optional display title",
   sourceProvider: "claude" | "codex" | "remote",
   providerIds: { claude: "...", codex: "..." },
+  meta: {
+    contextItems: [
+      {
+        id: "stable metadata id",
+        provider: "claude" | "codex",
+        kind: "bootstrap" | "compact_summary" | "agent_message" | "system" | "handoff" | "unknown_event",
+        role: "system" | "developer" | "user" | "assistant",
+        ts: "ISO timestamp",
+        text: "context-bearing text when available",
+        private: true,
+        raw: {}
+      }
+    ],
+    providerState: {
+      claude: {},
+      codex: { sessionMeta: {}, baseInstructions: {} }
+    }
+  },
   turns: [
     {
       id: "stable event id",
@@ -142,24 +160,27 @@ phase 1, then gradually moved behind the common interface.
   already supported, but allow dropping when writing to Codex if Codex cannot
   accept plaintext reasoning.
 - `assistant` tool_use blocks -> tool_call part.
-- `system compact_boundary`, `ai-title`, `last-prompt`, and similar metadata ->
-  transcript metadata, not normal chat turns.
+- `isMeta`, `isCompactSummary`, `system`, `ai-title`, `last-prompt`, and
+  similar metadata -> `meta.contextItems` / `meta.providerState`, not normal
+  visible chat turns. Local-command plumbing is preserved but excluded from
+  cross-agent context materialization.
 
 ### Codex to canonical
 
-- `session_meta.payload` -> transcript id/cwd/provider metadata.
+- `session_meta.payload` -> transcript id/cwd plus `meta.providerState.codex`.
 - `response_item.payload.type === "message"`:
   - `role: "user"` -> user text, skipping developer/system bootstrap messages.
   - `role: "assistant"` -> assistant text.
+  - `role: "developer"` / `role: "system"` / bootstrap user messages ->
+    `meta.contextItems`.
 - `event_msg.payload.type === "user_message"` can backfill user text when the
   matching `response_item` is absent.
 - `response_item.payload.type === "function_call"` -> tool_call part. Parse
   `arguments` as JSON when possible, otherwise preserve as raw text.
 - `response_item.payload.type === "function_call_output"` -> tool_result part
   by `call_id`.
-- `event_msg.payload.type === "agent_message"` is display/progress commentary.
-  Keep it only as assistant commentary if no matching assistant message exists;
-  otherwise treat as live event metadata.
+- `event_msg.payload.type === "agent_message"` is display/progress commentary;
+  preserve it as `meta.contextItems` rather than a visible assistant turn.
 - `response_item.payload.type === "reasoning"` should not be converted to
   Claude visible text. Preserve only opaque metadata when present.
 
@@ -170,6 +191,9 @@ Generate Claude-compatible events with:
 - `parentUuid`, `sessionId`, `uuid`, `timestamp`, `cwd`.
 - `type: "user"` for user turns with `{ role: "user", content: "..." }`.
 - `type: "assistant"` for assistant turns with Anthropic-style content blocks.
+- Context-bearing `meta.contextItems` are emitted before visible turns as an
+  `isMeta` `<shared-agent-context>` user event so Claude can resume with the
+  background while the normal UI can keep it out of visible chat history.
 - `tool_call` -> `tool_use` block with stable `id`.
 - `tool_result` -> following `user` event with `tool_result` content.
 - `entrypoint: "cli"` in early metadata if needed so native Claude TUI resume
@@ -189,6 +213,8 @@ Generate a minimal Codex persisted transcript:
 - Tool calls as `response_item` function calls.
 - Tool results as `response_item` function call outputs.
 - Optional `event_msg.user_message` lines for user display/search parity.
+- Context-bearing `meta.contextItems` are emitted after `session_meta` as a
+  developer `<shared-agent-context>` message.
 - Update `~/.codex/session_index.jsonl` with `{ id, thread_name, updated_at }`
   if a title is available.
 

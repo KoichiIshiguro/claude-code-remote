@@ -10,6 +10,10 @@ const {
   thinkingPart,
   toolCallPart,
   toolResultPart,
+  contextItem,
+  appendContextItem,
+  setProviderState,
+  contextText,
   textFromContent,
 } = require('./canonical');
 
@@ -33,6 +37,27 @@ function displayForTool(name, input) {
   return name || 'tool';
 }
 
+function isSharedContextText(text) {
+  return String(text || '').trim().startsWith('<shared-agent-context>');
+}
+
+function isLocalCommandMetaText(text) {
+  const t = String(text || '').trim();
+  return /^<local-command-(caveat|stdout|stderr)>/i.test(t)
+    || /^<command-(name|message|args)>/i.test(t)
+    || t === 'Continue from where you left off.';
+}
+
+function eventText(event) {
+  if (!event || typeof event !== 'object') return '';
+  if (typeof event.summary === 'string') return event.summary;
+  if (typeof event.content === 'string') return event.content;
+  if (typeof event.message === 'string') return event.message;
+  if (event.message) return textFromContent(event.message.content || event.message);
+  if (event.attachment && typeof event.attachment.content === 'string') return event.attachment.content;
+  return '';
+}
+
 function claudeToCanonical(input, opts = {}) {
   const events = Array.isArray(input) ? input : readJsonl(input);
   let id = opts.id || '';
@@ -41,6 +66,7 @@ function claudeToCanonical(input, opts = {}) {
   let updatedAt = '';
   let title = '';
   const turns = [];
+  let meta = {};
 
   for (const event of events) {
     if (!event || typeof event !== 'object') continue;
@@ -51,11 +77,24 @@ function claudeToCanonical(input, opts = {}) {
 
     if (event.type === 'ai-title' && event.aiTitle) {
       title = String(event.aiTitle);
+      meta = setProviderState(meta, 'claude', { title: title, titleEvent: event });
       continue;
     }
 
     if (event.type === 'user') {
-      if (event.isMeta || event.isCompactSummary) continue;
+      if (event.isMeta || event.isCompactSummary) {
+        const text = eventText(event);
+        const kind = event.isCompactSummary
+          ? 'compact_summary'
+          : (isSharedContextText(text) ? 'handoff' : (isLocalCommandMetaText(text) ? 'local_command' : 'system'));
+        meta = appendContextItem(meta, contextItem('claude', kind, text, {
+          id: event.uuid,
+          ts: event.timestamp,
+          role: 'user',
+          raw: event,
+        }));
+        continue;
+      }
       const content = event.message && event.message.content;
       if (Array.isArray(content) && content.some((part) => part && part.type === 'tool_result')) {
         for (const part of content) {
@@ -84,6 +123,17 @@ function claudeToCanonical(input, opts = {}) {
       continue;
     }
 
+    if (event.type === 'system') {
+      const text = eventText(event);
+      meta = appendContextItem(meta, contextItem('claude', event.subtype || 'system', text, {
+        id: event.uuid,
+        ts: event.timestamp,
+        role: 'system',
+        raw: event,
+      }));
+      continue;
+    }
+
     if (event.type === 'assistant') {
       const parts = [];
       for (const part of event.message?.content || []) {
@@ -100,7 +150,14 @@ function claudeToCanonical(input, opts = {}) {
         ts: event.timestamp,
         providerMeta: { claude: event },
       }));
+      continue;
     }
+
+    meta = appendContextItem(meta, contextItem('claude', 'unknown_event', eventText(event), {
+      id: event.uuid,
+      ts: event.timestamp,
+      raw: event,
+    }));
   }
 
   return makeTranscript({
@@ -112,6 +169,7 @@ function claudeToCanonical(input, opts = {}) {
     sourceProvider: 'claude',
     providerIds: { claude: id || '' },
     turns,
+    meta,
   });
 }
 
@@ -121,6 +179,29 @@ function canonicalToClaude(transcript, opts = {}) {
   const version = opts.version || 'codex-compiler-prototype';
   const entries = [];
   let parentUuid = null;
+
+  const preservedContext = contextText(transcript);
+  if (preservedContext) {
+    const uuid = newId();
+    entries.push({
+      parentUuid,
+      isSidechain: false,
+      type: 'user',
+      message: {
+        role: 'user',
+        content: `<shared-agent-context>\n${preservedContext}\n</shared-agent-context>`,
+      },
+      isMeta: true,
+      uuid,
+      timestamp: iso(transcript.createdAt),
+      userType: 'external',
+      entrypoint: 'cli',
+      cwd,
+      sessionId,
+      version,
+    });
+    parentUuid = uuid;
+  }
 
   for (const turn of transcript.turns || []) {
     const uuid = turn.id || newId();
