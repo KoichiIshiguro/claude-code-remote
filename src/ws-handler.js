@@ -20,6 +20,7 @@ const syncBridge = require('./history-sync/ws-bridge');
 const historyStore = require('./history-sync/store');
 const historyPort = require('./history-sync/port');
 const { segmentByAgent } = require('./history-sync/segment-by-agent');
+const { selectionForTranscript, setTranscriptSelection } = require('./history-sync/selection');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -33,6 +34,11 @@ const sessionAgent = new Map();
 // session, sent per-turn alongside the agent. Empty/unset → let the agent CLI use
 // its own default. Per-item model (Phase 2 queue) overrides this fallback.
 const sessionModel = new Map();
+
+// Shared (alpha) conversations only: the reasoning effort the client last
+// selected for the session, sent per-turn alongside the model. Empty/unset →
+// let the agent CLI use its own default. Per-item effort overrides this fallback.
+const sessionEffort = new Map();
 
 // Placeholder sessions that haven't yet been written to a jsonl. Lost on
 // server restart — intentional. UI generates an id, server tracks the
@@ -222,12 +228,47 @@ function listAllSessionsLegacy() {
 // batched prompt (blank-line joined). The loop lives in the server process,
 // so closing the browser doesn't stop it — the next batch still fires.
 
-const runners = new Set(); // keys (sessionId | placeholderId) with an active runner
+// keys (sessionId | placeholderId) with an active runner. Values carry a unique
+// token so cancel/rekey/finally cannot accidentally clear a newer runner.
+const runners = new Map();
 // Keys whose CURRENT in-flight turn is a (auto-)compact. Server-authoritative so
 // a fresh page load / project switch can re-show the "compacting…" note from the
 // history payload instead of relying on client-side in-memory state (which a full
 // navigation wipes). Maps key → { auto: bool }.
 const compactingKeys = new Map();
+
+function runnerState(key) {
+  return runners.get(key) || null;
+}
+
+function markRunnerCancelling(key) {
+  const r = runners.get(key);
+  if (r) r.cancelling = true;
+}
+
+function rekeyRunner(oldKey, newKey) {
+  if (!oldKey || !newKey || oldKey === newKey) return;
+  const r = runners.get(oldKey);
+  if (!r) return;
+  runners.delete(oldKey);
+  r.activeKey = newKey;
+  if (!runners.has(newKey)) runners.set(newKey, r);
+}
+
+function hasPendingWork(key) {
+  const queued = (promptQueue.list(key) || []).length > 0;
+  const due = scheduledPrompts.listFor(key).some(i => i.fireAt <= Date.now());
+  return queued || due;
+}
+
+function loadSelectionForSession(sessionId, directory) {
+  try {
+    const t = historyStore.load(sessionId, { cwd: directory });
+    return selectionForTranscript(t);
+  } catch {
+    return selectionForTranscript(null);
+  }
+}
 
 function queueStateMsg(key) {
   return {
@@ -286,7 +327,8 @@ function liveTurnPayload(key) {
 // Idempotent: starts a runner for `key` if one isn't already draining it.
 function kickRunner(key, directory) {
   if (runners.has(key)) return;
-  runners.add(key);
+  const runner = { id: uuidv4(), activeKey: key, directory, cancelling: false };
+  runners.set(key, runner);
   let activeKey = key;
   (async () => {
     try {
@@ -297,10 +339,11 @@ function kickRunner(key, directory) {
         const due = scheduledPrompts.takeDueFor(activeKey, Date.now());
         if (due.length) broadcastScheduled(activeKey);
         const items = [
-          ...due.map(i => ({ id: i.id, text: i.text, imagePaths: i.imagePaths, agent: i.agent, model: i.model })),
+          ...due.map(i => ({ id: i.id, text: i.text, imagePaths: i.imagePaths, agent: i.agent, model: i.model, effort: i.effort })),
           ...promptQueue.dequeueAll(activeKey),
         ];
         if (!items.length) break;
+        runner.cancelling = false;
         broadcastQueue(activeKey); // queue just drained → empty
         const sync = syncBridge.isSyncId(activeKey);
         // Shared sessions: split into contiguous same-agent runs so a Claude batch
@@ -312,24 +355,31 @@ function kickRunner(key, directory) {
         for (const seg of segments) {
           const text = seg.items.map(i => i.text).join('\n\n');
           const images = seg.items.flatMap(i => i.imagePaths || []);
-          // A batched segment runs under the model of its first item (all items
-          // share an agent; model is usually constant within a run).
+          // A batched segment runs under the model/effort of its first item (all
+          // items share an agent; model/effort are usually constant within a run).
           const segModel = seg.items.find(i => i.model)?.model;
+          const segEffort = seg.items.find(i => i.effort)?.effort;
           const resolved = sync
-            ? await runSyncTurn(activeKey, directory, text, images, seg.agent, segModel)
+            ? await runSyncTurn(activeKey, directory, text, images, seg.agent, segModel, segEffort)
             : await runOneTurn(activeKey, directory, text, images);
           // A placeholder resolved to a real session id mid-run: the queue and
           // runner membership were already migrated inside runOneTurn at init.
           if (resolved && resolved !== activeKey) {
-            runners.delete(activeKey);
+            rekeyRunner(activeKey, resolved);
             activeKey = resolved;
+            runner.activeKey = resolved;
           }
         }
       }
     } catch (e) {
       console.error('[prompt-queue runner]', e);
     } finally {
-      runners.delete(activeKey);
+      const current = runners.get(activeKey);
+      if (current && current.id === runner.id) runners.delete(activeKey);
+      // Close the race where cancel/finally or a reservation due at loop exit
+      // leaves work queued with no owner. Do not resurrect a user-cancelled
+      // runner unless new work arrived after cancel.
+      if (hasPendingWork(activeKey)) kickRunner(activeKey, directory);
     }
   })();
 }
@@ -367,7 +417,9 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
         broadcast(key, { type: 'stream_event', sessionId: key, event });
       }
     } catch (err) {
-      broadcast(key, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId: key });
+      if (!runnerState(key)?.cancelling) {
+        broadcast(key, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId: key });
+      }
     } finally {
       compactingKeys.delete(key);
       liveTurn.end(key);
@@ -409,7 +461,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
         // Claim the real id immediately so a concurrent kick(realId) (from a
         // prompt sent after the client learns the new id) is a no-op rather
         // than spawning a second runner.
-        runners.add(resolvedSessionId);
+        rekeyRunner(key, resolvedSessionId);
         procTracker.rekey(key, resolvedSessionId);
         rekeySubscribers(key, resolvedSessionId);
         promptQueue.rekey(key, resolvedSessionId);
@@ -449,7 +501,9 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     }
   } catch (err) {
     const bk = resolvedSessionId || key;
-    broadcast(bk, { type: 'error', message: err.message, sessionId: bk });
+    if (!runnerState(bk)?.cancelling && !runnerState(key)?.cancelling) {
+      broadcast(bk, { type: 'error', message: err.message, sessionId: bk });
+    }
   } finally {
     const bk = resolvedSessionId || key;
     // Persist attachments instead of deleting them: move each out of the
@@ -529,11 +583,13 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
 // last selected for this session; both peers append to the same canonical store.
 // The reply is broadcast as Claude-shaped stream events so the existing renderer
 // paints it. The id is a stable conversation id, so it never re-keys → returns key.
-async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelArg) {
-  // Prefer the per-segment agent/model the runner passes (captured at enqueue
-  // time); fall back to the session's last-selected values for ad-hoc callers.
+async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelArg, effortArg) {
+  // Prefer the per-segment agent/model/effort the runner passes (captured at
+  // enqueue time); fall back to the session's last-selected values for ad-hoc
+  // callers.
   const agent = agentArg || sessionAgent.get(key) || 'claude';
   const model = modelArg !== undefined ? modelArg : (sessionModel.get(key) || undefined);
+  const effort = effortArg !== undefined ? effortArg : (sessionEffort.get(key) || undefined);
   liveTurn.begin(key, { prompt, images: imagePaths, compact: false });
   broadcast(key, {
     type: 'stream_start', sessionId: key, compact: false, prompt,
@@ -541,15 +597,29 @@ async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelAr
   });
   try {
     await syncBridge.runSyncTurn({
-      conversationId: key, agent, prompt, cwd: directory, model, imagePaths,
+      conversationId: key, agent, prompt, cwd: directory, model, effort, imagePaths,
+      processKey: key,
       onEvent: (event) => {
         liveTurn.record(key, event);
         broadcast(key, { type: 'stream_event', sessionId: key, event });
       },
     });
   } catch (err) {
-    broadcast(key, { type: 'error', message: `[${agent}] ${err.message}`, sessionId: key });
+    if (!runnerState(key)?.cancelling) {
+      broadcast(key, { type: 'error', message: `[${agent}] ${err.message}`, sessionId: key });
+    }
   } finally {
+    // Persist uploaded images to the per-session attachment store so they remain
+    // viewable via /attachment after the turn (same as runOneTurn does).
+    for (const p of imagePaths) {
+      try {
+        const destDir = sessionDir(key);
+        fs.mkdirSync(destDir, { recursive: true });
+        const dest = path.join(destDir, path.basename(p));
+        try { fs.renameSync(p, dest); }
+        catch { fs.copyFileSync(p, dest); fs.unlinkSync(p); }
+      } catch {}
+    }
     liveTurn.end(key);
     broadcast(key, { type: 'stream_end', sessionId: key });
   }
@@ -764,11 +834,34 @@ function handleConnection(ws /*, req */) {
         const transcript = historyStore.load(id, { cwd: directory });
         transcript.cwd = directory;
         transcript.providerIds = {};
+        const selection = setTranscriptSelection(transcript, {});
         historyStore.save(transcript);
         subscribe(id, ws);
         watchDir(directory, ws);
-        send(ws, { type: 'shared_session_created', sessionId: id, directory });
+        send(ws, { type: 'shared_session_created', sessionId: id, directory, selection });
         send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
+        break;
+      }
+
+      case 'set_session_selection': {
+        const sid = msg.sessionId;
+        if (!sid || !syncBridge.isSyncId(sid)) {
+          send(ws, { type: 'error', message: 'shared sessionId required' });
+          break;
+        }
+        try {
+          const transcript = historyStore.load(sid, {});
+          const selection = setTranscriptSelection(transcript, msg.patch || {});
+          historyStore.save(transcript);
+          sessionAgent.set(sid, selection.selectedAgent);
+          sessionModel.set(sid, selection.models[selection.selectedAgent]);
+          const effort = selection.efforts[selection.selectedAgent];
+          if (effort) sessionEffort.set(sid, effort);
+          else sessionEffort.delete(sid);
+          broadcast(sid, { type: 'selection_updated', sessionId: sid, selection });
+        } catch (err) {
+          send(ws, { type: 'error', message: err.message, sessionId: sid });
+        }
         break;
       }
 
@@ -847,7 +940,7 @@ function handleConnection(ws /*, req */) {
         // a native jsonl. Entries are pre-normalized into the renderer's shape.
         if (syncBridge.isSyncId(sid)) {
           subscribe(sid, ws);
-          const { entries, directory } = syncBridge.loadHistoryEntries(sid, msg.directory);
+          const { entries, directory, selection } = syncBridge.loadHistoryEntries(sid, msg.directory);
           if (directory) watchDir(directory, ws);
           send(ws, {
             type: 'history',
@@ -856,6 +949,7 @@ function handleConnection(ws /*, req */) {
             branch: directory ? gitInfo.currentBranch(directory) : '',
             history: entries,
             streaming: runners.has(sid),
+            selection,
             liveTurn: liveTurnPayload(sid),
             currentEntry: null,
             allowedTools: null,
@@ -932,6 +1026,7 @@ function handleConnection(ws /*, req */) {
 
       case 'cancel':
         // Stop the current turn AND drop everything queued behind it.
+        markRunnerCancelling(msg.sessionId);
         procTracker.cancel(msg.sessionId);
         if (msg.sessionId) {
           promptQueue.clear(msg.sessionId);
@@ -940,7 +1035,7 @@ function handleConnection(ws /*, req */) {
           // Always flip every live client off "Working", even if the process
           // had already finished (so cancel() was a no-op and no stream_end
           // would otherwise fire). Idempotent on the client.
-          broadcast(msg.sessionId, { type: 'stream_end', sessionId: msg.sessionId });
+          broadcast(msg.sessionId, { type: 'stream_end', sessionId: msg.sessionId, cancelled: true });
         }
         break;
 
@@ -1074,13 +1169,28 @@ function handleConnection(ws /*, req */) {
         if (placeholder) directory = directory || placeholder.directory;
         else if (!directory) directory = findDirectoryForSessionId(sessionId);
 
+        let enqAgent;
+        let enqModel;
+        let enqEffort;
         // Shared (alpha) sessions carry no native jsonl, so fall back to the cwd
         // remembered in the canonical store, and record the per-turn agent choice.
         if (syncBridge.isSyncId(sessionId)) {
           if (!directory) directory = syncBridge.directoryFor(sessionId);
-          sessionAgent.set(sessionId, msg.agent === 'codex' ? 'codex' : 'claude');
-          if (typeof msg.model === 'string' && msg.model) sessionModel.set(sessionId, msg.model);
+          const selection = loadSelectionForSession(sessionId, directory);
+          enqAgent = msg.agent === 'codex' || msg.agent === 'claude'
+            ? msg.agent
+            : selection.selectedAgent;
+          enqModel = typeof msg.model === 'string' && msg.model
+            ? msg.model
+            : selection.models[enqAgent];
+          enqEffort = typeof msg.effort === 'string'
+            ? msg.effort
+            : selection.efforts[enqAgent];
+          sessionAgent.set(sessionId, enqAgent);
+          if (enqModel) sessionModel.set(sessionId, enqModel);
           else sessionModel.delete(sessionId);
+          if (enqEffort) sessionEffort.set(sessionId, enqEffort);
+          else sessionEffort.delete(sessionId);
         }
 
         if (!directory) {
@@ -1107,11 +1217,7 @@ function handleConnection(ws /*, req */) {
         // runner picks it up immediately. The runner is browser-independent —
         // it keeps draining even if this socket closes.
         subscribe(sessionId, ws);
-        const enqAgent = syncBridge.isSyncId(sessionId)
-          ? (msg.agent === 'codex' ? 'codex' : 'claude') : undefined;
-        const enqModel = syncBridge.isSyncId(sessionId) && typeof msg.model === 'string' && msg.model
-          ? msg.model : undefined;
-        promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: enqAgent, model: enqModel });
+        promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: enqAgent, model: enqModel, effort: enqEffort });
         broadcastQueue(sessionId);
         kickRunner(sessionId, directory);
         break;
@@ -1147,6 +1253,22 @@ function handleConnection(ws /*, req */) {
         const placeholder = pendingSessions.get(sessionId);
         if (placeholder) directory = directory || placeholder.directory;
         else if (!directory) directory = findDirectoryForSessionId(sessionId);
+        let schedAgent;
+        let schedModel;
+        let schedEffort;
+        if (syncBridge.isSyncId(sessionId)) {
+          if (!directory) directory = syncBridge.directoryFor(sessionId);
+          const selection = loadSelectionForSession(sessionId, directory);
+          schedAgent = msg.agent === 'codex' || msg.agent === 'claude'
+            ? msg.agent
+            : selection.selectedAgent;
+          schedModel = typeof msg.model === 'string' && msg.model
+            ? msg.model
+            : selection.models[schedAgent];
+          schedEffort = typeof msg.effort === 'string'
+            ? msg.effort
+            : selection.efforts[schedAgent];
+        }
         if (!directory) {
           send(ws, { type: 'error', message: 'directory could not be determined', sessionId });
           return;
@@ -1155,19 +1277,15 @@ function handleConnection(ws /*, req */) {
         subscribe(sessionId, ws);
         // Capture the agent/model at reserve time (shared sessions only) so the
         // reservation fires under what was chosen now, not what's selected later.
-        const schedAgent = syncBridge.isSyncId(sessionId)
-          ? (msg.agent === 'codex' ? 'codex' : 'claude') : undefined;
-        const schedModel = syncBridge.isSyncId(sessionId) && typeof msg.model === 'string' && msg.model
-          ? msg.model : undefined;
         // Already due (clock skew / picked a past time): run it now via the
         // normal queue instead of waiting for the next timer tick.
         if (fireAt <= Date.now()) {
-          promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: schedAgent, model: schedModel });
+          promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: schedAgent, model: schedModel, effort: schedEffort });
           broadcastQueue(sessionId);
           kickRunner(sessionId, directory);
           break;
         }
-        scheduledPrompts.add({ sessionId, directory, text: prompt, imagePaths, agent: schedAgent, model: schedModel, fireAt });
+        scheduledPrompts.add({ sessionId, directory, text: prompt, imagePaths, agent: schedAgent, model: schedModel, effort: schedEffort, fireAt });
         broadcastScheduled(sessionId);
         break;
       }

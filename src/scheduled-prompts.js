@@ -30,10 +30,10 @@ function save() {
   } catch {}
 }
 
-// item: { sessionId, directory, text, imagePaths, agent, model, fireAt(ms epoch) }
-// `agent`/`model` are set only for shared (xsync) sessions and captured at reserve
-// time so the reservation fires under the agent chosen when it was scheduled, not
-// whatever is selected hours later. Old rows lack them → treated as claude.
+// item: { sessionId, directory, text, imagePaths, agent, model, effort, fireAt(ms epoch) }
+// `agent`/`model`/`effort` are set only for shared (xsync) sessions and captured at
+// reserve time so the reservation fires under the agent chosen when it was scheduled,
+// not whatever is selected hours later. Old rows lack them → treated as claude.
 function add(item) {
   const entry = {
     id: uuidv4(),
@@ -43,6 +43,7 @@ function add(item) {
     imagePaths: item.imagePaths || [],
     agent: item.agent,
     model: item.model,
+    effort: item.effort,
     fireAt: item.fireAt,
   };
   items.push(entry);

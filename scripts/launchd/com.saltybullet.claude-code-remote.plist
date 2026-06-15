@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.saltybullet.claude-code-remote</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/koichi-server/.nvm/versions/node/v24.16.0/bin/node</string>
+        <string>/Users/koichi-server/claude-code-remote/server.js</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/koichi-server/claude-code-remote</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/koichi-server/.nvm/versions/node/v24.16.0/bin:/Users/koichi-server/.local/bin:/usr/local/bin:/usr/local/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/koichi-server</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/koichi-server/claude-code-remote/data/launchd-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/koichi-server/claude-code-remote/data/launchd-stderr.log</string>
+</dict>
+</plist>

@@ -630,6 +630,10 @@
   .q-agent { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 6px; white-space: nowrap; }
   .q-agent.is-claude { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
   .q-agent.is-codex { background: color-mix(in srgb, var(--green, #2ea043) 24%, transparent); color: var(--green, #2ea043); }
+  /* Per-message footer: which agent produced the reply, and when. */
+  .msg-meta { display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+  .msg-meta .meta-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+  .msg-meta .meta-time:empty { display: none; }
   .ctx-meter { font-size: 11px; color: var(--text-muted); white-space: nowrap; opacity: .8; }
   .ctx-meter:empty { display: none; }
   .ctx-meter.warn { color: var(--accent); opacity: 1; }
@@ -786,10 +790,7 @@
     <div class="status-bar status-bar-meta">
       <span class="branch-pill" id="branchPill" title="現在の git ブランチ"></span>
       <button class="model-pill" id="modelPill" title="モデル / 工数">既定</button>
-      <div class="agent-seg" id="agentSeg" title="このセッションを次に実行するエージェント (Claude / Codex)。履歴は共有。" hidden>
-        <button type="button" class="agent-seg-btn active" data-agent="claude">Claude</button>
-        <button type="button" class="agent-seg-btn" data-agent="codex">Codex</button>
-      </div>
+      <div class="agent-seg" id="agentSeg" title="このセッションを次に実行するエージェント / モデル。履歴は共有。" hidden></div>
       <div id="modelMenu" hidden></div>
       <div class="ctx-meter" id="ctxMeter" title="Context size at last API call. Auto-compact threshold is set in ⚙ 設定."></div>
     </div>
@@ -1197,37 +1198,131 @@ let curDirectory = '';
 // initial attach), so the server always knows who to run.
 const SYNC_PREFIX = 'xsync_';
 function isSyncSession() { return typeof sessionId === 'string' && sessionId.startsWith(SYNC_PREFIX); }
+const DEFAULT_MODEL_BY_AGENT = { claude: 'sonnet', codex: 'gpt-5.5' };
+const DEFAULT_EFFORT_BY_AGENT = { claude: '', codex: '' };
 let selectedAgent = 'claude';
-// Per-agent, per-session model choice. Empty → let that agent's CLI pick its own
-// default. For shared sessions this rides the send_prompt payload (it never
-// touches global /api/settings, which belongs to the native Claude path).
-const selectedModelByAgent = { claude: '', codex: '' };
+// Per-agent, per-session model choice for shared sessions. The server stores it
+// in the canonical transcript meta.selection; these are only the current view.
+const selectedModelByAgent = { ...DEFAULT_MODEL_BY_AGENT };
+// Per-agent reasoning effort (推論). '' → let the agent CLI use its own default.
+// Claude → --effort, Codex → model_reasoning_effort.
+const selectedEffortByAgent = { ...DEFAULT_EFFORT_BY_AGENT };
+
+const AGENT_MODEL_GROUPS = [
+  { agent: 'claude', title: 'Claude Code',
+    models: [
+      { value: 'sonnet', label: 'Sonnet' },
+      { value: 'opus', label: 'Opus' },
+      { value: 'fable', label: 'Fable' },
+    ],
+    efforts: [
+      { value: '', label: '既定' },
+      { value: 'low', label: '低' },
+      { value: 'medium', label: '中' },
+      { value: 'high', label: '高' },
+      { value: 'xhigh', label: '超高' },
+      { value: 'max', label: 'Max' },
+    ] },
+  { agent: 'codex', title: 'Codex',
+    models: [
+      { value: 'gpt-5.5', label: 'GPT-5.5' },
+      { value: 'gpt-5.4', label: 'GPT-5.4' },
+    ],
+    efforts: [
+      { value: '', label: '既定' },
+      { value: 'minimal', label: '最小' },
+      { value: 'low', label: '低' },
+      { value: 'medium', label: '中' },
+      { value: 'high', label: '高' },
+      { value: 'xhigh', label: '非常に高い' },
+    ] },
+];
+const AGENT_MODEL_LABELS = Object.fromEntries(
+  AGENT_MODEL_GROUPS.flatMap(g => g.models.map(m => [m.value, m.label]))
+);
+const AGENT_EFFORT_LABELS = Object.fromEntries(
+  AGENT_MODEL_GROUPS.flatMap(g => g.efforts.map(e => [e.value, e.label]))
+);
+function effortsForAgent(agent) {
+  return (AGENT_MODEL_GROUPS.find(g => g.agent === agent) || {}).efforts || [];
+}
+
+// Apply / persist per-session selections from the server-side canonical
+// transcript. No localStorage: another tab/device must see the same state.
+function applySessionSelection(sel) {
+  const s = sel && typeof sel === 'object' ? sel : {};
+  const models = s.models && typeof s.models === 'object' ? s.models : {};
+  const efforts = s.efforts && typeof s.efforts === 'object' ? s.efforts : {};
+  selectedAgent = (s.selectedAgent === 'codex') ? 'codex' : 'claude';
+  selectedModelByAgent.claude = models.claude || DEFAULT_MODEL_BY_AGENT.claude;
+  selectedModelByAgent.codex = models.codex || DEFAULT_MODEL_BY_AGENT.codex;
+  selectedEffortByAgent.claude = typeof efforts.claude === 'string' ? efforts.claude : DEFAULT_EFFORT_BY_AGENT.claude;
+  selectedEffortByAgent.codex = typeof efforts.codex === 'string' ? efforts.codex : DEFAULT_EFFORT_BY_AGENT.codex;
+}
+
+function sendSelectionPatch(patch) {
+  if (!isSyncSession()) return;
+  wsSend({ type: 'set_session_selection', sessionId, patch });
+}
+
+function selectedAgentModelLabel() {
+  const model = selectedModelByAgent[selectedAgent] || '';
+  const effort = selectedEffortByAgent[selectedAgent] || '';
+  const agentLabel = selectedAgent === 'codex' ? 'Codex' : 'Claude Code';
+  const modelLabel = AGENT_MODEL_LABELS[model] || model || '既定';
+  const effortMeta = effortsForAgent(selectedAgent).find(e => e.value === effort);
+  const effortLabel = effort ? ((effortMeta && effortMeta.label) || AGENT_EFFORT_LABELS[effort] || effort) : '';
+  return effortLabel ? `${agentLabel} / ${modelLabel}・${effortLabel}` : `${agentLabel} / ${modelLabel}`;
+}
 
 function updateAgentUI() {
   const seg = document.getElementById('agentSeg');
-  if (seg) {
-    seg.hidden = !isSyncSession();
-    seg.querySelectorAll('.agent-seg-btn').forEach(b =>
-      b.classList.toggle('active', b.dataset.agent === selectedAgent));
-  }
-  // Codex has no /compact, no Claude slash commands, and no --effort. Hide those
-  // Claude-only affordances while Codex is the selected peer of a shared session.
+  if (seg) seg.hidden = true; // replaced by the pull-up agent/model picker.
+
+  // Codex has no /compact and no Claude slash commands. Hide those Claude-only
+  // affordances while Codex is the selected peer of a shared session.
   const codex = isSyncSession() && selectedAgent === 'codex';
   document.body.classList.toggle('agent-codex', codex);
   const cb = document.getElementById('compactBtn');
   if (cb) cb.hidden = codex;
-  // The model pill edits the GLOBAL Claude settings, which drive the native path
-  // only — shared turns run at each agent's own CLI default for now. Hide it on
-  // shared sessions so it doesn't imply control it doesn't have. (Per-agent model
-  // picker is a follow-up; the send_prompt payload already carries `model`.)
+
   const mp = document.getElementById('modelPill');
-  if (mp) mp.hidden = isSyncSession();
+  if (mp && isSyncSession()) {
+    mp.hidden = false;
+    mp.title = '次に実行するエージェント / モデル';
+    mp.textContent = selectedAgentModelLabel();
+  } else if (mp) {
+    mp.hidden = false;
+    mp.title = 'モデル / 工数';
+    updateModelPill(_curModel, _curEffort);
+  }
 }
 
 function setAgent(a) {
   if (!isSyncSession()) return;
   selectedAgent = (a === 'codex') ? 'codex' : 'claude';
   if (typeof hideSlashMenu === 'function') hideSlashMenu();
+  sendSelectionPatch({ selectedAgent });
+  updateAgentUI();
+}
+
+function setAgentModel(agent, model) {
+  if (!isSyncSession()) return;
+  const a = (agent === 'codex') ? 'codex' : 'claude';
+  selectedAgent = a;
+  if (typeof model === 'string' && model.trim()) selectedModelByAgent[a] = model.trim();
+  if (typeof hideSlashMenu === 'function') hideSlashMenu();
+  sendSelectionPatch({ selectedAgent: a, models: { [a]: selectedModelByAgent[a] } });
+  updateAgentUI();
+}
+
+// Set the reasoning effort for `agent` (defaults to the selected one). Effort is
+// per-agent and independent of model selection.
+function setAgentEffort(effort, agent) {
+  if (!isSyncSession()) return;
+  const a = (agent === 'codex' || agent === 'claude') ? agent : selectedAgent;
+  selectedEffortByAgent[a] = typeof effort === 'string' ? effort : '';
+  sendSelectionPatch({ efforts: { [a]: selectedEffortByAgent[a] } });
   updateAgentUI();
 }
 
@@ -1250,9 +1345,6 @@ function startSharedSession(dir) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  const seg = document.getElementById('agentSeg');
-  if (seg) seg.querySelectorAll('.agent-seg-btn').forEach(b =>
-    b.addEventListener('click', () => setAgent(b.dataset.agent)));
   updateAgentUI();
 });
 // No session → render an empty-state placeholder and auto-open the projects
@@ -1421,6 +1513,8 @@ function handleMessage(msg) {
       const dir = msg.directory || '';
       curDirectory = dir;
       document.getElementById('dirLabel').textContent = dir || sessionId;
+      // Server-side canonical selection is authoritative for shared sessions.
+      if (msg.sessionId && msg.sessionId.startsWith(SYNC_PREFIX)) applySessionSelection(msg.selection);
       updateAgentUI();
       const branchPill = document.getElementById('branchPill');
       branchPill.textContent = msg.branch ? '⎇ ' + msg.branch : '';
@@ -1555,7 +1649,8 @@ function handleMessage(msg) {
           appendUserMsg(ssPrompt, ssUrls, false);
           _inflightUser = { text: ssPrompt, images: ssUrls };
         }
-        currentAssistantEl = createAssistantMessage();
+        // msg.agent is set on shared (xsync) turns; native turns omit it → Claude.
+        currentAssistantEl = createAssistantMessage(msg.agent);
       }
       currentTextEl = null; streamingText = ''; currentToolEls = {};
       break;
@@ -1575,6 +1670,12 @@ function handleMessage(msg) {
         _inflightUser = null;
       }
       if (currentTextEl && streamingText) { currentTextEl.innerHTML = marked.parse(streamingText); openLinksInNewTab(currentTextEl); removeCursor(currentTextEl); }
+      // Stamp the finished reply with its agent + completion time. The jsonl
+      // repaint later carries the authoritative ts; this matches it closely.
+      // (currentAssistantEl is null for a compact turn, so this is skipped there.)
+      if (currentAssistantEl) {
+        attachMsgMeta(currentAssistantEl, currentAssistantEl.dataset.agent || 'claude', Date.now());
+      }
       currentAssistantEl = null; currentTextEl = null; streamingText = '';
       scrollToBottom();
       // The server runner drains any queued prompts on its own (browser-
@@ -1583,6 +1684,17 @@ function handleMessage(msg) {
       break;
     case 'slash_commands':
       if (Array.isArray(msg.commands)) availableSlashCommands = msg.commands;
+      break;
+    case 'selection_updated':
+      if (!msg.sessionId || msg.sessionId === sessionId) {
+        applySessionSelection(msg.selection);
+        updateAgentUI();
+        const menu = document.getElementById('modelMenu');
+        if (menu && !menu.hidden) {
+          renderAgentModelMenu(menu);
+          placeModelMenu(menu);
+        }
+      }
       break;
     case 'scheduled_state':
       serverScheduled = Array.isArray(msg.scheduled) ? msg.scheduled : [];
@@ -1609,7 +1721,7 @@ function handleMessage(msg) {
       // scheduled state (history is empty). The empty-state hides the composer,
       // so we must restore it here.
       sessionId = msg.sessionId;
-      selectedAgent = 'claude';
+      applySessionSelection(msg.selection);
       try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
       document.getElementById('messages').innerHTML = '';
       const inputArea = document.querySelector('.input-area');
@@ -1812,6 +1924,10 @@ function updateModelPill(model, effort) {
   _curEffort = effort || '';
   const pill = document.getElementById('modelPill');
   if (!pill) return;
+  if (isSyncSession()) {
+    pill.textContent = selectedAgentModelLabel();
+    return;
+  }
   const m = MODEL_LABELS[model || ''] || model || '既定';
   const e = effort ? EFFORT_LABELS[effort] || effort : '';
   pill.textContent = e ? `${m}・${e}` : m;
@@ -1834,7 +1950,7 @@ function renderHistoryEntry(entry) {
     document.getElementById('messages').appendChild(m);
   } else if (entry.type === 'assistant') {
     if (entry.uuid) renderedEventUuids.add(entry.uuid);
-    const m = createAssistantMessage();
+    const m = createAssistantMessage(entry.agent);
     const c = m.querySelector('.assistant-content');
     renderBlocks(c, entry.blocks);
     if (entry.cancelled) appendCancelled();
@@ -1844,6 +1960,7 @@ function renderHistoryEntry(entry) {
       note.textContent = '⚠ Interrupted by a server restart. Type "continue" to resume.';
       c.appendChild(note);
     }
+    attachMsgMeta(m, entry.agent, entry.ts);
   } else if (entry.type === 'compact') {
     // Persisted marker: a /compact (manual or auto) happened at this point.
     const m = document.createElement('div'); m.className = 'compact-note done';
@@ -2020,10 +2137,41 @@ function addCursor(el) { removeCursor(el); const c = document.createElement('spa
 function removeCursor(el) { el.querySelectorAll('.cursor').forEach(c => c.remove()); }
 
 // ── DOM builders ──────────────────────────────────────────────────────────────
-function createAssistantMessage() {
+function createAssistantMessage(agent) {
   const m = document.createElement('div'); m.className = 'msg msg-assistant';
   m.innerHTML = `<div class="assistant-content"></div>`;
+  if (agent) m.dataset.agent = agent;
   document.getElementById('messages').appendChild(m); return m;
+}
+
+// Footer formatting: "2026/6/3 13:12" in local time. Accepts epoch ms (native
+// jsonl) or an ISO string (shared canonical turn). Empty/invalid → ''.
+function fmtMsgTime(ts) {
+  if (ts === undefined || ts === null || ts === '') return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Build the per-message footer (agent badge + timestamp). agent defaults to
+// claude (native sessions are always Claude).
+function buildMsgMeta(agent, ts) {
+  const a = agent === 'codex' ? 'codex' : 'claude';
+  const meta = document.createElement('div');
+  meta.className = 'msg-meta';
+  meta.innerHTML = `<span class="q-agent ${a === 'codex' ? 'is-codex' : 'is-claude'}">${a === 'codex' ? 'Codex' : 'Claude'}</span><span class="meta-time"></span>`;
+  meta.querySelector('.meta-time').textContent = fmtMsgTime(ts);
+  return meta;
+}
+
+// Append the footer to an assistant message element, but only once and only when
+// it actually rendered content (skip empty/compact bubbles).
+function attachMsgMeta(msgEl, agent, ts) {
+  if (!msgEl || msgEl.querySelector(':scope > .msg-meta')) return;
+  const c = msgEl.querySelector('.assistant-content');
+  if (!c || c.childElementCount === 0) return;
+  msgEl.appendChild(buildMsgMeta(agent, ts));
 }
 // Inline note shown while /compact runs (manual or auto). Replaces the raw
 // /compact output so the user sees a clear "compacting…" state, then a result.
@@ -2247,6 +2395,7 @@ function dispatchPrompt(text, paths, previewImages, queued) {
     out.agent = selectedAgent;
     out.directory = curDirectory || undefined;
     out.model = selectedModelByAgent[selectedAgent] || undefined;
+    out.effort = selectedEffortByAgent[selectedAgent] || undefined;
   }
   wsSend(out);
 }
@@ -2581,7 +2730,11 @@ async function scheduleSend(fireAt) {
   const sched = { type: 'schedule_prompt', sessionId, prompt: text, imagePaths: uploadedPaths, fireAt, directory: curDirectory || fbSessionRoot || undefined };
   // Capture the agent/model NOW so the reservation fires under what's selected at
   // reserve time, not whatever is active when it fires (shared sessions only).
-  if (isSyncSession()) { sched.agent = selectedAgent; sched.model = selectedModelByAgent[selectedAgent] || undefined; }
+  if (isSyncSession()) {
+    sched.agent = selectedAgent;
+    sched.model = selectedModelByAgent[selectedAgent] || undefined;
+    sched.effort = selectedEffortByAgent[selectedAgent] || undefined;
+  }
   wsSend(sched);
 }
 
@@ -4211,7 +4364,85 @@ async function applyQuickSetting(patch) {
   hideModelMenu();
 }
 
+function placeModelMenu(el) {
+  const r = document.getElementById('modelPill').getBoundingClientRect();
+  el.style.left = 'auto';
+  el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  el.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+}
+
+// Build a model/effort item row with a leading checkmark slot.
+function mmItem(label, active, onClick) {
+  const b = document.createElement('button');
+  b.className = 'mm-item mm-agent-model';
+  b.innerHTML = '<span></span><span class="chk"></span>';
+  b.firstChild.textContent = label;
+  b.lastChild.textContent = active ? '✓' : '';
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+// Render (in place) the agent / model / reasoning picker. Picking a model or an
+// effort re-renders rather than closing, so you can set both in one pass — the
+// desktop apps work the same way. Tap-away closes it.
+function renderAgentModelMenu(el) {
+  el.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'mm-head';
+  const title = document.createElement('span');
+  title.className = 'mm-title'; title.textContent = 'エージェント / モデル';
+  head.appendChild(title);
+  el.appendChild(head);
+
+  AGENT_MODEL_GROUPS.forEach((group, idx) => {
+    if (idx > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'mm-sep';
+      el.appendChild(sep);
+    }
+    const gh = document.createElement('div');
+    gh.className = 'mm-group';
+    gh.textContent = group.title;
+    el.appendChild(gh);
+    for (const m of group.models) {
+      const active = selectedModelByAgent[group.agent] === m.value;
+      el.appendChild(mmItem(m.label, active, () => {
+        setAgentModel(group.agent, m.value);
+        renderAgentModelMenu(el);
+        placeModelMenu(el);
+      }));
+    }
+  });
+
+  // Reasoning effort (推論) for the currently selected agent — mirrors the
+  // desktop "インテリジェンス" submenu.
+  const sep = document.createElement('div');
+  sep.className = 'mm-sep';
+  el.appendChild(sep);
+  const eh = document.createElement('div');
+  eh.className = 'mm-group';
+  eh.textContent = '推論';
+  el.appendChild(eh);
+  for (const e of effortsForAgent(selectedAgent)) {
+    const active = (selectedEffortByAgent[selectedAgent] || '') === e.value;
+    el.appendChild(mmItem(e.label, active, () => {
+      setAgentEffort(e.value);
+      renderAgentModelMenu(el);
+      placeModelMenu(el);
+    }));
+  }
+}
+
+function openAgentModelMenu() {
+  const el = document.getElementById('modelMenu');
+  if (!el.hidden) { hideModelMenu(); return; }
+  renderAgentModelMenu(el);
+  el.hidden = false;
+  placeModelMenu(el);
+}
+
 function openModelMenu() {
+  if (isSyncSession()) return openAgentModelMenu();
   const el = document.getElementById('modelMenu');
   if (!el.hidden) { hideModelMenu(); return; }
   el.innerHTML = '';
@@ -4251,10 +4482,7 @@ function openModelMenu() {
   eff.appendChild(lab); eff.appendChild(sel);
   el.appendChild(eff);
   el.hidden = false;
-  const r = document.getElementById('modelPill').getBoundingClientRect();
-  el.style.left = 'auto';
-  el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
-  el.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+  placeModelMenu(el);
 }
 
 document.getElementById('modelPill').addEventListener('click', openModelMenu);

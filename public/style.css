@@ -186,6 +186,9 @@ a { color: var(--accent); text-decoration: none; }
 #modelMenu .mm-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-size: 13px; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
 #modelMenu .mm-item:hover, #modelMenu .mm-item:active { background: var(--surface2); }
 #modelMenu .mm-item .chk { color: var(--accent); width: 14px; flex-shrink: 0; text-align: center; }
+#modelMenu .mm-group { color: var(--text-muted); font-size: 11px; font-weight: 600; padding: 8px 10px 3px; text-transform: none; }
+#modelMenu .mm-sep { border-top: 1px solid var(--border); margin: 6px 2px 2px; }
+#modelMenu .mm-agent-model { padding-left: 20px; }
 #modelMenu .mm-effort { display: flex; align-items: center; gap: 8px; padding: 8px 8px 4px; border-top: 1px solid var(--border); margin-top: 4px; }
 #modelMenu .mm-effort label { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
 #modelMenu .mm-effort select { flex: 1; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; padding: 6px 8px; }

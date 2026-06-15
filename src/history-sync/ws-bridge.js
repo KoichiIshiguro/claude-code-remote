@@ -13,6 +13,7 @@
 
 const store = require('./store');
 const { runTurn } = require('./index');
+const { selectionForTranscript } = require('./selection');
 
 const PREFIX = 'xsync_';
 
@@ -38,7 +39,8 @@ function turnsToEntries(turns) {
     const onlyResults = parts.length > 0 && parts.every((p) => p.type === 'tool_result');
     if (turn.role === 'user' && !onlyResults) {
       const text = parts.filter((p) => p.type === 'text').map((p) => p.text).join('\n');
-      if (text) entries.push({ type: 'user', text, images: [] });
+      const images = parts.filter((p) => p.type === 'image').map((p) => p.basename || '').filter(Boolean);
+      if (text || images.length) entries.push({ type: 'user', text, images });
       continue;
     }
     if (onlyResults) {
@@ -62,7 +64,10 @@ function turnsToEntries(turns) {
           if (blk) blk.result = p.text || '';
         }
       }
-      if (blocks.length) entries.push({ type: 'assistant', uuid: turn.id, blocks });
+      // Which agent produced this turn — providerMeta is keyed by the runtime
+      // (claude|codex) that ingested it. Used by the per-message footer.
+      const agent = turn.providerMeta ? Object.keys(turn.providerMeta)[0] : '';
+      if (blocks.length) entries.push({ type: 'assistant', uuid: turn.id, blocks, ts: turn.ts, agent });
     }
   }
   return entries;
@@ -75,6 +80,7 @@ function loadHistoryEntries(conversationId, cwd) {
     entries: turnsToEntries(t.turns || []),
     directory: t.cwd || cwd || '',
     agent: (t.providerIds && Object.keys(t.providerIds)[0]) || '',
+    selection: selectionForTranscript(t),
   };
 }
 
@@ -87,8 +93,8 @@ function directoryFor(conversationId) {
 
 // Run one shared turn with the chosen agent, emitting the reply as Claude-shaped
 // stream events via onEvent so the existing live renderer paints it.
-async function runSyncTurn({ conversationId, agent, prompt, cwd, model, imagePaths, onEvent }) {
-  const res = await runTurn({ conversationId, agent, prompt, cwd, model });
+async function runSyncTurn({ conversationId, agent, prompt, cwd, model, effort, imagePaths, processKey, onEvent }) {
+  const res = await runTurn({ conversationId, agent, prompt, cwd, model, effort, imagePaths, processKey });
   if (typeof onEvent === 'function') {
     // Emit each canonical turn as Claude-shaped events so the live view shows
     // tool cards and thinking blocks, not just the final text. Assistant turns

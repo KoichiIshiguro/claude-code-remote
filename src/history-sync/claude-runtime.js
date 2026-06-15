@@ -15,6 +15,7 @@ const { spawn } = require('child_process');
 const compiler = require('../../codex-compiler');
 const { claudePathFor } = require('../../codex-compiler/claude-adapter');
 const { sandboxed } = require('../session-manager');
+const procTracker = require('../proc-tracker');
 
 function defaultClaudeHome() {
   // Claude auth is bound to the real ~/.claude (keychain + credentials), so we
@@ -47,7 +48,7 @@ function materialize(transcript, opts = {}) {
   return { sessionId, jsonlPath, origLineCount, home, cwd, hasHistory };
 }
 
-function run({ cwd, sessionId, prompt, model, resume = true }) {
+function run({ cwd, sessionId, prompt, model, effort, processKey, resume = true }) {
   return new Promise((resolve, reject) => {
     // First turn of a shared conversation has nothing to resume — create the
     // session fresh under our chosen id (so its jsonl lands at the known path we
@@ -57,6 +58,9 @@ function run({ cwd, sessionId, prompt, model, resume = true }) {
       : ['--session-id', sessionId, '-p', prompt];
     args.push('--dangerously-skip-permissions');
     if (model) args.push('--model', model);
+    // Reasoning effort (--effort low|medium|high|xhigh|max), mirroring the native
+    // Claude path. Unset → the model's own default.
+    if (effort) args.push('--effort', effort);
     // Confine writes to the project dir (+ ~/.claude, caches, temp) with the same
     // Seatbelt the native path uses. claude materializes/appends its jsonl under
     // ~/.claude, already covered by the profile.
@@ -66,7 +70,9 @@ function run({ cwd, sessionId, prompt, model, resume = true }) {
       cwd,
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    if (processKey) procTracker.register(processKey, child);
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => { out += d; });
@@ -93,7 +99,15 @@ async function turn(transcript, prompt, opts = {}) {
   const mat = materialize(transcript, opts);
   let runError = null;
   try {
-    await run({ cwd: mat.cwd, sessionId: mat.sessionId, prompt, model: opts.model, resume: mat.hasHistory });
+    await run({
+      cwd: mat.cwd,
+      sessionId: mat.sessionId,
+      prompt,
+      model: opts.model,
+      effort: opts.effort,
+      processKey: opts.processKey,
+      resume: mat.hasHistory,
+    });
   } catch (err) {
     runError = err;
   }
@@ -110,6 +124,15 @@ async function turn(transcript, prompt, opts = {}) {
   // Re-throw only if we got nothing useful — a true startup/auth failure with no
   // jsonl written is still a hard error that should surface to the caller.
   if (runError && !added.length) throw runError;
+  // Annotate the first new user turn with image basenames so the canonical store
+  // can serve image previews when the history is replayed via turnsToEntries().
+  if (opts.imagePaths && opts.imagePaths.length) {
+    const userTurn = added.find((t) =>
+      t.role === 'user' && !(t.parts || []).every((p) => p.type === 'tool_result'));
+    if (userTurn) {
+      userTurn.parts.push(...opts.imagePaths.map((p) => ({ type: 'image', basename: path.basename(p) })));
+    }
+  }
   transcript.providerIds = { ...transcript.providerIds, claude: mat.sessionId };
   if (opts.keepArtifacts !== true) {
     try { fs.unlinkSync(mat.jsonlPath); } catch { /* best effort */ }

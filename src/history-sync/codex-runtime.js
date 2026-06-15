@@ -14,6 +14,7 @@ const { spawn, execFileSync } = require('child_process');
 const compiler = require('../../codex-compiler');
 const { codexPathFor } = require('../../codex-compiler/codex-adapter');
 const { sandboxed } = require('../session-manager');
+const procTracker = require('../proc-tracker');
 
 function defaultCodexHome() {
   return process.env.CODEX_HOME
@@ -71,12 +72,15 @@ function ensureCodexAuth(codexHome) {
   } catch { /* best effort; codex will surface its own auth error if this failed */ }
 }
 
-function run({ codexHome, cwd, sessionId, prompt, model, sandbox = 'danger-full-access' }) {
+function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, sandbox = 'danger-full-access' }) {
   ensureGitRepo(cwd);
   ensureCodexAuth(codexHome);
   return new Promise((resolve, reject) => {
     const args = ['exec', '-s', sandbox, '-C', cwd];
     if (model) args.push('-m', model);
+    // Reasoning effort maps to codex's model_reasoning_effort config override
+    // (minimal|low|medium|high|xhigh). Unset → codex's own default.
+    if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
     args.push(
       '-c', `projects.${JSON.stringify(cwd)}.trust_level="trusted"`,
       'resume', sessionId, prompt,
@@ -91,7 +95,9 @@ function run({ codexHome, cwd, sessionId, prompt, model, sandbox = 'danger-full-
       cwd,
       env: { ...process.env, CODEX_HOME: codexHome, CODEX_SANDBOX_MODE: 'danger-full-access' },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
     });
+    if (processKey) procTracker.register(processKey, child);
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => { out += d; });
@@ -123,9 +129,19 @@ async function turn(transcript, prompt, opts = {}) {
     sessionId: mat.sessionId,
     prompt,
     model: opts.model,
+    effort: opts.effort,
+    processKey: opts.processKey,
     sandbox: opts.sandbox,
   });
   const added = ingestDelta(transcript, mat.rolloutPath, mat.origLineCount);
+  // Annotate the first new user turn with image basenames so history replay works.
+  if (opts.imagePaths && opts.imagePaths.length) {
+    const userTurn = added.find((t) =>
+      t.role === 'user' && !(t.parts || []).every((p) => p.type === 'tool_result'));
+    if (userTurn) {
+      userTurn.parts.push(...opts.imagePaths.map((p) => ({ type: 'image', basename: path.basename(p) })));
+    }
+  }
   transcript.providerIds = { ...transcript.providerIds, codex: mat.sessionId };
   // Throwaway artifact: the rollout was just a materialization vehicle.
   if (opts.keepArtifacts !== true) {

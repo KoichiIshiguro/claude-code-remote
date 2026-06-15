@@ -26,6 +26,15 @@ async function runTurn({ conversationId, agent, prompt, cwd, ...opts }) {
   if (!runtime) throw new Error(`Unknown agent: ${agent}`);
   const transcript = store.load(conversationId, { cwd, agent });
   const { added, sessionId } = await runtime.turn(transcript, prompt, { cwd, ...opts });
+  // A model/effort picker update can save meta.selection while the agent process
+  // is running. Preserve the latest metadata instead of overwriting it with the
+  // stale transcript snapshot loaded before the turn.
+  try {
+    const latest = store.load(conversationId, { cwd, agent });
+    if (latest && latest.meta && typeof latest.meta === 'object') {
+      transcript.meta = { ...(transcript.meta || {}), ...latest.meta };
+    }
+  } catch { /* best effort; normal save below remains authoritative for turns */ }
   store.save(transcript);
   return {
     conversationId,
