@@ -16,6 +16,73 @@ const { codexPathFor } = require('../../codex-compiler/codex-adapter');
 const { sandboxed } = require('../session-manager');
 const procTracker = require('../proc-tracker');
 
+function parseArguments(raw) {
+  if (raw == null || raw === '') return {};
+  if (typeof raw !== 'string') return raw;
+  try { return JSON.parse(raw); } catch { return { raw }; }
+}
+
+function textFromContent(content) {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) => {
+      if (!part) return '';
+      if (part.type === 'output_text' || part.type === 'text' || part.type === 'input_text') return part.text || '';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function payloadText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  if (typeof payload.message === 'string') return payload.message;
+  if (typeof payload.content === 'string') return payload.content;
+  if (Array.isArray(payload.content)) return textFromContent(payload.content);
+  if (payload.summary) {
+    if (typeof payload.summary === 'string') return payload.summary;
+    if (Array.isArray(payload.summary)) return payload.summary.map((s) => s && (s.text || s.content || '')).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
+// Codex `exec --json` emits runtime events, not persisted rollout entries.
+// Convert only the displayable subset to the Claude-shaped stream events the UI
+// already understands; persisted canonical ingest still comes from rollout tail.
+function codexLiveEventToClaudeShape(event) {
+  if (!event || typeof event !== 'object') return null;
+  if (event.type === 'response_item') {
+    const payload = event.payload || {};
+    if (payload.type === 'message' && payload.role === 'assistant') {
+      const text = textFromContent(payload.content);
+      return text ? { type: 'assistant', message: { content: [{ type: 'text', text }] } } : null;
+    }
+    if (payload.type === 'reasoning') {
+      const text = payloadText(payload);
+      return text ? { type: 'assistant', message: { content: [{ type: 'thinking', thinking: text }] } } : null;
+    }
+    if (payload.type === 'function_call') {
+      return {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: payload.call_id, name: payload.name || 'tool', input: parseArguments(payload.arguments) }] },
+      };
+    }
+    if (payload.type === 'function_call_output') {
+      const output = payload.output == null
+        ? ''
+        : (typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output));
+      return { type: 'tool', tool_use_id: payload.call_id, content: output };
+    }
+  }
+  if (event.type === 'event_msg' && event.payload?.type === 'agent_message') {
+    const text = event.payload.message || '';
+    return text ? { type: 'assistant', message: { content: [{ type: 'text', text }] } } : null;
+  }
+  return null;
+}
+
 function defaultCodexHome() {
   return process.env.CODEX_HOME
     || path.join(__dirname, '..', '..', 'data', 'codex-home');
@@ -72,11 +139,11 @@ function ensureCodexAuth(codexHome) {
   } catch { /* best effort; codex will surface its own auth error if this failed */ }
 }
 
-function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, sandbox = 'danger-full-access' }) {
+function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, sandbox = 'danger-full-access', onLiveEvent }) {
   ensureGitRepo(cwd);
   ensureCodexAuth(codexHome);
   return new Promise((resolve, reject) => {
-    const args = ['exec', '-s', sandbox, '-C', cwd];
+    const args = ['exec', '--json', '-s', sandbox, '-C', cwd];
     if (model) args.push('-m', model);
     // Reasoning effort maps to codex's model_reasoning_effort config override
     // (minimal|low|medium|high|xhigh). Unset → codex's own default.
@@ -100,10 +167,33 @@ function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, san
     if (processKey) procTracker.register(processKey, child);
     let out = '';
     let err = '';
-    child.stdout.on('data', (d) => { out += d; });
+    let stdoutBuffer = '';
+    child.stdout.on('data', (d) => {
+      const chunk = d.toString();
+      out += chunk;
+      stdoutBuffer += chunk;
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop();
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const ev = JSON.parse(t);
+          const live = codexLiveEventToClaudeShape(ev);
+          if (live && typeof onLiveEvent === 'function') onLiveEvent(live);
+        } catch { /* ignore non-json noise */ }
+      }
+    });
     child.stderr.on('data', (d) => { err += d; });
     child.on('error', reject);
     child.on('close', (code) => {
+      if (stdoutBuffer.trim()) {
+        try {
+          const ev = JSON.parse(stdoutBuffer.trim());
+          const live = codexLiveEventToClaudeShape(ev);
+          if (live && typeof onLiveEvent === 'function') onLiveEvent(live);
+        } catch { /* ignore */ }
+      }
       if (code === 0) resolve({ stdout: out, stderr: err });
       else reject(new Error(`codex exec exited ${code}: ${err || out}`));
     });
@@ -123,17 +213,28 @@ function ingestDelta(transcript, rolloutPath, origLineCount) {
 // One full Codex turn against the shared canonical conversation.
 async function turn(transcript, prompt, opts = {}) {
   const mat = materialize(transcript, opts);
-  await run({
-    codexHome: mat.codexHome,
-    cwd: mat.cwd,
-    sessionId: mat.sessionId,
-    prompt,
-    model: opts.model,
-    effort: opts.effort,
-    processKey: opts.processKey,
-    sandbox: opts.sandbox,
-  });
-  const added = ingestDelta(transcript, mat.rolloutPath, mat.origLineCount);
+  let runError = null;
+  try {
+    await run({
+      codexHome: mat.codexHome,
+      cwd: mat.cwd,
+      sessionId: mat.sessionId,
+      prompt,
+      model: opts.model,
+      effort: opts.effort,
+      processKey: opts.processKey,
+      sandbox: opts.sandbox,
+      onLiveEvent: opts.onLiveEvent,
+    });
+  } catch (err) {
+    runError = err;
+  }
+  let added = [];
+  if (fs.existsSync(mat.rolloutPath)) {
+    try { added = ingestDelta(transcript, mat.rolloutPath, mat.origLineCount); }
+    catch { /* prefer original run error if any */ }
+  }
+  if (runError && !added.length) throw runError;
   // Annotate the first new user turn with image basenames so history replay works.
   if (opts.imagePaths && opts.imagePaths.length) {
     const userTurn = added.find((t) =>

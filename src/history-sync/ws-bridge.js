@@ -67,7 +67,17 @@ function turnsToEntries(turns) {
       // Which agent produced this turn — providerMeta is keyed by the runtime
       // (claude|codex) that ingested it. Used by the per-message footer.
       const agent = turn.providerMeta ? Object.keys(turn.providerMeta)[0] : '';
-      if (blocks.length) entries.push({ type: 'assistant', uuid: turn.id, blocks, ts: turn.ts, agent });
+      if (blocks.length) {
+        entries.push({
+          type: 'assistant',
+          uuid: turn.id,
+          blocks,
+          ts: turn.ts,
+          agent,
+          cancelled: !!turn.meta?.cancelled,
+          incomplete: !!turn.meta?.incomplete,
+        });
+      }
     }
   }
   return entries;
@@ -93,9 +103,47 @@ function directoryFor(conversationId) {
 
 // Run one shared turn with the chosen agent, emitting the reply as Claude-shaped
 // stream events via onEvent so the existing live renderer paints it.
-async function runSyncTurn({ conversationId, agent, prompt, cwd, model, effort, imagePaths, processKey, onEvent }) {
-  const res = await runTurn({ conversationId, agent, prompt, cwd, model, effort, imagePaths, processKey });
+async function runSyncTurn({
+  conversationId,
+  agent,
+  prompt,
+  cwd,
+  model,
+  effort,
+  imagePaths,
+  processKey,
+  onEvent,
+  onCommit,
+  isCancelled,
+}) {
+  let liveCount = 0;
+  const res = await runTurn({
+    conversationId,
+    agent,
+    prompt,
+    cwd,
+    model,
+    effort,
+    imagePaths,
+    processKey,
+    isCancelled,
+    onLiveEvent: (event) => {
+      liveCount += 1;
+      if (typeof onEvent === 'function') onEvent(event);
+    },
+  });
+  const committedToClient = typeof onCommit === 'function';
+  if (committedToClient) {
+    onCommit({ turns: res.turns || [], entries: turnsToEntries(res.turns || []), reply: res.reply || '' });
+  }
   if (typeof onEvent === 'function') {
+    // If a provider/runtime did not expose live events, preserve the old
+    // post-run replay behavior as a fallback. Normal Claude/Codex v2 paths now
+    // stream live and use turn_committed for the authoritative replacement.
+    if (liveCount > 0 || committedToClient) {
+      onEvent({ type: 'result', subtype: 'success', result: res.reply || '' });
+      return res;
+    }
     // Emit each canonical turn as Claude-shaped events so the live view shows
     // tool cards and thinking blocks, not just the final text. Assistant turns
     // become `assistant` events; tool-result user turns become `tool` events

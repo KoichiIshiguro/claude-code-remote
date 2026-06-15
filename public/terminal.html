@@ -1405,6 +1405,7 @@ function startHeartbeat() {
 }
 let currentAssistantEl = null, currentTextEl = null, streamingText = '';
 let currentToolEls = {};
+let currentLiveEls = [];
 // Per-event uuids already painted (from jsonl history OR a prior live event).
 // `claude -p` flushes its stream-json events in a burst near the end of a turn,
 // while the jsonl is written incrementally — so a mid-stream re-attach can
@@ -1519,6 +1520,7 @@ function handleMessage(msg) {
       const branchPill = document.getElementById('branchPill');
       branchPill.textContent = msg.branch ? '⎇ ' + msg.branch : '';
       document.getElementById('messages').innerHTML = '';
+      currentLiveEls = [];
       // Fresh paint — forget any ids from a previous render; renderHistoryEntry
       // repopulates this from the jsonl we're about to draw.
       renderedEventUuids = new Set();
@@ -1545,7 +1547,7 @@ function handleMessage(msg) {
         // prompt has no text but still shows images). Skip if the text already
         // landed in the jsonl history above (claude can flush mid-turn).
         if ((p || liveUrls.length) && !(p && historyHasUserText(msg.history, p))) {
-          appendUserMsg(p, liveUrls, false);
+          currentLiveEls.push(appendUserMsg(p, liveUrls, false));
         }
         // Compact output is suppressed in the UI (the compact note below stands
         // in for it), so only replay a normal turn's assistant output. Replaying
@@ -1625,6 +1627,7 @@ function handleMessage(msg) {
     }
     case 'stream_start': {
       isStreaming = true;
+      currentLiveEls = [];
       const isCompact = !!(msg.autoCompact || msg.compact);
       setStreamingUI(true, isCompact);
       if (isCompact) {
@@ -1646,17 +1649,31 @@ function handleMessage(msg) {
         const ssUrls = (msg.images || []).map(attachmentUrl);
         const alreadyDrawn = _inflightUser && _inflightUser.text === ssPrompt;
         if ((ssPrompt || ssUrls.length) && !alreadyDrawn) {
-          appendUserMsg(ssPrompt, ssUrls, false);
+          currentLiveEls.push(appendUserMsg(ssPrompt, ssUrls, false));
           _inflightUser = { text: ssPrompt, images: ssUrls };
         }
         // msg.agent is set on shared (xsync) turns; native turns omit it → Claude.
         currentAssistantEl = createAssistantMessage(msg.agent);
+        currentLiveEls.push(currentAssistantEl);
       }
       currentTextEl = null; streamingText = ''; currentToolEls = {};
       break;
     }
     case 'stream_event':
       handleStreamEvent(msg.event); break;
+    case 'turn_committed':
+      finalizeText();
+      if (msg.replaceLive) {
+        for (const el of currentLiveEls) {
+          try { if (el && el.parentNode) el.parentNode.removeChild(el); } catch {}
+        }
+        currentLiveEls = [];
+        currentAssistantEl = null; currentTextEl = null; streamingText = ''; currentToolEls = {};
+      }
+      for (const e of (msg.entries || [])) renderHistoryEntry(e);
+      _inflightUser = null;
+      scrollToBottom();
+      break;
     case 'stream_end':
       isStreaming = false;
       if (compactNoteEl) {
@@ -1992,6 +2009,7 @@ function renderBlocks(container, blocks) {
 function ensureAssistantEl() {
   if (!currentAssistantEl) {
     currentAssistantEl = createAssistantMessage();
+    currentLiveEls.push(currentAssistantEl);
     currentTextEl = null; streamingText = '';
   }
   return currentAssistantEl;
@@ -2287,6 +2305,7 @@ function appendUserMsg(text, images, queued) {
   m.innerHTML = `${lbl}${imgs}${bubble}`;
   // User just sent — always snap to bottom (forces auto-follow back on).
   document.getElementById('messages').appendChild(m); scrollToBottomNow();
+  return m;
 }
 
 // Click any in-thread attachment preview to zoom it in a fullscreen lightbox.
@@ -4405,7 +4424,10 @@ function renderAgentModelMenu(el) {
     gh.textContent = group.title;
     el.appendChild(gh);
     for (const m of group.models) {
-      const active = selectedModelByAgent[group.agent] === m.value;
+      // Only the model for the agent that will run the NEXT turn is visibly
+      // selected. We still remember each agent's last model internally, but
+      // showing both checks makes the picker look like two agents are active.
+      const active = group.agent === selectedAgent && selectedModelByAgent[group.agent] === m.value;
       el.appendChild(mmItem(m.label, active, () => {
         setAgentModel(group.agent, m.value);
         renderAgentModelMenu(el);

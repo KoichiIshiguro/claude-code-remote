@@ -66,6 +66,7 @@ function makeTurn(role, parts, attrs = {}) {
     ts: iso(attrs.ts || attrs.timestamp),
     parts: Array.isArray(parts) ? parts.filter(Boolean) : [],
     providerMeta: attrs.providerMeta || {},
+    meta: attrs.meta && typeof attrs.meta === 'object' ? attrs.meta : {},
   };
 }
 

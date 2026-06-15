@@ -590,7 +590,7 @@ async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelAr
   const agent = agentArg || sessionAgent.get(key) || 'claude';
   const model = modelArg !== undefined ? modelArg : (sessionModel.get(key) || undefined);
   const effort = effortArg !== undefined ? effortArg : (sessionEffort.get(key) || undefined);
-  liveTurn.begin(key, { prompt, images: imagePaths, compact: false });
+  liveTurn.begin(key, { prompt, images: imagePaths, compact: false, agent });
   broadcast(key, {
     type: 'stream_start', sessionId: key, compact: false, prompt,
     images: imagePaths.map(p => path.basename(p)), agent,
@@ -603,6 +603,16 @@ async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelAr
         liveTurn.record(key, event);
         broadcast(key, { type: 'stream_event', sessionId: key, event });
       },
+      onCommit: ({ entries }) => {
+        broadcast(key, {
+          type: 'turn_committed',
+          sessionId: key,
+          entries,
+          replaceLive: true,
+          agent,
+        });
+      },
+      isCancelled: () => !!runnerState(key)?.cancelling,
     });
   } catch (err) {
     if (!runnerState(key)?.cancelling) {
@@ -1030,7 +1040,7 @@ function handleConnection(ws /*, req */) {
         procTracker.cancel(msg.sessionId);
         if (msg.sessionId) {
           promptQueue.clear(msg.sessionId);
-          liveTurn.end(msg.sessionId);
+          liveTurn.markCancelling(msg.sessionId);
           broadcastQueue(msg.sessionId);
           // Always flip every live client off "Working", even if the process
           // had already finished (so cancel() was a no-op and no stream_end

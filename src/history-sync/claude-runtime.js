@@ -48,7 +48,7 @@ function materialize(transcript, opts = {}) {
   return { sessionId, jsonlPath, origLineCount, home, cwd, hasHistory };
 }
 
-function run({ cwd, sessionId, prompt, model, effort, processKey, resume = true }) {
+function run({ cwd, sessionId, prompt, model, effort, processKey, resume = true, onLiveEvent }) {
   return new Promise((resolve, reject) => {
     // First turn of a shared conversation has nothing to resume — create the
     // session fresh under our chosen id (so its jsonl lands at the known path we
@@ -56,6 +56,7 @@ function run({ cwd, sessionId, prompt, model, effort, processKey, resume = true 
     const args = resume
       ? ['--resume', sessionId, '-p', prompt]
       : ['--session-id', sessionId, '-p', prompt];
+    args.push('--output-format', 'stream-json', '--verbose');
     args.push('--dangerously-skip-permissions');
     if (model) args.push('--model', model);
     // Reasoning effort (--effort low|medium|high|xhigh|max), mirroring the native
@@ -75,10 +76,31 @@ function run({ cwd, sessionId, prompt, model, effort, processKey, resume = true 
     if (processKey) procTracker.register(processKey, child);
     let out = '';
     let err = '';
-    child.stdout.on('data', (d) => { out += d; });
+    let stdoutBuffer = '';
+    child.stdout.on('data', (d) => {
+      const chunk = d.toString();
+      out += chunk;
+      stdoutBuffer += chunk;
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop();
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const ev = JSON.parse(t);
+          if (typeof onLiveEvent === 'function') onLiveEvent(ev);
+        } catch { /* ignore non-json noise */ }
+      }
+    });
     child.stderr.on('data', (d) => { err += d; });
     child.on('error', reject);
     child.on('close', (code) => {
+      if (stdoutBuffer.trim()) {
+        try {
+          const ev = JSON.parse(stdoutBuffer.trim());
+          if (typeof onLiveEvent === 'function') onLiveEvent(ev);
+        } catch { /* ignore */ }
+      }
       if (code === 0) resolve({ stdout: out, stderr: err });
       else reject(new Error(`claude exited ${code}: ${err || out}`));
     });
@@ -107,6 +129,7 @@ async function turn(transcript, prompt, opts = {}) {
       effort: opts.effort,
       processKey: opts.processKey,
       resume: mat.hasHistory,
+      onLiveEvent: opts.onLiveEvent,
     });
   } catch (err) {
     runError = err;

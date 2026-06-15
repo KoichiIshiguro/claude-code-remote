@@ -11,8 +11,8 @@
 
 const turns = new Map(); // key (sessionId | placeholderId) → { prompt, images, compact, events: [] }
 
-function begin(key, { prompt = '', images = [], compact = false } = {}) {
-  turns.set(key, { prompt, images, compact: !!compact, events: [] });
+function begin(key, { prompt = '', images = [], compact = false, agent = '' } = {}) {
+  turns.set(key, { prompt, images, compact: !!compact, agent, events: [], status: 'running', startedAt: Date.now() });
 }
 
 function record(key, event) {
@@ -28,6 +28,11 @@ function end(key) {
   turns.delete(key);
 }
 
+function markCancelling(key) {
+  const t = turns.get(key);
+  if (t) t.status = 'cancelling';
+}
+
 // Follow a placeholder→real session id rename so the in-flight turn survives the
 // init event that resolves a brand-new session's real id.
 function rekey(oldKey, newKey) {
@@ -38,4 +43,4 @@ function rekey(oldKey, newKey) {
   turns.set(newKey, t);
 }
 
-module.exports = { begin, record, get, end, rekey };
+module.exports = { begin, record, get, end, markCancelling, rekey };
