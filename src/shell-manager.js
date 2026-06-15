@@ -84,6 +84,21 @@ const TMUX = resolveTmux();
 const HAS_TMUX = !!TMUX;
 const PREFIX = 'ccr-';
 
+// A pty whose environment has no UTF-8 locale (LANG/LC_* unset or set to C —
+// common under launchd / systemd / PM2, which strip the user's locale) makes
+// tmux and the shell fall back to the POSIX/C codeset and MANGLE multibyte I/O:
+// Japanese/CJK and other 2-byte characters arrive stripped or broken. Inject a
+// UTF-8 locale only when the host provides none, so the terminal handles 2-byte
+// text regardless of how the server was launched. macOS always ships
+// `en_US.UTF-8`; on Linux `C.UTF-8` is the broadly-available choice (`en_US.UTF-8`
+// there needs locale-gen). LC_CTYPE is what tmux/ncurses read for the codeset.
+function utf8LocaleEnv() {
+  const isUtf8 = (v) => typeof v === 'string' && /utf-?8/i.test(v);
+  if (isUtf8(process.env.LC_ALL) || isUtf8(process.env.LC_CTYPE) || isUtf8(process.env.LANG)) return {};
+  const value = IS_WINDOWS ? null : (process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8');
+  return value ? { LANG: process.env.LANG || value, LC_CTYPE: value } : {};
+}
+
 // The platform default shell for the no-tmux fallback path.
 function defaultShell() {
   if (IS_WINDOWS) {
@@ -116,7 +131,7 @@ function open(sessionId, directory, cols, rows) {
     cols: cols || 80,
     rows: rows || 24,
     cwd,
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: { ...process.env, ...utf8LocaleEnv(), TERM: 'xterm-256color' },
   };
   if (HAS_TMUX) {
     const name = tmuxName(sessionId);

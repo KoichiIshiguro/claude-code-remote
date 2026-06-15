@@ -4366,7 +4366,10 @@ function applyShellMods(d) {
 function shellEnsureTerm() {
   if (shellTerm) return;
   shellTerm = new Terminal({
-    fontFamily: "'SF Mono', Menlo, monospace",
+    // Latin stays in SF Mono/Menlo; the CJK fallbacks (full-width, so they map
+    // cleanly onto xterm's 2-cell wide chars) keep Japanese/CJK from falling back
+    // to a proportional system font that breaks cell alignment.
+    fontFamily: "'SF Mono', Menlo, 'Noto Sans Mono CJK JP', 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, monospace",
     fontSize: 13, cursorBlink: true, scrollback: 5000,
     theme: { background: '#000000' },
   });
