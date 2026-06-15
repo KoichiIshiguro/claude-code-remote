@@ -34,7 +34,7 @@ pnpm dev               # node --watch, auto-restart on file change
 > too — they just resolve from `package.json` without the strict version pin.
 
 You'll need a working `claude` CLI logged into Anthropic, and a GitHub OAuth
-App pointing at `http://localhost:4000/auth/github/callback`.
+App pointing at `http://localhost:4040/auth/github/callback`.
 
 ## Style
 

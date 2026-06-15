@@ -87,7 +87,7 @@ Optional but recommended:
 
 | Field | Default | When to set |
 |---|---|---|
-| `PORT` | `4000` | Change only if 4000 is taken |
+| `PORT` | `4040` | Change only if 4040 is taken |
 | `BASE_DIR` | unset | Set to e.g. `/home/$USER/projects` to enable the project picker |
 | `CLAUDE_PATH` | unset | **Set** if running under PM2 (use the absolute path from Step 1) |
 | `NODE_ENV` | unset | Set to `production` only when behind HTTPS |
@@ -108,7 +108,7 @@ Then proceed to Step 4.
 
 > Where will this run? Pick one:
 >
-> 1. **Localhost only** (testing) — base URL will be `http://localhost:4000`
+> 1. **Localhost only** (testing) — base URL will be `http://localhost:4040`
 > 2. **Behind a domain with HTTPS** (production) — give me the URL, e.g. `https://claude.example.com`
 
 Use the answer to determine `base_url`. Then:

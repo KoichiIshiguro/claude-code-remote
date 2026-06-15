@@ -78,7 +78,7 @@ app.get('/setup', (req, res) => {
 app.get('/api/setup/probe', (req, res) => {
   if (isSetupComplete()) return res.status(403).json({ error: 'Setup already complete' });
   const homedir = os.homedir();
-  const port = parseInt(process.env.PORT, 10) || 4000;
+  const port = parseInt(process.env.PORT, 10) || 4040;
   let tailscale = { ok: false };
   try {
     const out = execSync('tailscale ip -4', { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -114,7 +114,7 @@ app.post('/api/setup', async (req, res) => {
   saveAdmin(username, password);
   saveConfig({ accessRoot: rootValue });
 
-  const port = parseInt(process.env.PORT, 10) || 4000;
+  const port = parseInt(process.env.PORT, 10) || 4040;
   let accessUrl = `http://localhost:${port}`;
   try {
     const out = execSync('tailscale ip -4', { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
@@ -241,7 +241,7 @@ app.get('/api/version', (req, res) => {
 // Tailscale (IP + MagicDNS name) first, then LAN, then localhost — plus a QR
 // for the best one so a phone can just scan it.
 app.get('/api/access-address', requireAuth, async (req, res) => {
-  const port = parseInt(process.env.PORT, 10) || 4000;
+  const port = parseInt(process.env.PORT, 10) || 4040;
   const addresses = [];
 
   // A Tailscale node IP lives in the CGNAT range 100.64.0.0/10 — recognising
@@ -756,7 +756,7 @@ server.on('upgrade', (req, socket, head) => {
 
 wss.on('connection', handleConnection);
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 4040;
 server.listen(PORT, () => {
   console.log(`Claude Code Remote running at http://localhost:${PORT}`);
 });

@@ -136,7 +136,7 @@
         const r = await fetch('/api/setup/probe');
         probe = await r.json();
       } catch (e) {
-        probe = { homedir: '/', tailscale: { ok: false, message: e.message }, port: 4000 };
+        probe = { homedir: '/', tailscale: { ok: false, message: e.message }, port: 4040 };
       }
       // Suggest folder paths for "Selected folder only".
       const home = probe.homedir || '';

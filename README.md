@@ -122,8 +122,8 @@ IP — you can use your PC's machine name. No ports to open, no router settings.
 tailscale ip -4        # → e.g. 100.101.102.103  (your tailnet IP)
 ```
 
-You'll reach the app from your phone at `http://100.101.102.103:4000` — or, with
-MagicDNS, `http://<your-pc-name>:4000` (the name shown in the Tailscale app /
+You'll reach the app from your phone at `http://100.101.102.103:4040` — or, with
+MagicDNS, `http://<your-pc-name>:4040` (the name shown in the Tailscale app /
 [admin console](https://login.tailscale.com/admin/machines)). The first-run
 wizard (next step) also prints this URL **with a QR code** so you can just point
 your phone's camera at the screen.
@@ -142,9 +142,9 @@ npm install
 npm start
 ```
 
-Open `http://localhost:4000` — you'll be redirected to `/setup`, the first-run wizard. Pick a username, password, and an access scope (a single folder to sandbox to, or full disk access on a trusted tailnet). Done.
+Open `http://localhost:4040` — you'll be redirected to `/setup`, the first-run wizard. Pick a username, password, and an access scope (a single folder to sandbox to, or full disk access on a trusted tailnet). Done.
 
-After setup, sign in from your phone at `http://<tailscale-ip>:4000` (the wizard shows you the URL + a QR code).
+After setup, sign in from your phone at `http://<tailscale-ip>:4040` (the wizard shows you the URL + a QR code).
 
 > **Forgot the address, or didn't write it down?** You don't need to re-run
 > setup. Open the app on the machine, click the **⚙ (system settings)** button at
@@ -290,7 +290,7 @@ All configuration is **optional** — the first-run wizard at `/setup` writes ad
 
 | Env var | Description |
 |---|---|
-| `PORT` | HTTP port. Default `4000` |
+| `PORT` | HTTP port. Default `4040` |
 | `CLAUDE_PATH` | Absolute path to `claude` — set when PATH isn't inherited (PM2 / systemd / launchd) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Long-lived auth token from `claude setup-token`. **Strongly recommended for any server run** (the persisted Keychain/disk OAuth creds go stale and `claude -p` then 401s even on your own machine), and **required under launchd/systemd** (can't read the Keychain at all). See step 5 above |
 | `SESSION_SECRET` | Override the auto-generated one (useful for shared cookie domains across deployments) |
