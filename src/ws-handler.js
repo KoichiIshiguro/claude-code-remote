@@ -3,13 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { v4: uuidv4 } = require('uuid');
-const sm = require('./session-manager');
 const procTracker = require('./proc-tracker');
 const projectsStore = require('./projects-store');
 const archiveStore = require('./archive-store');
 const nameStore = require('./name-store');
-const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
 const scheduledPrompts = require('./scheduled-prompts');
 const liveTurn = require('./live-turn');
@@ -21,7 +18,7 @@ const historyStore = require('./history-sync/store');
 const historyPort = require('./history-sync/port');
 const { segmentByAgent } = require('./history-sync/segment-by-agent');
 
-// sessionId or placeholderId → Set<ws>  (all clients watching that key)
+// sessionId → Set<ws>  (all clients watching that conversation)
 const sessionClients = new Map();
 
 // Shared (alpha) conversations only: the agent the client last selected for the
@@ -33,12 +30,6 @@ const sessionAgent = new Map();
 // session, sent per-turn alongside the agent. Empty/unset → let the agent CLI use
 // its own default. Per-item model (Phase 2 queue) overrides this fallback.
 const sessionModel = new Map();
-
-// Placeholder sessions that haven't yet been written to a jsonl. Lost on
-// server restart — intentional. UI generates an id, server tracks the
-// directory; once the first prompt's stream-json init reveals the real
-// Claude session id, we rekey and drop the placeholder.
-const pendingSessions = new Map(); // placeholderId → { directory, createdAt, lastActivity }
 
 function send(ws, obj) {
   if (ws.readyState === 1) ws.send(JSON.stringify(obj));
@@ -52,11 +43,9 @@ function broadcast(key, obj) {
 }
 
 // ── Available slash commands ────────────────────────────────────────────────
-// The stream-json `init` event reports the slash commands valid in this `-p`
-// environment (skills + built-ins like /compact). They're environment-wide and
-// effectively static, so we cache the latest list, persist it (survives restart
-// → available on the very next page load), and push it to whoever's viewing the
-// session so the prompt-box picker populates without a reload.
+// The set of slash commands (skills + built-ins) valid in the agent environment
+// is environment-wide and effectively static, so we serve the persisted list to
+// the prompt-box picker. The file is seeded out-of-band and survives restarts.
 const SLASH_FILE = path.join(__dirname, '..', 'data', 'slash-commands.json');
 let slashCommandsCache = (() => {
   try { const a = JSON.parse(fs.readFileSync(SLASH_FILE, 'utf8')); return Array.isArray(a) ? a.filter(c => typeof c === 'string') : []; }
@@ -64,18 +53,6 @@ let slashCommandsCache = (() => {
 })();
 
 function getSlashCommands() { return slashCommandsCache; }
-
-function recordSlashCommands(key, list) {
-  if (!Array.isArray(list)) return;
-  const next = list.filter(c => typeof c === 'string');
-  if (!next.length) return;
-  const changed = next.length !== slashCommandsCache.length || next.some((c, i) => c !== slashCommandsCache[i]);
-  if (changed) {
-    slashCommandsCache = next;
-    try { fs.writeFileSync(SLASH_FILE, JSON.stringify(next)); } catch {}
-  }
-  broadcast(key, { type: 'slash_commands', commands: next });
-}
 
 function subscribe(key, ws) {
   if (!key) return;
@@ -85,16 +62,6 @@ function subscribe(key, ws) {
 
 function unsubscribe(ws) {
   for (const [, clients] of sessionClients) clients.delete(ws);
-}
-
-function rekeySubscribers(oldKey, newKey) {
-  if (!oldKey || !newKey || oldKey === newKey) return;
-  const set = sessionClients.get(oldKey);
-  if (!set) return;
-  sessionClients.delete(oldKey);
-  const existing = sessionClients.get(newKey);
-  if (existing) for (const c of set) existing.add(c);
-  else sessionClients.set(newKey, set);
 }
 
 // ── Branch tracking ─────────────────────────────────────────────────────────
@@ -132,15 +99,9 @@ function unwatchWs(ws) {
   }
 }
 
-// Look up directory by sessionId. Pending placeholders take precedence; then
-// scan registered projects for a matching jsonl filename.
+// Look up a conversation's working directory from the canonical store.
 function findDirectoryForSessionId(sessionId) {
-  if (pendingSessions.has(sessionId)) return pendingSessions.get(sessionId).directory;
-  for (const p of projectsStore.loadProjects()) {
-    const ls = jsonlReader.listJsonlsForProject(p.path);
-    if (ls.some(s => s.sessionId === sessionId)) return p.path;
-  }
-  return null;
+  return syncBridge.directoryFor(sessionId) || null;
 }
 
 // A shared (alpha) canonical conversation → the sidebar's legacy session shape.
@@ -183,35 +144,13 @@ function sharedSessionsLegacy(projectPath, archived, seen) {
   return out;
 }
 
-function pendingToLegacyShape(placeholderId, entry) {
-  return {
-    id: placeholderId,
-    sessionId: null,
-    directory: entry.directory,
-    lastActivity: new Date(entry.lastActivity).toISOString(),
-    streaming: procTracker.isRunning(placeholderId),
-    allowedTools: null,
-    lastTokens: null,
-    preview: '',
-  };
-}
-
 // v2 is canonical-first: the sidebar lists ONLY shared (canonical) sessions.
-// Pre-v2 native jsonl sessions are legacy artifacts — never the truth, and
+// Native agent session files are legacy artifacts — never the truth, and
 // reachable solely through the per-project import modal (port_list_sources),
-// not as peer entries here. Pending placeholders are folded in only while a
-// turn is materializing them; they fall away once the canonical row exists.
+// not as peer entries here.
 function listAllSessionsLegacy() {
   const archived = new Set(archiveStore.load());
-  const out = [];
-  const seen = new Set();
-  for (const [pid, entry] of pendingSessions) {
-    if (archived.has(pid)) continue;
-    seen.add(pid);
-    out.push(pendingToLegacyShape(pid, entry));
-  }
-  out.push(...sharedSessionsLegacy(null, archived, seen));
-  return out;
+  return sharedSessionsLegacy(null, archived, null);
 }
 
 // ─── Server-side prompt queue + runner ─────────────────────────────────────
@@ -222,12 +161,7 @@ function listAllSessionsLegacy() {
 // batched prompt (blank-line joined). The loop lives in the server process,
 // so closing the browser doesn't stop it — the next batch still fires.
 
-const runners = new Set(); // keys (sessionId | placeholderId) with an active runner
-// Keys whose CURRENT in-flight turn is a (auto-)compact. Server-authoritative so
-// a fresh page load / project switch can re-show the "compacting…" note from the
-// history payload instead of relying on client-side in-memory state (which a full
-// navigation wipes). Maps key → { auto: bool }.
-const compactingKeys = new Map();
+const runners = new Set(); // sessionIds with an active runner
 
 function queueStateMsg(key) {
   return {
@@ -284,247 +218,45 @@ function liveTurnPayload(key) {
 }
 
 // Idempotent: starts a runner for `key` if one isn't already draining it.
+// Every conversation is a canonical (xsync_) shared session, so the id is stable
+// for the runner's whole life — no re-keying.
 function kickRunner(key, directory) {
   if (runners.has(key)) return;
   runners.add(key);
-  let activeKey = key;
   (async () => {
     try {
       while (true) {
         // Reservations first: pull this session's due ones and batch them ahead
         // of the live queue. Re-checked at the top of every turn, so a reserva-
         // tion whose time passed mid-turn fires the moment this turn finishes.
-        const due = scheduledPrompts.takeDueFor(activeKey, Date.now());
-        if (due.length) broadcastScheduled(activeKey);
+        const due = scheduledPrompts.takeDueFor(key, Date.now());
+        if (due.length) broadcastScheduled(key);
         const items = [
           ...due.map(i => ({ id: i.id, text: i.text, imagePaths: i.imagePaths, agent: i.agent, model: i.model })),
-          ...promptQueue.dequeueAll(activeKey),
+          ...promptQueue.dequeueAll(key),
         ];
         if (!items.length) break;
-        broadcastQueue(activeKey); // queue just drained → empty
-        const sync = syncBridge.isSyncId(activeKey);
-        // Shared sessions: split into contiguous same-agent runs so a Claude batch
-        // and a Codex batch never merge into one turn — run them in order. Native
-        // sessions are always Claude → exactly one segment (old behaviour intact).
-        const segments = sync
-          ? segmentByAgent(items)
-          : [{ agent: 'claude', items }];
-        for (const seg of segments) {
+        broadcastQueue(key); // queue just drained → empty
+        // Split into contiguous same-agent runs so a Claude batch and a Codex
+        // batch never merge into one turn — run them in order.
+        for (const seg of segmentByAgent(items)) {
           const text = seg.items.map(i => i.text).join('\n\n');
           const images = seg.items.flatMap(i => i.imagePaths || []);
           // A batched segment runs under the model of its first item (all items
           // share an agent; model is usually constant within a run).
           const segModel = seg.items.find(i => i.model)?.model;
-          const resolved = sync
-            ? await runSyncTurn(activeKey, directory, text, images, seg.agent, segModel)
-            : await runOneTurn(activeKey, directory, text, images);
-          // A placeholder resolved to a real session id mid-run: the queue and
-          // runner membership were already migrated inside runOneTurn at init.
-          if (resolved && resolved !== activeKey) {
-            runners.delete(activeKey);
-            activeKey = resolved;
-          }
+          await runSyncTurn(key, directory, text, images, seg.agent, segModel);
         }
       }
     } catch (e) {
       console.error('[prompt-queue runner]', e);
     } finally {
-      runners.delete(activeKey);
+      runners.delete(key);
     }
   })();
 }
 
-// Runs a single `claude -p` turn for `key`. Returns the resolved session id
-// (the real id once a new session's init event arrives, otherwise `key`).
-async function runOneTurn(key, directory, prompt, imagePaths) {
-  const cfg = require('./auth').loadConfig();
-  const model = typeof cfg.model === 'string' ? cfg.model : null;
-  const effort = typeof cfg.effort === 'string' ? cfg.effort : null;
-
-  const isNewSession = pendingSessions.has(key);
-  let resolvedSessionId = isNewSession ? null : key;
-  const resumeSessionId = isNewSession ? null : key;
-  const processKey = key;
-
-  // A manual /compact must NOT be preceded by an auto-compact: that would
-  // compact twice (the auto-compact pre-phase, then the manual /compact
-  // itself). Detect it up front so the auto-compact pre-check can skip it.
-  const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
-
-  if (!isNewSession && !isCompactCmd && sm.shouldAutoCompact(key, directory)) {
-    compactingKeys.set(key, { auto: true });
-    // Buffer the REAL user prompt (not '/compact') with compact:true, so a reload
-    // during the auto-compact phase still shows the user's pending prompt bubble
-    // alongside the "compacting…" note (the compact output itself is suppressed).
-    liveTurn.begin(key, { prompt, images: imagePaths, compact: true });
-    broadcast(key, { type: 'stream_start', sessionId: key, autoCompact: true });
-    try {
-      for await (const event of sm.runPrompt({
-        directory, prompt: '/compact',
-        resumeSessionId: key, processKey: key, model, effort,
-      })) {
-        liveTurn.record(key, event);
-        broadcast(key, { type: 'stream_event', sessionId: key, event });
-      }
-    } catch (err) {
-      broadcast(key, { type: 'error', message: `auto-compact failed: ${err.message}`, sessionId: key });
-    } finally {
-      compactingKeys.delete(key);
-      liveTurn.end(key);
-      broadcast(key, { type: 'stream_end', sessionId: key });
-    }
-  }
-
-  // Tag the stream when the prompt itself is a manual /compact so the UI can
-  // show a "compacting…" indicator (auto-compact above sets its own flag).
-  if (isCompactCmd) compactingKeys.set(key, { auto: false });
-  liveTurn.begin(key, { prompt, images: imagePaths, compact: isCompactCmd });
-  // Carry the prompt text being processed so the client can draw its user bubble
-  // now. Queued prompts aren't shown as bubbles while waiting (only in the queue
-  // area), so this is the moment they become a real message. Suppressed for a
-  // /compact (it's a maintenance action, not a message).
-  broadcast(key, {
-    type: 'stream_start', sessionId: key, compact: isCompactCmd,
-    prompt: isCompactCmd ? null : prompt,
-    // Basenames only; the client builds /attachment URLs from session + dir.
-    images: isCompactCmd ? [] : imagePaths.map(p => path.basename(p)),
-  });
-
-  // AskUserQuestion intercept — the tool can't be answered in `-p` mode, so we
-  // surface the question, cancel the stream, and write a synthetic tool_result
-  // so the next /resume isn't left dangling.
-  let interceptedAUQ = null;
-
-  try {
-    for await (const event of sm.runPrompt({
-      directory, prompt, imagePaths, resumeSessionId, processKey, model, effort,
-    })) {
-      // Every init (new or resumed) carries the env's slash command list.
-      if (event.type === 'system' && event.subtype === 'init' && Array.isArray(event.slash_commands)) {
-        recordSlashCommands(key, event.slash_commands);
-      }
-      if (isNewSession && !resolvedSessionId
-          && event.type === 'system' && event.subtype === 'init' && event.session_id) {
-        resolvedSessionId = event.session_id;
-        // Claim the real id immediately so a concurrent kick(realId) (from a
-        // prompt sent after the client learns the new id) is a no-op rather
-        // than spawning a second runner.
-        runners.add(resolvedSessionId);
-        procTracker.rekey(key, resolvedSessionId);
-        rekeySubscribers(key, resolvedSessionId);
-        promptQueue.rekey(key, resolvedSessionId);
-        scheduledPrompts.rekey(key, resolvedSessionId);
-        liveTurn.rekey(key, resolvedSessionId);
-        // Re-key the pending record to the REAL id instead of deleting it. Claude
-        // emits `init` before it has necessarily flushed the session jsonl to
-        // disk, so deleting here left a window where the sidebar had neither the
-        // placeholder row nor a jsonl-derived row → the session vanished until a
-        // reload. Keeping a pending row under the real id bridges that gap;
-        // listAllSessionsLegacy de-dups it once the jsonl appears, and the turn's
-        // stream_end cleans it up.
-        const pendingEntry = pendingSessions.get(key);
-        pendingSessions.delete(key);
-        if (pendingEntry) pendingSessions.set(resolvedSessionId, pendingEntry);
-        broadcast(resolvedSessionId, { type: 'session_assigned', placeholderId: key, sessionId: resolvedSessionId });
-        broadcast(resolvedSessionId, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
-      }
-
-      if (!interceptedAUQ && event.type === 'assistant') {
-        const content = event.message && event.message.content;
-        if (Array.isArray(content)) {
-          const auq = content.find(b => b && b.type === 'tool_use' && b.name === 'AskUserQuestion');
-          if (auq) {
-            interceptedAUQ = {
-              toolUseId: auq.id,
-              questions: (auq.input && auq.input.questions) || [],
-            };
-            setTimeout(() => { try { procTracker.cancel(resolvedSessionId || key); } catch {} }, 200);
-          }
-        }
-      }
-
-      const bk = resolvedSessionId || key;
-      liveTurn.record(bk, event);
-      broadcast(bk, { type: 'stream_event', sessionId: bk, event });
-    }
-  } catch (err) {
-    const bk = resolvedSessionId || key;
-    broadcast(bk, { type: 'error', message: err.message, sessionId: bk });
-  } finally {
-    const bk = resolvedSessionId || key;
-    // Persist attachments instead of deleting them: move each out of the
-    // project's .upload-files (keeping the working dir clean) into the
-    // server-managed attachments/<session>/ store, so they stay viewable later
-    // via GET /attachment. Best-effort — a failure just leaves the file in place.
-    for (const p of imagePaths) {
-      try {
-        const destDir = sessionDir(bk);
-        fs.mkdirSync(destDir, { recursive: true });
-        const dest = path.join(destDir, path.basename(p));
-        try { fs.renameSync(p, dest); }
-        catch { fs.copyFileSync(p, dest); fs.unlinkSync(p); } // cross-device
-      } catch {}
-    }
-
-    if (interceptedAUQ && bk) {
-      try {
-        const tail = jsonlReader.readTailEntry(bk, directory);
-        const parentUuid = tail && typeof tail.uuid === 'string' ? tail.uuid : null;
-        const entry = {
-          parentUuid,
-          sessionId: bk,
-          type: 'user',
-          isMeta: false,
-          uuid: uuidv4(),
-          timestamp: new Date().toISOString(),
-          cwd: directory,
-          message: {
-            role: 'user',
-            content: [{
-              type: 'tool_result',
-              tool_use_id: interceptedAUQ.toolUseId,
-              content: 'AskUserQuestion is unsupported in -p mode. The user will respond in plain text in the next prompt.',
-              is_error: true,
-            }],
-          },
-        };
-        jsonlReader.appendJsonlLine(bk, directory, entry);
-      } catch (e) {
-        // Non-fatal — resume will surface the dangling tool_use.
-      }
-      broadcast(bk, {
-        type: 'ask_user_question_intercepted',
-        sessionId: bk,
-        toolUseId: interceptedAUQ.toolUseId,
-        questions: interceptedAUQ.questions,
-      });
-    }
-
-    compactingKeys.delete(key);
-    compactingKeys.delete(bk);
-    liveTurn.end(key);
-    liveTurn.end(bk);
-    broadcast(bk, { type: 'stream_end', sessionId: bk });
-    if (isNewSession) {
-      if (resolvedSessionId) {
-        // init arrived → the session jsonl is now on disk, so the jsonl-derived
-        // row replaces the transitional pending one. Drop both keys.
-        pendingSessions.delete(resolvedSessionId);
-        pendingSessions.delete(key);
-      } else if (pendingSessions.has(key)) {
-        // init never came (turn errored before it) → keep the placeholder so the
-        // user can retry; just freshen its activity time.
-        pendingSessions.get(key).lastActivity = Date.now();
-      }
-      // Push a refreshed list so the sidebar row updates to its real title/preview.
-      broadcast(bk, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
-    }
-  }
-
-  return resolvedSessionId || key;
-}
-
-// Runs a single SHARED (alpha) turn for `key` — a canonical conversation whose id
+// Runs a single SHARED turn for `key` — a canonical conversation whose id
 // carries the `xsync_` prefix. The agent (claude|codex) is whatever the client
 // last selected for this session; both peers append to the same canonical store.
 // The reply is broadcast as Claude-shaped stream events so the existing renderer
@@ -557,14 +289,13 @@ async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelAr
 }
 
 // Every Claude session id currently reachable from the GUI (visible OR
-// archived) plus any in-flight placeholders. Used by shell cleanup to decide
-// which `ccr-*` tmux sessions are true orphans.
+// archived). Used by shell cleanup to decide which `ccr-*` tmux sessions are
+// true orphans.
 function knownSessionIds() {
   const ids = new Set();
-  for (const p of projectsStore.loadProjects()) {
-    for (const s of jsonlReader.listJsonlsForProject(p.path)) ids.add(s.sessionId);
+  for (const t of historyStore.list()) {
+    if (syncBridge.isSyncId(t.id)) ids.add(t.id);
   }
-  for (const pid of pendingSessions.keys()) ids.add(pid);
   return [...ids];
 }
 
@@ -592,11 +323,7 @@ function handleConnection(ws /*, req */) {
       case 'add_project': {
         try {
           const entry = projectsStore.addProject({ path: msg.path, name: msg.name });
-          // Auto-archive existing jsonls under this folder so they don't
-          // suddenly clutter the sidebar; user can restore via ↻ modal.
-          const existing = jsonlReader.listJsonlsForProject(entry.path);
-          if (existing.length) archiveStore.archiveMany(existing.map(e => e.sessionId));
-          send(ws, { type: 'project_added', project: entry, autoArchived: existing.length });
+          send(ws, { type: 'project_added', project: entry });
           send(ws, { type: 'projects_list', projects: projectsStore.loadProjects() });
         } catch (err) {
           send(ws, { type: 'error', message: err.message });
@@ -712,45 +439,26 @@ function handleConnection(ws /*, req */) {
       }
 
       case 'list_archived': {
+        // Archived CANONICAL conversations for this project — the only kind v2
+        // has. Restoring one un-hides it back into the sidebar.
         const projectPath = msg.projectPath;
         if (!projectPath) { send(ws, { type: 'error', message: 'projectPath required' }); return; }
         const archived = new Set(archiveStore.load());
-        const sessions = jsonlReader.listJsonlsForProject(projectPath).map(s => ({
-          sessionId: s.sessionId,
-          mtime: s.mtime,
-          archived: archived.has(s.sessionId),
-          aiTitle: jsonlReader.getLatestAiTitle(s.sessionId, projectPath),
-          preview: jsonlReader.firstUserPreview(s.sessionId, projectPath),
-        }));
+        const sessions = historyStore.list()
+          .filter(t => syncBridge.isSyncId(t.id) && archived.has(t.id) && (t.cwd || '') === projectPath)
+          .map(t => {
+            const firstUser = (t.turns || []).find(x => x.role === 'user');
+            const preview = firstUser
+              ? (firstUser.parts || []).filter(p => p.type === 'text').map(p => p.text).join(' ').trim().slice(0, 120)
+              : '';
+            return { sessionId: t.id, mtime: t._mtime || 0, archived: true, aiTitle: t.title || '', preview };
+          })
+          .sort((a, b) => b.mtime - a.mtime);
         send(ws, { type: 'archived_list', projectPath, sessions });
         break;
       }
 
       // ─── Session create / delete / archive / restore / purge ───────────────
-
-      case 'create_session': {
-        // Compat path: generate a placeholder id and remember its directory.
-        // The first send_prompt with this id spawns claude without --resume
-        // and captures the real session_id from the init event.
-        const directory = msg.directory;
-        if (!directory) { send(ws, { type: 'error', message: 'directory required' }); return; }
-        const placeholderId = uuidv4();
-        const now = Date.now();
-        pendingSessions.set(placeholderId, { directory, createdAt: now, lastActivity: now });
-        const session = {
-          id: placeholderId,
-          sessionId: null,
-          directory,
-          createdAt: new Date(now).toISOString(),
-          lastActivity: new Date(now).toISOString(),
-          streaming: false,
-          allowedTools: null,
-          lastTokens: null,
-        };
-        send(ws, { type: 'session_created', session });
-        send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
-        break;
-      }
 
       case 'create_shared_session': {
         // Canonical-first new session. The SERVER mints the id and persists an
@@ -775,13 +483,8 @@ function handleConnection(ws /*, req */) {
       case 'delete_session': {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
-        if (pendingSessions.has(sid)) {
-          procTracker.cancel(sid);
-          pendingSessions.delete(sid);
-        } else {
-          procTracker.cancel(sid);
-          archiveStore.archive(sid);
-        }
+        procTracker.cancel(sid);
+        archiveStore.archive(sid);
         send(ws, { type: 'session_deleted', sessionId: sid });
         send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
         break;
@@ -791,10 +494,7 @@ function handleConnection(ws /*, req */) {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
         procTracker.cancel(sid);
-        // Pending placeholders are in-memory only — drop them outright
-        // instead of just archiving the placeholder string.
-        if (pendingSessions.has(sid)) pendingSessions.delete(sid);
-        else archiveStore.archive(sid);
+        archiveStore.archive(sid);
         send(ws, { type: 'archive_ok', sessionId: sid });
         send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
         break;
@@ -819,19 +519,14 @@ function handleConnection(ws /*, req */) {
       }
 
       case 'purge_session': {
+        // Physical delete of a canonical conversation: stop any running turn,
+        // remove the transcript file, and clear its custom name / archive flag.
         const sid = msg.sessionId;
-        // Pending placeholder: no jsonl exists yet, just drop the in-memory entry.
-        if (sid && pendingSessions.has(sid)) {
-          procTracker.cancel(sid);
-          pendingSessions.delete(sid);
-          send(ws, { type: 'purge_ok', sessionId: sid });
-          send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
-          break;
-        }
-        const dir = msg.directory || findDirectoryForSessionId(sid);
-        if (!sid || !dir) { send(ws, { type: 'error', message: 'sessionId and directory required' }); return; }
-        sm.purgeSession(sid, dir);
+        if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
+        procTracker.cancel(sid);
+        historyStore.remove(sid);
         nameStore.remove(sid);
+        archiveStore.restore(sid);
         send(ws, { type: 'purge_ok', sessionId: sid });
         send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
         break;
@@ -843,80 +538,23 @@ function handleConnection(ws /*, req */) {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
 
-        // Shared (alpha) conversation: history comes from the canonical store, not
-        // a native jsonl. Entries are pre-normalized into the renderer's shape.
-        if (syncBridge.isSyncId(sid)) {
-          subscribe(sid, ws);
-          const { entries, directory } = syncBridge.loadHistoryEntries(sid, msg.directory);
-          if (directory) watchDir(directory, ws);
-          send(ws, {
-            type: 'history',
-            sessionId: sid,
-            directory: directory || '',
-            branch: directory ? gitInfo.currentBranch(directory) : '',
-            history: entries,
-            streaming: runners.has(sid),
-            liveTurn: liveTurnPayload(sid),
-            currentEntry: null,
-            allowedTools: null,
-            lastTokens: null,
-          });
-          send(ws, queueStateMsg(sid));
-          send(ws, scheduledStateMsg(sid));
-          return;
-        }
-
-        if (pendingSessions.has(sid)) {
-          subscribe(sid, ws);
-          const entry = pendingSessions.get(sid);
-          watchDir(entry.directory, ws);
-          send(ws, {
-            type: 'history',
-            sessionId: sid,
-            directory: entry.directory,
-            history: [],
-            streaming: procTracker.isRunning(sid),
-            liveTurn: liveTurnPayload(sid),
-            currentEntry: null,
-            allowedTools: null,
-            lastTokens: null,
-          });
-          send(ws, queueStateMsg(sid));
-        send(ws, scheduledStateMsg(sid));
-          return;
-        }
-
-        const directory = msg.directory || findDirectoryForSessionId(sid);
-        if (!directory) {
-          send(ws, {
-            type: 'history',
-            sessionId: sid,
-            directory: '',
-            history: [],
-            streaming: false,
-            currentEntry: null,
-            allowedTools: null,
-            lastTokens: null,
-          });
-          return;
-        }
-
+        // Every conversation is a canonical (xsync_) shared session: history comes
+        // from the canonical store, pre-normalized into the renderer's shape. An
+        // unknown/non-canonical id resolves to an empty transcript.
         subscribe(sid, ws);
-        watchDir(directory, ws);
-        const { history, lastTokens, truncated } = jsonlReader.readHistory(sid, directory);
+        const { entries, directory } = syncBridge.loadHistoryEntries(sid, msg.directory);
+        if (directory) watchDir(directory, ws);
         send(ws, {
           type: 'history',
           sessionId: sid,
-          directory,
-          branch: gitInfo.currentBranch(directory),
-          history,
-          truncated,
-          streaming: procTracker.isRunning(sid),
-          compacting: compactingKeys.has(sid) ? compactingKeys.get(sid) : null,
+          directory: directory || '',
+          branch: directory ? gitInfo.currentBranch(directory) : '',
+          history: entries,
+          streaming: runners.has(sid),
           liveTurn: liveTurnPayload(sid),
           currentEntry: null,
           allowedTools: null,
-          lastTokens,
+          lastTokens: null,
         });
         send(ws, queueStateMsg(sid));
         send(ws, scheduledStateMsg(sid));
@@ -949,19 +587,6 @@ function handleConnection(ws /*, req */) {
         // --dangerously-skip-permissions. Echo back for compat with old UI.
         send(ws, { type: 'permissions_updated', sessionId: msg.sessionId, allowedTools: msg.allowedTools || null });
         break;
-
-      case 'request_summary': {
-        const sid = msg.sessionId;
-        const dir = msg.directory || findDirectoryForSessionId(sid);
-        if (!sid || !dir) { send(ws, { type: 'summary_error', sessionId: sid, message: 'session not found' }); return; }
-        try {
-          const text = await sm.summarizeSession(sid, dir);
-          send(ws, { type: 'summary', sessionId: sid, text });
-        } catch (err) {
-          send(ws, { type: 'summary_error', sessionId: sid, message: err.message });
-        }
-        break;
-      }
 
       // ─── File browser (for the folder picker) ─────────────────────────────
 
@@ -1036,10 +661,10 @@ function handleConnection(ws /*, req */) {
         if (!dir || !branch) { send(ws, { type: 'branch_switched', ok: false, error: 'directory and branch required' }); return; }
         const absDir = path.resolve(dir);
         if (!projectsStore.isBrowseAllowed(absDir)) { send(ws, { type: 'branch_switched', directory: absDir, ok: false, error: 'Access denied' }); return; }
-        // Refuse while any Claude turn is streaming in this directory — a
+        // Refuse while any agent turn is streaming in this directory — a
         // checkout would swap files out from under the running process.
         const busy = procTracker.runningKeys().some(k => {
-          const d = pendingSessions.has(k) ? pendingSessions.get(k).directory : findDirectoryForSessionId(k);
+          const d = findDirectoryForSessionId(k);
           return d && path.resolve(d) === absDir;
         });
         if (busy) { send(ws, { type: 'branch_switched', directory: absDir, ok: false, busy: true, error: 'このフォルダでセッションが実行中です。完了してから切り替えてください。' }); return; }
@@ -1065,38 +690,30 @@ function handleConnection(ws /*, req */) {
       case 'send_prompt': {
         const { prompt, imagePaths = [] } = msg;
         const { sessionId } = msg;
-        let directory = msg.directory;
 
         if (!prompt && imagePaths.length === 0) { send(ws, { type: 'error', message: 'prompt required' }); return; }
         if (!sessionId) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
 
-        const placeholder = pendingSessions.get(sessionId);
-        if (placeholder) directory = directory || placeholder.directory;
-        else if (!directory) directory = findDirectoryForSessionId(sessionId);
-
-        // Shared (alpha) sessions carry no native jsonl, so fall back to the cwd
-        // remembered in the canonical store, and record the per-turn agent choice.
-        if (syncBridge.isSyncId(sessionId)) {
-          if (!directory) directory = syncBridge.directoryFor(sessionId);
-          sessionAgent.set(sessionId, msg.agent === 'codex' ? 'codex' : 'claude');
-          if (typeof msg.model === 'string' && msg.model) sessionModel.set(sessionId, msg.model);
-          else sessionModel.delete(sessionId);
-        }
+        // Canonical session: cwd comes from the shared store. Record the per-turn
+        // agent/model choice (claude|codex; model empty → CLI default).
+        const directory = msg.directory || syncBridge.directoryFor(sessionId);
+        const agent = msg.agent === 'codex' ? 'codex' : 'claude';
+        const model = (typeof msg.model === 'string' && msg.model) ? msg.model : undefined;
+        sessionAgent.set(sessionId, agent);
+        if (model) sessionModel.set(sessionId, model);
+        else sessionModel.delete(sessionId);
 
         if (!directory) {
           send(ws, { type: 'error', message: 'directory could not be determined', sessionId });
           return;
         }
 
-        // Drop a duplicate /compact: a double-tapped compact button (the second
-        // tap slips through before the server's stream_start flips the client's
-        // isStreaming) would otherwise queue two /compact and run two compact
-        // turns. Also avoids dequeueAll joining them into "/compact\n\n/compact",
-        // which isCompactCmd wouldn't recognise as a compact at all.
+        // Drop a duplicate /compact already waiting in the queue: a double-tapped
+        // compact button (the second tap slips through before the server's
+        // stream_start flips the client's isStreaming) would otherwise queue two.
         if (typeof prompt === 'string' && prompt.trim() === '/compact') {
           const pending = promptQueue.list(sessionId) || [];
-          if (compactingKeys.has(sessionId)
-              || pending.some(i => (i.text || '').trim() === '/compact')) {
+          if (pending.some(i => (i.text || '').trim() === '/compact')) {
             broadcastQueue(sessionId);
             break;
           }
@@ -1107,11 +724,7 @@ function handleConnection(ws /*, req */) {
         // runner picks it up immediately. The runner is browser-independent —
         // it keeps draining even if this socket closes.
         subscribe(sessionId, ws);
-        const enqAgent = syncBridge.isSyncId(sessionId)
-          ? (msg.agent === 'codex' ? 'codex' : 'claude') : undefined;
-        const enqModel = syncBridge.isSyncId(sessionId) && typeof msg.model === 'string' && msg.model
-          ? msg.model : undefined;
-        promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent: enqAgent, model: enqModel });
+        promptQueue.enqueue(sessionId, { text: prompt, imagePaths, agent, model });
         broadcastQueue(sessionId);
         kickRunner(sessionId, directory);
         break;
@@ -1138,27 +751,22 @@ function handleConnection(ws /*, req */) {
       case 'schedule_prompt': {
         const { prompt, imagePaths = [], fireAt } = msg;
         const { sessionId } = msg;
-        let directory = msg.directory;
 
         if (!prompt && imagePaths.length === 0) { send(ws, { type: 'error', message: 'prompt required' }); return; }
         if (!sessionId) { send(ws, { type: 'error', message: 'sessionId required' }); return; }
         if (typeof fireAt !== 'number' || !isFinite(fireAt)) { send(ws, { type: 'error', message: 'fireAt (epoch ms) required' }); return; }
 
-        const placeholder = pendingSessions.get(sessionId);
-        if (placeholder) directory = directory || placeholder.directory;
-        else if (!directory) directory = findDirectoryForSessionId(sessionId);
+        const directory = msg.directory || syncBridge.directoryFor(sessionId);
         if (!directory) {
           send(ws, { type: 'error', message: 'directory could not be determined', sessionId });
           return;
         }
 
         subscribe(sessionId, ws);
-        // Capture the agent/model at reserve time (shared sessions only) so the
-        // reservation fires under what was chosen now, not what's selected later.
-        const schedAgent = syncBridge.isSyncId(sessionId)
-          ? (msg.agent === 'codex' ? 'codex' : 'claude') : undefined;
-        const schedModel = syncBridge.isSyncId(sessionId) && typeof msg.model === 'string' && msg.model
-          ? msg.model : undefined;
+        // Capture the agent/model at reserve time so the reservation fires under
+        // what was chosen now, not what's selected later.
+        const schedAgent = msg.agent === 'codex' ? 'codex' : 'claude';
+        const schedModel = (typeof msg.model === 'string' && msg.model) ? msg.model : undefined;
         // Already due (clock skew / picked a past time): run it now via the
         // normal queue instead of waiting for the next timer tick.
         if (fireAt <= Date.now()) {
@@ -1185,9 +793,7 @@ function handleConnection(ws /*, req */) {
       case 'shell_attach': {
         const sid = msg.sessionId;
         if (!sid) { send(ws, { type: 'shell_error', message: 'sessionId required' }); break; }
-        let directory = msg.directory
-          || (pendingSessions.get(sid) || {}).directory
-          || findDirectoryForSessionId(sid);
+        let directory = msg.directory || findDirectoryForSessionId(sid);
         // One shell pty per socket — drop any prior one (detaches its tmux).
         if (ws._shell) { try { ws._shell.kill(); } catch {} ws._shell = null; }
         let term;

@@ -14,7 +14,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const compiler = require('../../codex-compiler');
 const { claudePathFor } = require('../../codex-compiler/claude-adapter');
-const { sandboxed } = require('../session-manager');
+const { sandboxed } = require('../sandbox');
 
 function defaultClaudeHome() {
   // Claude auth is bound to the real ~/.claude (keychain + credentials), so we

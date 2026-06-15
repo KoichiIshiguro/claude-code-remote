@@ -13,7 +13,7 @@ const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
 const compiler = require('../../codex-compiler');
 const { codexPathFor } = require('../../codex-compiler/codex-adapter');
-const { sandboxed } = require('../session-manager');
+const { sandboxed } = require('../sandbox');
 
 function defaultCodexHome() {
   return process.env.CODEX_HOME

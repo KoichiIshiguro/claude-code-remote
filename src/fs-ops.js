@@ -6,8 +6,8 @@
 //   These are USER-driven operations through the front-end file manager, so they
 //   run with the user's full access scope — anywhere under accessRoot (the whole
 //   disk when accessRoot is null), plus any registered project. They are NOT
-//   confined to the sandbox: confinement is the job of the per-session claude -p
-//   seatbelt sandbox (session-manager.js), which limits what Claude can touch.
+//   confined to the sandbox: confinement is the job of the per-turn agent
+//   seatbelt sandbox (sandbox.js), which limits what the agent CLI can touch.
 //   Restricting the user here too would block basic actions like creating a
 //   folder for a brand-new project. The only hard guards kept below are narrow
 //   safety rails (no deleting/renaming/moving a *registered project root*, which

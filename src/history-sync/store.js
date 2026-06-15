@@ -62,4 +62,11 @@ function save(transcript) {
   return file;
 }
 
-module.exports = { HISTORY_DIR, pathFor, load, list, save };
+// Physically delete a canonical conversation. Returns true if a file was
+// removed. Best-effort: a missing file is treated as already-gone (false).
+function remove(conversationId) {
+  try { fs.unlinkSync(pathFor(conversationId)); return true; }
+  catch { return false; }
+}
+
+module.exports = { HISTORY_DIR, pathFor, load, list, save, remove };

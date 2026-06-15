@@ -1179,11 +1179,8 @@
   window.addEventListener('pageshow', (e) => { if (e.persisted) pin(); });
 })();
 
-// `let`, not `const`: a freshly-created session starts as a placeholder id and
-// is reassigned here when the CLI's init event resolves the real session id
-// (see the `session_assigned` handler). A `const` made that assignment throw,
-// leaving the id stuck on the dead placeholder → "directory could not be
-// determined" on the next prompt / reload.
+// `let`, not `const`: reassigned when a freshly-created shared session commits
+// its server-minted id (see the `shared_session_created` handler).
 let sessionId = new URLSearchParams(location.search).get('session');
 // Directory of the session currently on screen — needed by the branch picker
 // to scope list/switch requests, and to filter incoming `branch_changed`.
@@ -1600,9 +1597,6 @@ function handleMessage(msg) {
       _sessions = msg.sessions || [];
       rerenderProjList();
       break;
-    case 'session_created':
-      location.href = `/terminal?session=${msg.session.id}`;
-      break;
     case 'shared_session_created': {
       // Server has persisted the new (empty) shared session and assigned its id.
       // Commit the client UI now and attach normally to pull branch/queue/
@@ -1620,17 +1614,6 @@ function handleMessage(msg) {
       wsSend({ type: 'attach', sessionId, directory: curDirectory, agent: selectedAgent });
       break;
     }
-    case 'session_assigned':
-      // A placeholder session created via create_session has just been
-      // assigned its real Claude session id by the CLI's init event.
-      // Swap our in-memory id and the URL so subsequent attach/send_prompt
-      // calls reach the right key without a page reload.
-      if (msg.placeholderId === sessionId) {
-        sessionId = msg.sessionId;
-        try { history.replaceState({}, '', `/terminal?session=${sessionId}`); } catch {}
-        rerenderProjList();
-      }
-      break;
     case 'archived_list':
       renderArchivedList(msg.projectPath, msg.sessions || []);
       break;
@@ -3309,7 +3292,6 @@ function renderArchivedList(projectPath, sessions) {
   const body = document.getElementById('projArchivedBody');
   body.innerHTML = '';
   const archived = sessions.filter(s => s.archived);
-  const discovered = sessions.filter(s => !s.archived);
 
   const section = (title, items) => {
     const h = document.createElement('div');
@@ -3339,7 +3321,6 @@ function renderArchivedList(projectPath, sessions) {
   };
 
   section('アーカイブ済み', archived);
-  section('新しく見つかったセッション (TUI 由来など)', discovered);
 }
 
 // ── Remove project modal ──────────────────────────────────────────────────

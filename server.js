@@ -16,7 +16,6 @@ const {
   resetAdmin, ADMIN_FILE,
 } = require('./src/auth');
 const { handleConnection, getSlashCommands } = require('./src/ws-handler');
-const { flushPendingSave } = require('./src/session-manager');
 const { migrateIfNeeded } = require('./src/migrate');
 const projectsStore = require('./src/projects-store');
 const fsOps = require('./src/fs-ops');
@@ -659,16 +658,12 @@ app.post('/api/fs/move', requireAuth, fsOpHandler(
 app.post('/api/fs/copy', requireAuth, fsOpHandler(
   ({ sources, dest }) => fsOps.copy(sources, dest)));
 
-// App-wide settings. Only autoCompactThreshold for now — null/0 disables.
+// App-wide settings. The default agent model used when a turn carries no
+// per-turn model of its own.
 app.get('/api/settings', requireAuth, (req, res) => {
   const cfg = require('./src/auth').loadConfig();
-  const sm = require('./src/session-manager');
   res.json({
-    autoCompactThreshold: typeof cfg.autoCompactThreshold === 'number' ? cfg.autoCompactThreshold : null,
-    autoCompactDefault: sm.AUTO_COMPACT_DEFAULT,
     model: typeof cfg.model === 'string' ? cfg.model : null,
-    effort: typeof cfg.effort === 'string' ? cfg.effort : null,
-    effortLevels: sm.EFFORT_LEVELS,
   });
 });
 // Slash commands valid in the `-p` environment, captured from the latest
@@ -677,18 +672,8 @@ app.get('/api/slash-commands', requireAuth, (req, res) => {
   res.json({ commands: getSlashCommands() });
 });
 app.post('/api/settings', requireAuth, (req, res) => {
-  const sm = require('./src/session-manager');
-  const { autoCompactThreshold, model, effort } = req.body || {};
+  const { model } = req.body || {};
   const patch = {};
-  if (autoCompactThreshold === null) {
-    patch.autoCompactThreshold = null;
-  } else if (autoCompactThreshold === 0 || autoCompactThreshold === false) {
-    patch.autoCompactThreshold = 0; // explicit disable
-  } else if (typeof autoCompactThreshold === 'number' && Number.isFinite(autoCompactThreshold) && autoCompactThreshold > 0) {
-    patch.autoCompactThreshold = Math.floor(autoCompactThreshold);
-  } else if (autoCompactThreshold !== undefined) {
-    return res.status(400).json({ error: 'autoCompactThreshold must be a positive integer, 0 (disable), or null (default)' });
-  }
   // Model: null clears (use CLI default); a non-empty string is stored verbatim
   // (alias like "opus"/"sonnet" or a full id like "claude-opus-4-8").
   if (model === null) {
@@ -697,14 +682,6 @@ app.post('/api/settings', requireAuth, (req, res) => {
     patch.model = model.trim();
   } else if (model !== undefined) {
     return res.status(400).json({ error: 'model must be a non-empty string or null' });
-  }
-  // Effort: null clears; otherwise must be one of the CLI's accepted levels.
-  if (effort === null) {
-    patch.effort = null;
-  } else if (typeof effort === 'string' && sm.EFFORT_LEVELS.includes(effort)) {
-    patch.effort = effort;
-  } else if (effort !== undefined) {
-    return res.status(400).json({ error: `effort must be one of ${sm.EFFORT_LEVELS.join(', ')} or null` });
   }
   const { saveConfig } = require('./src/auth');
   saveConfig(patch);
@@ -763,7 +740,6 @@ server.listen(PORT, () => {
 
 function shutdown(signal) {
   console.log(`[shutdown] ${signal} received`);
-  try { flushPendingSave(); } catch (e) { console.error('[shutdown] flush failed:', e.message); }
   process.exit(0);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
