@@ -89,12 +89,27 @@ function directoryFor(conversationId) {
 // stream events via onEvent so the existing live renderer paints it.
 async function runSyncTurn({ conversationId, agent, prompt, cwd, model, imagePaths, onEvent }) {
   const res = await runTurn({ conversationId, agent, prompt, cwd, model });
-  const text = res.reply || '';
-  // One assistant message event (ensureAssistantEl creates the bubble), then a
-  // result event so the turn footer/usage hooks fire just like a Claude turn.
   if (typeof onEvent === 'function') {
-    onEvent({ type: 'assistant', message: { content: [{ type: 'text', text }] } });
-    onEvent({ type: 'result', subtype: 'success', result: text });
+    // Emit each canonical turn as Claude-shaped events so the live view shows
+    // tool cards and thinking blocks, not just the final text. Assistant turns
+    // become `assistant` events; tool-result user turns become `tool` events
+    // that fill in the matching card's result pane.
+    for (const turn of res.turns || []) {
+      if (turn.role === 'assistant') {
+        const content = [];
+        for (const p of turn.parts || []) {
+          if (p.type === 'text') content.push({ type: 'text', text: p.text });
+          else if (p.type === 'thinking') content.push({ type: 'thinking', thinking: p.text });
+          else if (p.type === 'tool_call') content.push({ type: 'tool_use', id: p.id, name: p.name || 'tool', input: p.input || {} });
+        }
+        if (content.length) onEvent({ type: 'assistant', message: { content } });
+      } else if (turn.role === 'user') {
+        for (const p of turn.parts || []) {
+          if (p.type === 'tool_result') onEvent({ type: 'tool', tool_use_id: p.toolCallId, content: p.text || '' });
+        }
+      }
+    }
+    onEvent({ type: 'result', subtype: 'success', result: res.reply || '' });
   }
   return res;
 }

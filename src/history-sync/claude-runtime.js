@@ -91,8 +91,25 @@ function ingestDelta(transcript, jsonlPath, origLineCount) {
 
 async function turn(transcript, prompt, opts = {}) {
   const mat = materialize(transcript, opts);
-  await run({ cwd: mat.cwd, sessionId: mat.sessionId, prompt, model: opts.model, resume: mat.hasHistory });
-  const added = ingestDelta(transcript, mat.jsonlPath, mat.origLineCount);
+  let runError = null;
+  try {
+    await run({ cwd: mat.cwd, sessionId: mat.sessionId, prompt, model: opts.model, resume: mat.hasHistory });
+  } catch (err) {
+    runError = err;
+  }
+  // Always attempt to ingest whatever Claude wrote, even on non-zero exit — Claude
+  // writes turns (tool calls, assistant response) before failing, and discarding
+  // them silently on any non-zero exit loses history entirely (session looks empty
+  // after reload even though the work was done).
+  let added = [];
+  if (fs.existsSync(mat.jsonlPath)) {
+    try {
+      added = ingestDelta(transcript, mat.jsonlPath, mat.origLineCount);
+    } catch { /* malformed jsonl: prefer original run error if any */ }
+  }
+  // Re-throw only if we got nothing useful — a true startup/auth failure with no
+  // jsonl written is still a hard error that should surface to the caller.
+  if (runError && !added.length) throw runError;
   transcript.providerIds = { ...transcript.providerIds, claude: mat.sessionId };
   if (opts.keepArtifacts !== true) {
     try { fs.unlinkSync(mat.jsonlPath); } catch { /* best effort */ }

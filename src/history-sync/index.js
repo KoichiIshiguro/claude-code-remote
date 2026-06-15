@@ -31,6 +31,7 @@ async function runTurn({ conversationId, agent, prompt, cwd, ...opts }) {
     conversationId,
     agent,
     sessionId,
+    turns: added,
     addedTurns: added.length,
     totalTurns: transcript.turns.length,
     reply: visibleAssistantText(added),
