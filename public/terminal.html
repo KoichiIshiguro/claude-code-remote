@@ -415,6 +415,9 @@
   /* PDF preview */
   .fb-viewer-body .fb-pdf-wrap { width: 100%; height: calc(100dvh - 90px); }
   .fb-viewer-body .fb-pdf-wrap embed { width: 100%; height: 100%; border: 0; }
+  /* HTML preview */
+  .fb-viewer-body .fb-html-wrap { width: 100%; height: calc(100dvh - 90px); }
+  .fb-viewer-body .fb-html-wrap iframe { width: 100%; height: 100%; border: 0; background: #fff; }
   .fb-loading, .fb-empty {
     padding: 20px 12px; text-align: center; color: var(--text-muted); font-size: 13px;
   }
@@ -3587,16 +3590,18 @@ async function viewFile(filePath, name) {
   const isMd    = /\.(md|markdown)$/i.test(name);
   const isImg   = /\.(png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i.test(name);
   const isPdf   = /\.pdf$/i.test(name);
+  const isHtml  = /\.html?$/i.test(name);
 
   let bodyInner;
-  if (isImg)      bodyInner = '<div class="fb-img-wrap">Loading…</div>';
-  else if (isPdf) bodyInner = '<div class="fb-pdf-wrap">Loading…</div>';
-  else if (isMd)  bodyInner = '<div class="fb-md md-text">Loading…</div>';
-  else            bodyInner = '<pre>Loading…</pre>';
+  if (isImg)       bodyInner = '<div class="fb-img-wrap">Loading…</div>';
+  else if (isPdf)  bodyInner = '<div class="fb-pdf-wrap">Loading…</div>';
+  else if (isHtml) bodyInner = '<div class="fb-html-wrap">Loading…</div>';
+  else if (isMd)   bodyInner = '<div class="fb-md md-text">Loading…</div>';
+  else             bodyInner = '<pre>Loading…</pre>';
 
   // Header has an extra ✏️ slot for editable text/markdown files; we wire it
   // up only after the content fetch confirms the file is editable.
-  const editBtnHtml = (!isImg && !isPdf)
+  const editBtnHtml = (!isImg && !isPdf && !isHtml)
     ? '<button class="fv-edit-btn" id="fvEditBtn" hidden>✏️ 編集</button>'
     : '';
   content.innerHTML = `<div class="fb-viewer"><div class="fb-viewer-hdr"><span class="fv-path">${escHtml(name)}</span>${editBtnHtml}<button class="side-close" id="fbBack">×</button></div><div class="fb-viewer-body">${bodyInner}</div></div>`;
@@ -3611,6 +3616,14 @@ async function viewFile(filePath, name) {
   if (isPdf) {
     const wrap = content.querySelector('.fb-pdf-wrap');
     wrap.innerHTML = `<embed type="application/pdf" src="/api/file/raw?path=${encodeURIComponent(filePath)}">`;
+    return;
+  }
+  // HTML renders as a live page in a sandboxed iframe. `sandbox="allow-scripts"`
+  // (without allow-same-origin) gives the page a unique opaque origin, so its
+  // scripts run for a faithful preview but cannot touch the app's DOM/cookies.
+  if (isHtml) {
+    const wrap = content.querySelector('.fb-html-wrap');
+    wrap.innerHTML = `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="/api/file/raw?path=${encodeURIComponent(filePath)}"></iframe>`;
     return;
   }
 
