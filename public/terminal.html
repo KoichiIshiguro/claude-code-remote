@@ -3622,10 +3622,15 @@ async function viewFile(filePath, name) {
   // (without allow-same-origin) gives the page a unique opaque origin, so its
   // scripts run for a faithful preview but cannot touch the app's DOM/cookies.
   if (isHtml) {
-    // Use the path-based route (not ?path=) so relative resources — ./styles.css,
+    // Path-based route (not ?path=) so relative resources — ./styles.css,
     // ./script.js, sibling images — resolve against the file's real directory.
+    // allow-same-origin is required: without it the iframe gets an opaque origin
+    // and its subresource requests (the CSS/JS/images) drop the session cookie,
+    // so /api/file/html 302-redirects them to /login and the page renders
+    // unstyled. These are the user's own project files on a self-hosted tool,
+    // so granting same-origin to the preview is an acceptable trade-off.
     const wrap = content.querySelector('.fb-html-wrap');
-    wrap.innerHTML = `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="/api/file/html${encodeURI(filePath)}"></iframe>`;
+    wrap.innerHTML = `<iframe sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer" src="/api/file/html${encodeURI(filePath)}"></iframe>`;
     return;
   }
 
