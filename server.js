@@ -567,6 +567,21 @@ app.get('/api/file/raw', requireAuth, (req, res) => {
   });
 });
 
+// Serve a file by URL *path* (not query string) so an HTML preview's relative
+// resources (./styles.css, ./script.js, sibling images) resolve correctly. The
+// iframe's document URL becomes /api/file/html/<abs path>, so the browser
+// fetches siblings from the same directory — which /api/file/raw?path= can't do
+// because relative URLs resolve against the query, not the file's folder.
+app.get(/^\/api\/file\/html\/(.+)/, requireAuth, (req, res) => {
+  const absPath = path.resolve('/' + req.params[0]);
+  if (!sandboxedFsAllowed(absPath)) {
+    return res.status(403).send('Access denied');
+  }
+  res.sendFile(absPath, (err) => {
+    if (err && !res.headersSent) res.status(500).send(err.message);
+  });
+});
+
 // Stream a folder as a .zip download. Used by the FILES sidebar DL popup for
 // directories (single files go through /api/file/raw?download=1).
 app.get('/api/fs/download-zip', requireAuth, (req, res) => {
