@@ -699,6 +699,7 @@ function handleConnection(ws /*, req */) {
             type: 'history',
             sessionId: sid,
             directory: entry.directory,
+            branch: gitInfo.currentBranch(entry.directory),
             history: [],
             streaming: procTracker.isRunning(sid),
             liveTurn: liveTurnPayload(sid),
