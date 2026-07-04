@@ -21,6 +21,7 @@ const historyStore = require('./history-sync/store');
 const historyPort = require('./history-sync/port');
 const { segmentByAgent } = require('./history-sync/segment-by-agent');
 const { selectionForTranscript, setTranscriptSelection } = require('./history-sync/selection');
+const codexRuntime = require('./history-sync/codex-runtime');
 
 // sessionId or placeholderId → Set<ws>  (all clients watching that key)
 const sessionClients = new Map();
@@ -578,6 +579,43 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   return resolvedSessionId || key;
 }
 
+// ─── Codex console (TTY modal) ────────────────────────────────────────────────
+// `codex exec` has no /compact, so compaction runs through the real Codex TUI:
+// canonical is materialized into a rollout, the user drives `codex resume` in a
+// pty streamed to the modal, and on exit the appended tail — including the
+// `compacted` boundary — is ingested back into canonical, then the rollout is
+// deleted. One console per conversation; prompt turns are refused while it's
+// open (both would fork the same canonical). conversationId → console state.
+const codexConsoles = new Map();
+
+function finalizeCodexConsole(key, entry) {
+  if (codexConsoles.get(key) !== entry || entry.finalized) return null;
+  entry.finalized = true;
+  codexConsoles.delete(key);
+  try { entry.term.kill(); } catch { /* already dead */ }
+  let result = { added: [], compacted: false };
+  try {
+    const transcript = historyStore.load(key, {});
+    result = codexRuntime.consoleIngest(transcript, entry.mat);
+    transcript.providerIds = { ...transcript.providerIds, codex: entry.mat.sessionId };
+    historyStore.save(transcript);
+  } catch (e) {
+    console.error('[codex-console ingest]', e);
+  }
+  const context = (() => {
+    try { return historyStore.load(key, {}).meta?.context || null; } catch { return null; }
+  })();
+  broadcast(key, {
+    type: 'codex_console_closed',
+    sessionId: key,
+    added: result.added.length,
+    compacted: result.compacted,
+    context,
+  });
+  if (context) broadcast(key, { type: 'context_usage', sessionId: key, context });
+  return result;
+}
+
 // Runs a single SHARED (alpha) turn for `key` — a canonical conversation whose id
 // carries the `xsync_` prefix. The agent (claude|codex) is whatever the client
 // last selected for this session; both peers append to the same canonical store.
@@ -590,13 +628,19 @@ async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelAr
   const agent = agentArg || sessionAgent.get(key) || 'claude';
   const model = modelArg !== undefined ? modelArg : (sessionModel.get(key) || undefined);
   const effort = effortArg !== undefined ? effortArg : (sessionEffort.get(key) || undefined);
+  // A live codex console owns this conversation's materialized rollout; running
+  // a turn now would fork canonical in two directions. Surface it instead.
+  if (codexConsoles.has(key)) {
+    broadcast(key, { type: 'error', sessionId: key, message: 'Codex コンソールが開いています。閉じて取り込みが終わってから送信してください。' });
+    return key;
+  }
   liveTurn.begin(key, { prompt, images: imagePaths, compact: false, agent });
   broadcast(key, {
     type: 'stream_start', sessionId: key, compact: false, prompt,
     images: imagePaths.map(p => path.basename(p)), agent,
   });
   try {
-    await syncBridge.runSyncTurn({
+    const res = await syncBridge.runSyncTurn({
       conversationId: key, agent, prompt, cwd: directory, model, effort, imagePaths,
       processKey: key,
       onEvent: (event) => {
@@ -614,6 +658,9 @@ async function runSyncTurn(key, directory, prompt, imagePaths, agentArg, modelAr
       },
       isCancelled: () => !!runnerState(key)?.cancelling,
     });
+    if (res && res.context) {
+      broadcast(key, { type: 'context_usage', sessionId: key, context: res.context });
+    }
   } catch (err) {
     if (!runnerState(key)?.cancelling) {
       broadcast(key, { type: 'error', message: `[${agent}] ${err.message}`, sessionId: key });
@@ -654,6 +701,13 @@ function handleConnection(ws /*, req */) {
     unwatchWs(ws);
     // Detach this client's shell (tmux session lives on for re-attach).
     if (ws._shell) { try { ws._shell.kill(); } catch {} ws._shell = null; }
+    // A dropped client can't drive the console anymore — kill the pty; its
+    // onExit handler runs the ingest-back so nothing the user did is lost.
+    if (ws._codexConsole) {
+      const cc = ws._codexConsole;
+      ws._codexConsole = null;
+      try { cc.entry.term.kill(); } catch {}
+    }
   });
 
   ws.on('message', async (raw) => {
@@ -950,7 +1004,7 @@ function handleConnection(ws /*, req */) {
         // a native jsonl. Entries are pre-normalized into the renderer's shape.
         if (syncBridge.isSyncId(sid)) {
           subscribe(sid, ws);
-          const { entries, directory, selection } = syncBridge.loadHistoryEntries(sid, msg.directory);
+          const { entries, directory, selection, context } = syncBridge.loadHistoryEntries(sid, msg.directory);
           if (directory) watchDir(directory, ws);
           send(ws, {
             type: 'history',
@@ -963,7 +1017,8 @@ function handleConnection(ws /*, req */) {
             liveTurn: liveTurnPayload(sid),
             currentEntry: null,
             allowedTools: null,
-            lastTokens: null,
+            lastTokens: (context && context.tokens) || null,
+            context: context || null,
           });
           send(ws, queueStateMsg(sid));
           send(ws, scheduledStateMsg(sid));
@@ -1348,6 +1403,62 @@ function handleConnection(ws /*, req */) {
         // Kill every ccr-* tmux session not reachable from the GUI.
         const killed = shell.cleanupOrphans(knownSessionIds());
         send(ws, { type: 'shell_cleanup_done', killed });
+        break;
+      }
+
+      // ─── Codex console (TTY modal over a materialized rollout) ────────────
+      case 'codex_console_open': {
+        const sid = msg.sessionId;
+        if (!syncBridge.isSyncId(sid)) { send(ws, { type: 'codex_console_error', message: '共有セッションでのみ使えます' }); break; }
+        if (codexConsoles.has(sid)) { send(ws, { type: 'codex_console_error', message: 'このセッションのコンソールは既に開いています' }); break; }
+        if (runners.has(sid)) { send(ws, { type: 'codex_console_error', message: 'ターン実行中です。完了後に開いてください' }); break; }
+        let entry;
+        try {
+          const transcript = historyStore.load(sid, { cwd: msg.directory });
+          const spec = codexRuntime.consoleSpawn(transcript, { cwd: transcript.cwd || msg.directory });
+          const term = shell.openCommand(spec.bin, spec.args, spec.cwd, msg.cols, msg.rows, { CODEX_HOME: spec.env.CODEX_HOME, CODEX_SANDBOX_MODE: spec.env.CODEX_SANDBOX_MODE });
+          entry = { term, mat: spec.mat, ws, finalized: false };
+        } catch (e) {
+          send(ws, { type: 'codex_console_error', message: e.message });
+          break;
+        }
+        codexConsoles.set(sid, entry);
+        ws._codexConsole = { key: sid, entry };
+        entry.term.onData(d => send(ws, { type: 'codex_console_output', data: d }));
+        // Codex exiting (user pressed ctrl+c/q inside, or a crash) IS the close
+        // signal — ingest immediately rather than waiting for the modal.
+        entry.term.onExit(() => {
+          if (ws._codexConsole && ws._codexConsole.entry === entry) ws._codexConsole = null;
+          finalizeCodexConsole(sid, entry);
+        });
+        send(ws, { type: 'codex_console_opened', sessionId: sid });
+        break;
+      }
+
+      case 'codex_console_input':
+        if (ws._codexConsole && typeof msg.data === 'string') { try { ws._codexConsole.entry.term.write(msg.data); } catch {} }
+        break;
+
+      case 'codex_console_resize':
+        if (ws._codexConsole && msg.cols && msg.rows) { try { ws._codexConsole.entry.term.resize(msg.cols, msg.rows); } catch {} }
+        break;
+
+      case 'codex_console_compact': {
+        // Type "/compact" for the user, then Enter after a beat so the TUI's
+        // slash popup has settled and doesn't swallow the newline.
+        const cc = ws._codexConsole;
+        if (!cc) break;
+        try { cc.entry.term.write('/compact'); } catch {}
+        setTimeout(() => { try { cc.entry.term.write('\r'); } catch {} }, 300);
+        break;
+      }
+
+      case 'codex_console_close': {
+        const cc = ws._codexConsole;
+        ws._codexConsole = null;
+        // Killing the pty triggers onExit → finalize (ingest + broadcast), so
+        // closing the modal and codex dying inside converge on the same path.
+        if (cc) { try { cc.entry.term.kill(); } catch {} }
         break;
       }
 

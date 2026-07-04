@@ -114,7 +114,39 @@ function ingestDelta(transcript, jsonlPath, origLineCount) {
   const delta = compiler.claudeToCanonical(tail.join('\n'));
   transcript.turns.push(...delta.turns);
   transcript.updatedAt = delta.updatedAt || transcript.updatedAt;
+  const ctx = contextFromTail(tail);
+  if (ctx) {
+    transcript.meta = {
+      ...(transcript.meta || {}),
+      context: { agent: 'claude', at: new Date().toISOString(), ...ctx },
+    };
+  }
   return delta.turns;
+}
+
+// Context size from Claude's jsonl tail: the last MAIN-LOOP assistant usage.
+// The prompt of the latest API call is input + both cache buckets. Skip
+// sidechain (subagent) entries — their usage measures a different context —
+// and all-zero usage from synthetic error events. Claude's jsonl carries no
+// context-window figure, so window stays null (UI falls back to 200k).
+function contextFromTail(tailLines) {
+  let tokens = null;
+  for (const line of tailLines) {
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    if (e?.isSidechain) continue;
+    if (e?.type === 'assistant' && e.message?.usage) {
+      const u = e.message.usage;
+      const total = (u.input_tokens || 0)
+        + (u.cache_read_input_tokens || 0)
+        + (u.cache_creation_input_tokens || 0);
+      if (total > 0) tokens = total;
+    } else if (e?.type === 'system' && e.subtype === 'compact_boundary'
+        && typeof e.compactMetadata?.postTokens === 'number') {
+      tokens = e.compactMetadata.postTokens;
+    }
+  }
+  if (tokens == null) return null;
+  return { tokens, window: null, compacted: false };
 }
 
 async function turn(transcript, prompt, opts = {}) {
@@ -163,4 +195,4 @@ async function turn(transcript, prompt, opts = {}) {
   return { added, sessionId: mat.sessionId };
 }
 
-module.exports = { materialize, run, ingestDelta, turn, defaultClaudeHome };
+module.exports = { materialize, run, ingestDelta, turn, defaultClaudeHome, contextFromTail };

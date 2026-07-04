@@ -141,6 +141,21 @@ function open(sessionId, directory, cols, rows) {
   return pty.spawn(shell.file, shell.args, base);
 }
 
+// Spawn an arbitrary command in a pty, DELIBERATELY without tmux: the caller
+// (codex console) must observe the process actually EXITING to run its
+// ingest-back step, and a tmux detach is indistinguishable from an exit at the
+// pty layer. No persistence is the point here, not a limitation.
+function openCommand(file, args, directory, cols, rows, extraEnv) {
+  if (!pty) throw new Error('node-pty is not installed — run `pnpm i` and restart the server');
+  return pty.spawn(file, args || [], {
+    name: 'xterm-256color',
+    cols: cols || 80,
+    rows: rows || 24,
+    cwd: directory || os.homedir(),
+    env: { ...process.env, TERM: 'xterm-256color', ...(extraEnv || {}) },
+  });
+}
+
 // All live `ccr-*` tmux session names. Empty when there's no tmux on this host.
 function listSessions() {
   if (!HAS_TMUX) return [];
@@ -166,4 +181,4 @@ function cleanupOrphans(keepIds) {
   return killed;
 }
 
-module.exports = { open, listSessions, cleanupOrphans, tmuxName, hasPty, hasPersistence };
+module.exports = { open, openCommand, listSessions, cleanupOrphans, tmuxName, hasPty, hasPersistence };

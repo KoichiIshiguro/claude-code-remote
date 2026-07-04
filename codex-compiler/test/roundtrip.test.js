@@ -207,3 +207,38 @@ test('Codex bootstrap, agent messages, and session meta survive canonical materi
   assert.equal(back.turns.length, 1);
   assert.ok(back.meta.contextItems.some((i) => i.kind === 'handoff'));
 });
+
+test('Codex compacted entry survives ingest and re-materialization', () => {
+  const compactedPayload = {
+    message: '',
+    replacement_history: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Build a small app' }] },
+      { type: 'compaction', encrypted_content: 'OPAQUE-BLOB' },
+    ],
+  };
+  const rollout = [
+    JSON.stringify({ timestamp: '2026-01-01T00:00:00.000Z', type: 'compacted', payload: compactedPayload }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'after compact' }] } }),
+    JSON.stringify({ timestamp: '2026-01-01T00:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'got it' }] } }),
+  ].join('\n');
+
+  // Ingest: boundary becomes an opaque canonical turn, post-compact turns follow.
+  const t = compiler.codexToCanonical(rollout);
+  assert.equal(t.turns.length, 3);
+  assert.deepEqual(t.turns[0].providerMeta.codexCompacted, compactedPayload);
+  assert.equal(t.turns[1].parts[0].text, 'after compact');
+
+  // Codex re-materialization: compacted entry re-emitted right after
+  // session_meta; ONLY post-boundary turns follow it.
+  const lines = compiler.canonicalToCodex(t, { sessionId: 's2' }).trim().split('\n').map(JSON.parse);
+  assert.equal(lines[0].type, 'session_meta');
+  assert.equal(lines[1].type, 'compacted');
+  assert.deepEqual(lines[1].payload, compactedPayload);
+  const msgs = lines.slice(2).filter((l) => l.type === 'response_item' && l.payload.type === 'message');
+  assert.equal(msgs.length, 2); // after-compact user + assistant only, no pre-compact history
+
+  // Claude materialization: boundary turn skipped, full visible turns kept.
+  const claudeLines = compiler.canonicalToClaude(t, { sessionId: 'c2' }).trim().split('\n').map(JSON.parse);
+  assert.ok(claudeLines.every((l) => !JSON.stringify(l).includes('OPAQUE-BLOB')));
+  assert.equal(claudeLines.filter((l) => l.type === 'user' || l.type === 'assistant').length, 2);
+});

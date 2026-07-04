@@ -204,6 +204,10 @@ function canonicalToClaude(transcript, opts = {}) {
   }
 
   for (const turn of transcript.turns || []) {
+    // Codex compact boundaries are codex-only artifacts (encrypted payload).
+    // Claude materialization keeps the FULL canonical turns instead, so skip
+    // the marker — emitting it would break the parentUuid chain.
+    if (turn.role !== 'user' && turn.role !== 'assistant') continue;
     const uuid = turn.id || newId();
     const base = {
       parentUuid,

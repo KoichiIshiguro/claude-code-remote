@@ -180,6 +180,24 @@ function codexToCanonical(input, opts = {}) {
         }));
         continue;
       }
+      continue;
+    }
+
+    // A `/compact` (TUI or auto) rewrites Codex's in-memory history to
+    // `replacement_history`, whose summary is an ENCRYPTED blob only the OpenAI
+    // API can read — there is no plaintext to ingest. Verified portable: the
+    // raw payload transplanted into a fresh rollout (new session id) still
+    // decrypts server-side and the model recalls pre-compact facts. So we keep
+    // the payload OPAQUE on a canonical boundary turn; canonicalToCodex re-emits
+    // it so materialized rollouts resume with the compacted (small) context,
+    // while canonical itself keeps the full pre-compact turns for the UI and
+    // for Claude materialization.
+    if (event.type === 'compacted' && event.payload) {
+      turns.push(makeTurn('system', [textPart('Context compacted')], {
+        ts: event.timestamp,
+        providerMeta: { codexCompacted: event.payload },
+      }));
+      continue;
     }
 
     meta = appendContextItem(meta, contextItem('codex', event.type || 'unknown_event', payloadText(event.payload), {
@@ -236,6 +254,26 @@ function canonicalToCodex(transcript, opts = {}) {
     },
   }];
 
+  // Compact boundary: when a codexCompacted payload exists, Codex's own view of
+  // everything before it IS that payload (initial messages + encrypted summary).
+  // Emit it right after session_meta and materialize only the turns that came
+  // after — the resumed session then starts from the compacted (small) context,
+  // exactly as the TUI session did after its /compact.
+  const allTurns = transcript.turns || [];
+  let boundary = -1;
+  for (let i = allTurns.length - 1; i >= 0; i--) {
+    if (allTurns[i].providerMeta?.codexCompacted) { boundary = i; break; }
+  }
+  if (boundary >= 0) {
+    entries.push({
+      timestamp: iso(allTurns[boundary].ts),
+      type: 'compacted',
+      payload: allTurns[boundary].providerMeta.codexCompacted,
+    });
+  }
+
+  // On resume Codex discards every entry BEFORE a `compacted` one, so the
+  // preserved-context message must be emitted after the boundary to survive.
   const preservedContext = contextText(transcript);
   if (preservedContext) {
     entries.push({
@@ -252,7 +290,7 @@ function canonicalToCodex(transcript, opts = {}) {
     });
   }
 
-  for (const turn of transcript.turns || []) {
+  for (const turn of allTurns.slice(boundary + 1)) {
     const ts = iso(turn.ts);
     if (turn.role === 'user') {
       const toolResults = (turn.parts || []).filter((part) => part.type === 'tool_result');

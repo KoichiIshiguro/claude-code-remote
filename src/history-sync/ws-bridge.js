@@ -33,6 +33,12 @@ function turnsToEntries(turns) {
   const entries = [];
   const toolBlockById = new Map();
   for (const turn of turns || []) {
+    // Codex compact boundary → the same "compacted here" marker the native
+    // Claude renderer already knows how to draw.
+    if (turn.providerMeta && turn.providerMeta.codexCompacted) {
+      entries.push({ type: 'compact', ts: turn.ts });
+      continue;
+    }
     const parts = turn.parts || [];
     // A turn that carries ONLY tool_results is a continuation, not a new bubble:
     // fold the results into the cards already on screen.
@@ -91,6 +97,7 @@ function loadHistoryEntries(conversationId, cwd) {
     directory: t.cwd || cwd || '',
     agent: (t.providerIds && Object.keys(t.providerIds)[0]) || '',
     selection: selectionForTranscript(t),
+    context: (t.meta && t.meta.context) || null,
   };
 }
 

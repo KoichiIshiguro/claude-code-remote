@@ -1144,6 +1144,7 @@
     </div>
     <div class="shell-term" id="shellTerm"></div>
     <div class="shell-keys">
+      <button id="codexCompactKey" title="Codex TUI に /compact を入力して実行" hidden style="background:var(--accent);color:#fff;font-weight:600;">⊟ /compact</button>
       <button id="shellCopyKey" title="選択範囲をコピー">⧉ Copy</button>
       <button id="shellPasteKey" title="クリップボードを貼り付け">📋 Paste</button>
       <button data-seq="tab">Tab</button>
@@ -1279,12 +1280,19 @@ function updateAgentUI() {
   const seg = document.getElementById('agentSeg');
   if (seg) seg.hidden = true; // replaced by the pull-up agent/model picker.
 
-  // Codex has no /compact and no Claude slash commands. Hide those Claude-only
-  // affordances while Codex is the selected peer of a shared session.
+  // Codex exec has no /compact, so the button re-targets: on a shared session
+  // with Codex selected it opens the Codex TUI console (compact runs there and
+  // is ingested back). Claude slash commands stay hidden for Codex.
   const codex = isSyncSession() && selectedAgent === 'codex';
   document.body.classList.toggle('agent-codex', codex);
   const cb = document.getElementById('compactBtn');
-  if (cb) cb.hidden = codex;
+  if (cb) {
+    cb.hidden = false;
+    cb.title = codex
+      ? 'Codex コンソールを開いて /compact を実行（結果は共有履歴に取り込み）'
+      : '会話を要約して context を圧縮 (/compact)';
+    cb.textContent = codex ? '⊟ compact (TUI)' : '⊟ compact';
+  }
 
   const mp = document.getElementById('modelPill');
   if (mp && isSyncSession()) {
@@ -1501,6 +1509,26 @@ function handleMessage(msg) {
     case 'shell_output': if (shellTerm) shellTerm.write(msg.data); break;
     case 'shell_attached': break;
     case 'shell_exit': if (shellTerm) shellTerm.write('\r\n\x1b[33m[shell detached / exited — reopen to re-attach]\x1b[0m\r\n'); break;
+
+    case 'context_usage':
+      if (msg.sessionId === sessionId && msg.context) updateCtxPill(msg.context.tokens, msg.context);
+      break;
+
+    case 'codex_console_output': if (shellMode === 'codex' && shellTerm) shellTerm.write(msg.data); break;
+    case 'codex_console_opened': break;
+    case 'codex_console_error':
+      if (shellMode === 'codex' && shellTerm) shellTerm.write('\r\n\x1b[31m[codex console] ' + (msg.message || 'error') + '\x1b[0m\r\n');
+      else alert('Codex コンソール: ' + (msg.message || 'エラー'));
+      break;
+    case 'codex_console_closed':
+      // Server has ingested the console's rollout delta (incl. any compact
+      // boundary) into canonical. Repaint from the store and update the meter.
+      if (shellModalOpen && shellMode === 'codex') closeShellModal(true);
+      if (msg.sessionId === sessionId) {
+        if (msg.context) updateCtxPill(msg.context.tokens, msg.context);
+        wsSend({ type: 'attach', sessionId, directory: curDirectory, agent: selectedAgent });
+      }
+      break;
     case 'shell_error':
       if (shellTerm) shellTerm.write('\r\n\x1b[31m' + (msg.message || 'shell error') + '\x1b[0m\r\n');
       else alert('Shell: ' + (msg.message || 'error'));
@@ -1525,7 +1553,7 @@ function handleMessage(msg) {
       // repopulates this from the jsonl we're about to draw.
       renderedEventUuids = new Set();
       allowedTools = msg.allowedTools ?? null;
-      updateCtxPill(msg.lastTokens);
+      updateCtxPill(msg.lastTokens, msg.context);
       if (msg.truncated) {
         const note = document.createElement('div');
         note.style.cssText = 'text-align:center;padding:10px 16px;margin-bottom:8px;color:var(--text-muted);font-size:12px;opacity:.7;';
@@ -1882,25 +1910,38 @@ function handleMessage(msg) {
 }
 
 // ── Context size indicator ────────────────────────────────────────────────────
-// Thresholds match the server's auto-compact logic (167k default = TUI ~83.5%).
-function updateCtxPill(tokens) {
+// Two shapes: native Claude sessions pass tokens only (window unknown → 200k
+// assumption + the auto-compact threshold from settings), shared sessions also
+// pass a context object {tokens, window, compacted, agent} — Codex reports its
+// own model_context_window, so the % is exact there.
+function updateCtxPill(tokens, ctx) {
   const meter = document.getElementById('ctxMeter');
-  if (!tokens) {
-    if (meter) { meter.textContent = ''; meter.className = 'ctx-meter'; }
+  if (!meter) return;
+  if (ctx && ctx.compacted && !ctx.tokens) {
+    meter.textContent = 'Context: compact直後（次ターンで再計測）';
+    meter.className = 'ctx-meter';
     return;
   }
+  if (!tokens) { meter.textContent = ''; meter.className = 'ctx-meter'; return; }
   const k = (tokens / 1000).toFixed(tokens >= 100_000 ? 0 : 1);
-  // _autoCompactEffective: 0 = disabled, else current threshold. Set on connect
-  // via /api/settings; falls back to 167_000 until that fetch finishes.
-  const thr = (typeof _autoCompactEffective === 'number' && _autoCompactEffective > 0) ? _autoCompactEffective : 167_000;
-  const warnAt = Math.max(Math.floor(thr * 0.6), 60_000);
-  const cls = (_autoCompactEffective !== 0 && tokens > thr) ? 'hot' : tokens > warnAt ? 'warn' : '';
-  if (meter) {
-    const pct = Math.round((tokens / 200_000) * 100);
-    const tail = tokens > warnAt ? ` · ${pct}%` : '';
-    meter.textContent = `Context: ${k}k tokens${tail}`;
-    meter.className = 'ctx-meter' + (cls ? ' ' + cls : '');
+  const win = ctx && ctx.window ? ctx.window : 200_000;
+  const pct = Math.round((tokens / win) * 100);
+  let cls, showPct;
+  if (ctx && ctx.window) {
+    // Exact window known → color purely by fill ratio (83.5% mirrors the TUI).
+    cls = pct >= 83.5 ? 'hot' : pct >= 60 ? 'warn' : '';
+    showPct = true;
+  } else {
+    // _autoCompactEffective: 0 = disabled, else current threshold. Set on connect
+    // via /api/settings; falls back to 167_000 until that fetch finishes.
+    const thr = (typeof _autoCompactEffective === 'number' && _autoCompactEffective > 0) ? _autoCompactEffective : 167_000;
+    const warnAt = Math.max(Math.floor(thr * 0.6), 60_000);
+    cls = (_autoCompactEffective !== 0 && tokens > thr) ? 'hot' : tokens > warnAt ? 'warn' : '';
+    showPct = tokens > warnAt;
   }
+  const winTail = ctx && ctx.window ? ` / ${Math.round(win / 1000)}k` : '';
+  meter.textContent = `Context: ${k}k${winTail}${showPct ? ` · ${pct}%` : ' tokens'}`;
+  meter.className = 'ctx-meter' + (cls ? ' ' + cls : '');
 }
 
 // Effective auto-compact threshold (0 = disabled). Refreshed when the settings
@@ -2435,6 +2476,9 @@ let _compactSentAt = 0;
 document.getElementById('compactBtn').addEventListener('click', () => {
   if (isStreaming) return; // a turn is already running; let it finish
   if (!sessionId) return;
+  // Shared session + Codex peer: /compact only exists in the Codex TUI, so
+  // open the console modal instead of dispatching a prompt.
+  if (isSyncSession() && selectedAgent === 'codex') { openCodexConsole(); return; }
   // isStreaming only flips true once the server's stream_start round-trips, so a
   // fast double-tap would slip through twice and queue /compact twice. Debounce.
   const now = Date.now();
@@ -4763,11 +4807,20 @@ requestWakeLock();
 // leaves the tmux session running, so reopening re-attaches with scrollback.
 let shellTerm = null, shellFit = null, shellModalOpen = false;
 let shellCtrlOn = false, shellAltOn = false;
+// The one modal hosts two very different sessions: 'shell' = the persistent
+// tmux shell, 'codex' = a one-shot Codex TUI console over a materialized
+// rollout (compact runs there; closing it triggers the server's ingest-back).
+let shellMode = 'shell';
 
 const SHELL_SEQ = {
   tab: '\t', ctrlc: '\x03', esc: '\x1b',
   up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D',
 };
+
+// Route terminal input to whichever backend the modal currently fronts.
+function shellSendInput(data) {
+  wsSend({ type: shellMode === 'codex' ? 'codex_console_input' : 'shell_input', data });
+}
 
 function setShellMod(which, on) {
   if (which === 'ctrl') { shellCtrlOn = on; document.getElementById('shellCtrlKey').classList.toggle('mod-on', on); }
@@ -4802,14 +4855,14 @@ function shellEnsureTerm() {
   shellTerm.open(document.getElementById('shellTerm'));
   shellTerm.onData(d => {
     if (shellCtrlOn || shellAltOn) { d = applyShellMods(d); setShellMod('ctrl', false); setShellMod('alt', false); }
-    wsSend({ type: 'shell_input', data: d });
+    shellSendInput(d);
   });
 }
 
 function shellResize() {
   if (!shellTerm || !shellFit) return;
   try { shellFit.fit(); } catch {}
-  wsSend({ type: 'shell_resize', cols: shellTerm.cols, rows: shellTerm.rows });
+  wsSend({ type: shellMode === 'codex' ? 'codex_console_resize' : 'shell_resize', cols: shellTerm.cols, rows: shellTerm.rows });
 }
 
 // On mobile the on-screen keyboard overlays the page without changing the
@@ -4860,6 +4913,8 @@ function unbindShellViewport() {
 function openShellModal() {
   if (!sessionId) { alert('セッションがまだありません'); return; }
   if (typeof Terminal === 'undefined') { alert('ターミナルの読み込みに失敗しました（ネットワーク?）'); return; }
+  shellMode = 'shell';
+  document.getElementById('codexCompactKey').hidden = true;
   document.getElementById('shellOverlay').classList.add('on');
   document.getElementById('shellTitle').textContent = (fbSessionRoot || '') + '  ·  ' + String(sessionId).slice(0, 8);
   shellEnsureTerm();
@@ -4875,21 +4930,53 @@ function openShellModal() {
   }, 60);
 }
 
-function closeShellModal() {
+// Codex console: the same modal, but the pty runs `codex resume` over a rollout
+// materialized from THIS shared conversation. /compact runs inside the real
+// Codex TUI; on close the server ingests what happened back into canonical.
+function openCodexConsole() {
+  if (!sessionId || !isSyncSession()) { alert('共有セッションでのみ使えます'); return; }
+  if (typeof Terminal === 'undefined') { alert('ターミナルの読み込みに失敗しました（ネットワーク?）'); return; }
+  if (isStreaming) { alert('ターン実行中です。完了後に開いてください'); return; }
+  shellMode = 'codex';
+  document.getElementById('codexCompactKey').hidden = false;
+  document.getElementById('shellOverlay').classList.add('on');
+  document.getElementById('shellTitle').textContent = 'Codex コンソール — /compact 後に×で閉じると取り込みます';
+  shellEnsureTerm();
+  shellModalOpen = true;
+  setShellMod('ctrl', false); setShellMod('alt', false);
+  bindShellViewport();
+  setTimeout(() => {
+    applyShellViewport();
+    if (shellFit) { try { shellFit.fit(); } catch {} }
+    wsSend({ type: 'codex_console_open', sessionId, directory: curDirectory || fbSessionRoot || '', cols: shellTerm.cols, rows: shellTerm.rows });
+    shellTerm.focus();
+  }, 60);
+}
+
+function closeShellModal(silent) {
+  const wasCodex = shellMode === 'codex';
   document.getElementById('shellOverlay').classList.remove('on');
+  document.getElementById('codexCompactKey').hidden = true;
   shellModalOpen = false;
   unbindShellViewport();
   applyShellViewport(); // clears the keyboard-fit inline styles
-  wsSend({ type: 'shell_detach' });
+  // silent=true when the server already ended the console (codex exited) — the
+  // pty is gone, only the DOM needs closing.
+  if (!silent) wsSend({ type: wasCodex ? 'codex_console_close' : 'shell_detach' });
+  shellMode = 'shell';
   // Clear so a later re-attach repaints cleanly from tmux's redraw-on-attach.
   if (shellTerm) shellTerm.reset();
 }
 
 document.querySelectorAll('.shell-keys [data-seq]').forEach(b => {
   b.addEventListener('click', () => {
-    wsSend({ type: 'shell_input', data: SHELL_SEQ[b.dataset.seq] });
+    shellSendInput(SHELL_SEQ[b.dataset.seq]);
     if (shellTerm) shellTerm.focus();
   });
+});
+document.getElementById('codexCompactKey').addEventListener('click', () => {
+  wsSend({ type: 'codex_console_compact' });
+  if (shellTerm) shellTerm.focus();
 });
 // Copy the current terminal selection. Uses the async Clipboard API on a
 // secure origin (https / localhost) and falls back to a hidden-textarea
@@ -4942,7 +5029,7 @@ async function shellPaste() {
   // Insecure origin (or denied permission): the browser blocks programmatic
   // clipboard reads, so ask the user to drop the text in manually.
   if (!text) text = prompt('貼り付ける内容:') || '';
-  if (text) wsSend({ type: 'shell_input', data: text });
+  if (text) shellSendInput(text);
   shellTerm.focus();
 }
 

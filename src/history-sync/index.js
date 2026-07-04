@@ -150,6 +150,7 @@ async function runTurn({ conversationId, agent, prompt, cwd, ...opts }) {
     addedTurns: added.length,
     totalTurns: transcript.turns.length,
     reply: visibleAssistantText(added),
+    context: (transcript.meta && transcript.meta.context) || null,
   };
 }
 

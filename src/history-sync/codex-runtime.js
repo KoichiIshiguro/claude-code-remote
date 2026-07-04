@@ -207,7 +207,41 @@ function ingestDelta(transcript, rolloutPath, origLineCount) {
   const delta = compiler.codexToCanonical(tail.join('\n'));
   transcript.turns.push(...delta.turns);
   transcript.updatedAt = delta.updatedAt || transcript.updatedAt;
+  // Context size, straight from the rollout's own telemetry: each turn Codex
+  // appends an event_msg/token_count whose last_token_usage.input_tokens is the
+  // prompt size of the latest API call (cached_input_tokens is a SUBSET — don't
+  // add it) and model_context_window is the model's effective window. A compact
+  // reports zeros in last_token_usage, so a boundary after the last real
+  // reading is flagged instead: "shrunk, re-measured next turn".
+  const ctx = contextFromTail(tail);
+  if (ctx) {
+    transcript.meta = {
+      ...(transcript.meta || {}),
+      context: { agent: 'codex', at: new Date().toISOString(), ...ctx },
+    };
+  }
   return delta.turns;
+}
+
+function contextFromTail(tailLines) {
+  let tokens = null;
+  let window = null;
+  let compacted = false;
+  for (const line of tailLines) {
+    let e; try { e = JSON.parse(line); } catch { continue; }
+    if (e?.type === 'event_msg' && e.payload?.type === 'token_count' && e.payload.info) {
+      const last = e.payload.info.last_token_usage;
+      if (last && last.input_tokens > 0) { tokens = last.input_tokens; compacted = false; }
+      if (typeof e.payload.info.model_context_window === 'number') {
+        window = e.payload.info.model_context_window;
+      }
+    } else if (e?.type === 'compacted'
+        || (e?.type === 'event_msg' && e.payload?.type === 'context_compacted')) {
+      compacted = true;
+    }
+  }
+  if (tokens == null && window == null && !compacted) return null;
+  return { tokens, window, compacted };
 }
 
 // One full Codex turn against the shared canonical conversation.
@@ -251,4 +285,49 @@ async function turn(transcript, prompt, opts = {}) {
   return { added, sessionId: mat.sessionId };
 }
 
-module.exports = { materialize, run, ingestDelta, turn, defaultCodexHome, ensureGitRepo, ensureCodexAuth };
+// ── Interactive console (TTY modal) ──────────────────────────────────────────
+// `codex exec` has no /compact and its auto-compaction is unreliable headless,
+// so compaction runs through the real Codex TUI instead: materialize canonical
+// into a rollout, let the user drive `codex resume <id>` in a pty (the modal
+// sends "/compact" for them), then ingest whatever the TUI appended — including
+// the `compacted` boundary — back into canonical, and delete the rollout.
+// consoleSpawn returns everything ws-handler needs to pty.spawn it.
+function consoleSpawn(transcript, opts = {}) {
+  const mat = materialize(transcript, opts);
+  ensureGitRepo(mat.cwd);
+  ensureCodexAuth(mat.codexHome);
+  const codexBin = process.env.CODEX_PATH || 'codex';
+  // Flag order matters less than it looks (clap accepts globals after the
+  // subcommand) but this exact shape is what was verified against 0.139.0.
+  const args = [
+    'resume', mat.sessionId,
+    '-C', mat.cwd,
+    '-s', opts.sandbox || 'danger-full-access',
+    '-c', `projects.${JSON.stringify(mat.cwd)}.trust_level="trusted"`,
+  ];
+  const [bin, spawnArgs] = sandboxed(codexBin, args, mat.cwd, [mat.codexHome]);
+  return {
+    mat,
+    bin,
+    args: spawnArgs,
+    cwd: mat.cwd,
+    env: { ...process.env, CODEX_HOME: mat.codexHome, CODEX_SANDBOX_MODE: opts.sandbox || 'danger-full-access' },
+  };
+}
+
+// Ingest what the console session appended, then drop the rollout. Returns the
+// added canonical turns plus whether a compact boundary landed among them.
+function consoleIngest(transcript, mat) {
+  let added = [];
+  try { added = ingestDelta(transcript, mat.rolloutPath, mat.origLineCount); }
+  catch { /* rollout unreadable/vanished — nothing to ingest */ }
+  transcript.providerIds = { ...transcript.providerIds, codex: mat.sessionId };
+  try { fs.unlinkSync(mat.rolloutPath); } catch { /* best effort */ }
+  const compacted = added.some((t) => t.providerMeta?.codexCompacted);
+  return { added, compacted };
+}
+
+module.exports = {
+  materialize, run, ingestDelta, turn, defaultCodexHome, ensureGitRepo, ensureCodexAuth,
+  contextFromTail, consoleSpawn, consoleIngest,
+};
