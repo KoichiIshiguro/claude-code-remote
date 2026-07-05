@@ -51,8 +51,51 @@ function payloadText(payload) {
 // Codex `exec --json` emits runtime events, not persisted rollout entries.
 // Convert only the displayable subset to the Claude-shaped stream events the UI
 // already understands; persisted canonical ingest still comes from rollout tail.
+// Codex ≥0.139 speaks the `thread.*`/`turn.*`/`item.*` schema; the old
+// `response_item`/`event_msg` mapping is kept for older CLIs. Returns an ARRAY
+// (an item.completed for a command carries both the call and its output).
 function codexLiveEventToClaudeShape(event) {
   if (!event || typeof event !== 'object') return null;
+  if (event.type === 'item.completed' && event.item) {
+    const item = event.item;
+    const id = item.id || 'codex-item';
+    if (item.type === 'agent_message' && item.text) {
+      return [{ type: 'assistant', message: { content: [{ type: 'text', text: item.text }] } }];
+    }
+    if (item.type === 'reasoning' && item.text) {
+      return [{ type: 'assistant', message: { content: [{ type: 'thinking', thinking: item.text }] } }];
+    }
+    if (item.type === 'command_execution') {
+      const out = [{
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command: item.command || '' } }] },
+      }];
+      if (item.aggregated_output != null && item.aggregated_output !== '') {
+        out.push({ type: 'tool', tool_use_id: id, content: String(item.aggregated_output) });
+      }
+      return out;
+    }
+    if (item.type === 'file_change') {
+      const files = (item.changes || []).map((c) => `${c.kind || 'update'} ${c.path || ''}`).join('\n');
+      return [{
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id, name: 'Edit', input: { files } }] },
+      }];
+    }
+    if (item.type === 'mcp_tool_call') {
+      return [{
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id, name: `${item.server || 'mcp'}:${item.tool || 'tool'}`, input: {} }] },
+      }];
+    }
+    if (item.type === 'web_search') {
+      return [{
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id, name: 'WebSearch', input: { query: item.query || '' } }] },
+      }];
+    }
+    return null;
+  }
   if (event.type === 'response_item') {
     const payload = event.payload || {};
     if (payload.type === 'message' && payload.role === 'assistant') {
@@ -168,6 +211,10 @@ function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, san
     let out = '';
     let err = '';
     let stdoutBuffer = '';
+    // New-schema failure signals: codex can exit 0 after a failed turn, and its
+    // useful message lives in `error` / `turn.failed` events, not stderr.
+    let apiError = null;
+    let turnFailed = false;
     child.stdout.on('data', (d) => {
       const chunk = d.toString();
       out += chunk;
@@ -179,8 +226,15 @@ function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, san
         if (!t) continue;
         try {
           const ev = JSON.parse(t);
+          if (ev && ev.type === 'error' && ev.message) apiError = String(ev.message);
+          if (ev && ev.type === 'turn.failed') {
+            turnFailed = true;
+            apiError = (ev.error && ev.error.message) || apiError || 'codex turn failed';
+          }
           const live = codexLiveEventToClaudeShape(ev);
-          if (live && typeof onLiveEvent === 'function') onLiveEvent(live);
+          for (const e of Array.isArray(live) ? live : (live ? [live] : [])) {
+            if (typeof onLiveEvent === 'function') onLiveEvent(e);
+          }
         } catch { /* ignore non-json noise */ }
       }
     });
@@ -190,12 +244,19 @@ function run({ codexHome, cwd, sessionId, prompt, model, effort, processKey, san
       if (stdoutBuffer.trim()) {
         try {
           const ev = JSON.parse(stdoutBuffer.trim());
+          if (ev && ev.type === 'error' && ev.message) apiError = String(ev.message);
+          if (ev && ev.type === 'turn.failed') {
+            turnFailed = true;
+            apiError = (ev.error && ev.error.message) || apiError || 'codex turn failed';
+          }
           const live = codexLiveEventToClaudeShape(ev);
-          if (live && typeof onLiveEvent === 'function') onLiveEvent(live);
+          for (const e of Array.isArray(live) ? live : (live ? [live] : [])) {
+            if (typeof onLiveEvent === 'function') onLiveEvent(e);
+          }
         } catch { /* ignore */ }
       }
-      if (code === 0) resolve({ stdout: out, stderr: err });
-      else reject(new Error(`codex exec exited ${code}: ${err || out}`));
+      if (code === 0 && !turnFailed) resolve({ stdout: out, stderr: err });
+      else reject(new Error(`codex exec exited ${code}: ${apiError || err || out}`));
     });
   });
 }
@@ -268,7 +329,17 @@ async function turn(transcript, prompt, opts = {}) {
     try { added = ingestDelta(transcript, mat.rolloutPath, mat.origLineCount); }
     catch { /* prefer original run error if any */ }
   }
-  if (runError && !added.length) throw runError;
+  // A failed exec still writes the echoed user prompt to the rollout, so
+  // "something was ingested" is NOT success. Unless an assistant turn landed,
+  // roll the fragment back out of canonical and surface the real error —
+  // otherwise the UI shows a silent empty turn and retries stack user bubbles.
+  if (runError && !added.some((t) => t.role === 'assistant')) {
+    if (added.length) transcript.turns.splice(transcript.turns.length - added.length, added.length);
+    if (opts.keepArtifacts !== true) {
+      try { fs.unlinkSync(mat.rolloutPath); } catch { /* best effort */ }
+    }
+    throw runError;
+  }
   // Annotate the first new user turn with image basenames so history replay works.
   if (opts.imagePaths && opts.imagePaths.length) {
     const userTurn = added.find((t) =>

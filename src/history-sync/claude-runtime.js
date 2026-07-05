@@ -176,9 +176,17 @@ async function turn(transcript, prompt, opts = {}) {
       added = ingestDelta(transcript, mat.jsonlPath, mat.origLineCount);
     } catch { /* malformed jsonl: prefer original run error if any */ }
   }
-  // Re-throw only if we got nothing useful — a true startup/auth failure with no
-  // jsonl written is still a hard error that should surface to the caller.
-  if (runError && !added.length) throw runError;
+  // Re-throw unless we got something useful. "Useful" means an assistant turn
+  // (partial work, tool calls included) — the jsonl echoes the user prompt
+  // before the first API call, so a startup/auth failure still leaves a user
+  // turn behind; keeping it would show a silent empty turn and hide the error.
+  if (runError && !added.some((t) => t.role === 'assistant')) {
+    if (added.length) transcript.turns.splice(transcript.turns.length - added.length, added.length);
+    if (opts.keepArtifacts !== true) {
+      try { fs.unlinkSync(mat.jsonlPath); } catch { /* best effort */ }
+    }
+    throw runError;
+  }
   // Annotate the first new user turn with image basenames so the canonical store
   // can serve image previews when the history is replayed via turnsToEntries().
   if (opts.imagePaths && opts.imagePaths.length) {
