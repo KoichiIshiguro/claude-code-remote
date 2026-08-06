@@ -563,7 +563,9 @@ app.get('/api/file/raw', requireAuth, (req, res) => {
   // download=1 forces a "Save as" instead of inline rendering (file DL button).
   const opts = download ? { headers: { 'Content-Disposition': `attachment; filename="${encodeURIComponent(path.basename(absPath))}"` } } : {};
   res.sendFile(absPath, opts, (err) => {
-    if (err && !res.headersSent) res.status(500).send(err.message);
+    // A missing file is a 404, not a server error — don't pollute the console
+    // (and logs) with 500s for stale artifact/icon paths that no longer exist.
+    if (err && !res.headersSent) res.status(err.status || 500).send(err.message);
   });
 });
 
@@ -578,7 +580,7 @@ app.get(/^\/api\/file\/html\/(.+)/, requireAuth, (req, res) => {
     return res.status(403).send('Access denied');
   }
   res.sendFile(absPath, (err) => {
-    if (err && !res.headersSent) res.status(500).send(err.message);
+    if (err && !res.headersSent) res.status(err.status || 500).send(err.message);
   });
 });
 
