@@ -170,13 +170,19 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
 
   // -p (non-interactive) mode has no channel for tool-result return, so
   // AskUserQuestion silently hangs. Tell the model to ask in plain text.
-  // Likewise, backgrounded subagents can't outlive the turn: the process tree
-  // is reaped shortly after the `result` event, so an agent still running when
-  // the model ends its turn is killed mid-work and its output is lost. Force
-  // agents to run synchronously so `result` only fires once they're done.
+  // Likewise, ANY child still running when the turn ends is doomed: the process
+  // tree is reaped shortly after the `result` event. Observed failure was NOT
+  // subagents but background Bash — the model ran long `run_in_background: true`
+  // imports, ended its turn, and the reap SIGKILLed them mid-run. The earlier
+  // wording only named the Agent tool for run_in_background:false, so the model
+  // never mapped a long Bash import to it. Call out the Bash tool explicitly and
+  // make clear a slow FOREGROUND command is fine — the session just stays alive.
   args.push('--append-system-prompt',
     'When you need to ask the user a question or offer choices, write the question as plain text in your reply and STOP your turn. List options as a numbered or bulleted list. Do NOT call the AskUserQuestion tool — this environment cannot return a tool result, so the question would silently fail.\n\n' +
-    'This is a non-interactive session: the whole process tree is terminated as soon as your turn ends, so a subagent or background task still running at that point is killed mid-work and its results are lost. Always call the Agent tool with run_in_background: false, and NEVER end your turn while any agent or background task is still running — wait for every one of them to finish and fold their results into your reply first.');
+    'This is a non-interactive session: the whole process tree is terminated as soon as your turn ends, so ANY work still running at that moment — a background Bash command, a subagent, or any other child process — is killed mid-work and its results are lost. Therefore:\n' +
+    '1. Run every command in the FOREGROUND. Do NOT pass run_in_background: true to the Bash tool, even for a long-running one (a bulk import, build, test suite, etc.). A foreground command that takes many minutes is completely fine here — the session simply stays alive and shows "Working" until it finishes. A backgrounded one is killed the instant your turn ends.\n' +
+    '2. Call the Agent tool with run_in_background: false as well.\n' +
+    '3. NEVER end your turn while any command, subagent, or background task is still running — wait for every one to finish and fold its results into your reply first. Even a server you would like to leave up gets killed, so start it, use it, and stop it all within the turn.');
 
   if (resumeSessionId) args.push('--resume', resumeSessionId);
 
