@@ -728,6 +728,28 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .slash-item.active, .slash-item:hover { background: var(--accent); color: #fff; }
 
+  /* Model/effort quick picker (fixed-positioned above the model pill). */
+  #modelMenu { position: fixed; z-index: 500; min-width: 210px; max-width: calc(100vw - 16px);
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px; box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+  #modelMenu[hidden] { display: none; }
+  .mm-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 4px; }
+  .mm-title { font-size: 11px; color: var(--text-muted); }
+  .mm-gear { background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 13px; padding: 2px 5px; border-radius: 4px; }
+  .mm-gear:hover { color: var(--text); background: var(--surface); }
+  .mm-item { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    width: 100%; padding: 7px 10px; border: none; border-radius: 5px; background: none;
+    color: var(--text); font-size: 13px; cursor: pointer; text-align: left;
+    white-space: nowrap; overflow: hidden; }
+  .mm-item:hover { background: var(--accent-dim); }
+  .mm-item .chk { color: var(--accent); width: 14px; flex-shrink: 0; text-align: right; }
+  .mm-effort { display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px;
+    border-top: 1px solid var(--border); margin-top: 4px; }
+  .mm-effort label { font-size: 11px; color: var(--text-muted); }
+  .mm-effort select { flex: 1; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px; padding: 4px 6px; font-size: 13px; }
+
   @media (max-width: 767px) {
     .bottom-nav { display: block; }
     /* Hide desktop sidebar toggles, keep settings */
@@ -4213,9 +4235,12 @@ function openModelMenu() {
   eff.appendChild(lab); eff.appendChild(sel);
   el.appendChild(eff);
   el.hidden = false;
+  // Anchor above the pill, clamped so the menu never leaves the viewport
+  // (the pill sits bottom-left, so a right-edge anchor pushed it off-screen).
   const r = document.getElementById('modelPill').getBoundingClientRect();
-  el.style.left = 'auto';
-  el.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  const w = el.offsetWidth;
+  el.style.right = 'auto';
+  el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
   el.style.bottom = (window.innerHeight - r.top + 6) + 'px';
 }
 
