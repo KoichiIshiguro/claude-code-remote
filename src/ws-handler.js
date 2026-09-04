@@ -13,6 +13,8 @@ const jsonlReader = require('./jsonl-reader');
 const promptQueue = require('./prompt-queue');
 const scheduledPrompts = require('./scheduled-prompts');
 const liveTurn = require('./live-turn');
+const engineStore = require('./engine-store');
+const codex = require('./codex');
 const { sessionDir } = require('./attachments');
 const shell = require('./shell-manager');
 const gitInfo = require('./git-info');
@@ -24,7 +26,14 @@ const sessionClients = new Map();
 // server restart — intentional. UI generates an id, server tracks the
 // directory; once the first prompt's stream-json init reveals the real
 // Claude session id, we rekey and drop the placeholder.
-const pendingSessions = new Map(); // placeholderId → { directory, createdAt, lastActivity }
+const pendingSessions = new Map(); // placeholderId → { directory, createdAt, lastActivity, engine }
+
+// Which engine runs a session: pending rows carry it directly; resolved Codex
+// ids live in engine-store; everything else is Claude.
+function engineForKey(key) {
+  if (pendingSessions.has(key)) return pendingSessions.get(key).engine || 'claude';
+  return engineStore.engineOf(key) || 'claude';
+}
 
 function send(ws, obj) {
   if (ws.readyState === 1) ws.send(JSON.stringify(obj));
@@ -122,6 +131,8 @@ function unwatchWs(ws) {
 // scan registered projects for a matching jsonl filename.
 function findDirectoryForSessionId(sessionId) {
   if (pendingSessions.has(sessionId)) return pendingSessions.get(sessionId).directory;
+  const eng = engineStore.get(sessionId);
+  if (eng && eng.directory) return eng.directory;
   for (const p of projectsStore.loadProjects()) {
     const ls = jsonlReader.listJsonlsForProject(p.path);
     if (ls.some(s => s.sessionId === sessionId)) return p.path;
@@ -134,6 +145,7 @@ function sessionToLegacyShape(s, projectPath) {
     id: s.sessionId,
     sessionId: s.sessionId,
     directory: projectPath,
+    engine: 'claude',
     lastActivity: new Date(s.mtime).toISOString(),
     streaming: procTracker.isRunning(s.sessionId),
     allowedTools: null,
@@ -149,11 +161,28 @@ function pendingToLegacyShape(placeholderId, entry) {
     id: placeholderId,
     sessionId: null,
     directory: entry.directory,
+    engine: entry.engine || 'claude',
     lastActivity: new Date(entry.lastActivity).toISOString(),
     streaming: procTracker.isRunning(placeholderId),
     allowedTools: null,
     lastTokens: null,
     preview: '',
+  };
+}
+
+function codexToLegacyShape(e) {
+  return {
+    id: e.sessionId,
+    sessionId: e.sessionId,
+    directory: e.directory,
+    engine: 'codex',
+    lastActivity: new Date(e.lastActivity || e.createdAt || Date.now()).toISOString(),
+    streaming: procTracker.isRunning(e.sessionId),
+    allowedTools: null,
+    lastTokens: null,
+    aiTitle: null,
+    preview: e.preview || '',
+    customName: nameStore.get(e.sessionId),
   };
 }
 
@@ -168,6 +197,16 @@ function listAllSessionsLegacy() {
       seen.add(s.sessionId);
       out.push(sessionToLegacyShape(s, p.path));
     }
+  }
+  // Codex sessions come from the engine registry (their rollouts live in a
+  // global date-tree, not under the project). Registered ids never appear in
+  // the claude jsonl scan, so no dedup against `seen` is needed — but a
+  // just-created one may still ALSO be pending under the same id; mark it so
+  // the pending loop below skips the duplicate row.
+  for (const e of engineStore.list()) {
+    if (archived.has(e.sessionId)) continue;
+    seen.add(e.sessionId);
+    out.push(codexToLegacyShape(e));
   }
   for (const [pid, entry] of pendingSessions) {
     if (archived.has(pid)) continue;
@@ -289,8 +328,17 @@ function kickRunner(key, directory) {
 // (the real id once a new session's init event arrives, otherwise `key`).
 async function runOneTurn(key, directory, prompt, imagePaths) {
   const cfg = require('./auth').loadConfig();
-  const model = typeof cfg.model === 'string' ? cfg.model : null;
-  const effort = typeof cfg.effort === 'string' ? cfg.effort : null;
+  const engine = engineForKey(key);
+  const isCodex = engine === 'codex';
+  // Each engine has its own model/effort config so a Codex session can never
+  // be launched with a Claude model or vice versa.
+  const model = isCodex
+    ? (typeof cfg.codexModel === 'string' ? cfg.codexModel : null)
+    : (typeof cfg.model === 'string' ? cfg.model : null);
+  const effort = isCodex
+    ? (typeof cfg.codexEffort === 'string' ? cfg.codexEffort : null)
+    : (typeof cfg.effort === 'string' ? cfg.effort : null);
+  const runEngine = isCodex ? codex.runPrompt : sm.runPrompt;
 
   const isNewSession = pendingSessions.has(key);
   let resolvedSessionId = isNewSession ? null : key;
@@ -302,7 +350,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   // itself). Detect it up front so the auto-compact pre-check can skip it.
   const isCompactCmd = typeof prompt === 'string' && prompt.trim() === '/compact';
 
-  if (!isNewSession && !isCompactCmd && sm.shouldAutoCompact(key, directory)) {
+  if (!isCodex && !isNewSession && !isCompactCmd && sm.shouldAutoCompact(key, directory)) {
     compactingKeys.set(key, { auto: true });
     // Buffer the REAL user prompt (not '/compact') with compact:true, so a reload
     // during the auto-compact phase still shows the user's pending prompt bubble
@@ -347,7 +395,7 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
   let interceptedAUQ = null;
 
   try {
-    for await (const event of sm.runPrompt({
+    for await (const event of runEngine({
       directory, prompt, imagePaths, resumeSessionId, processKey, model, effort,
     })) {
       // Every init (new or resumed) carries the env's slash command list.
@@ -376,11 +424,21 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
         const pendingEntry = pendingSessions.get(key);
         pendingSessions.delete(key);
         if (pendingEntry) pendingSessions.set(resolvedSessionId, pendingEntry);
+        // Codex ids aren't discoverable from the claude jsonl scan — record the
+        // id→project mapping (and a first-prompt preview for the sidebar) now.
+        if (isCodex) {
+          engineStore.register(resolvedSessionId, {
+            directory,
+            createdAt: Date.now(),
+            lastActivity: Date.now(),
+            preview: String(prompt || '').slice(0, 120),
+          });
+        }
         broadcast(resolvedSessionId, { type: 'session_assigned', placeholderId: key, sessionId: resolvedSessionId });
         broadcast(resolvedSessionId, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
       }
 
-      if (!interceptedAUQ && event.type === 'assistant') {
+      if (!isCodex && !interceptedAUQ && event.type === 'assistant') {
         const content = event.message && event.message.content;
         if (Array.isArray(content)) {
           const auq = content.find(b => b && b.type === 'tool_use' && b.name === 'AskUserQuestion');
@@ -455,6 +513,9 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     compactingKeys.delete(bk);
     liveTurn.end(key);
     liveTurn.end(bk);
+    // Codex rows sort by registry lastActivity (no jsonl mtime to lean on).
+    // touch() is a no-op for ids it doesn't know (e.g. an unresolved placeholder).
+    if (isCodex) engineStore.touch(bk);
     broadcast(bk, { type: 'stream_end', sessionId: bk });
     if (isNewSession) {
       if (resolvedSessionId) {
@@ -602,13 +663,15 @@ function handleConnection(ws /*, req */) {
         // and captures the real session_id from the init event.
         const directory = msg.directory;
         if (!directory) { send(ws, { type: 'error', message: 'directory required' }); return; }
+        const engine = msg.engine === 'codex' ? 'codex' : 'claude';
         const placeholderId = uuidv4();
         const now = Date.now();
-        pendingSessions.set(placeholderId, { directory, createdAt: now, lastActivity: now });
+        pendingSessions.set(placeholderId, { directory, createdAt: now, lastActivity: now, engine });
         const session = {
           id: placeholderId,
           sessionId: null,
           directory,
+          engine,
           createdAt: new Date(now).toISOString(),
           lastActivity: new Date(now).toISOString(),
           streaming: false,
@@ -699,6 +762,7 @@ function handleConnection(ws /*, req */) {
             type: 'history',
             sessionId: sid,
             directory: entry.directory,
+            engine: entry.engine || 'claude',
             branch: gitInfo.currentBranch(entry.directory),
             history: [],
             streaming: procTracker.isRunning(sid),
@@ -718,6 +782,7 @@ function handleConnection(ws /*, req */) {
             type: 'history',
             sessionId: sid,
             directory: '',
+            engine: 'claude',
             history: [],
             streaming: false,
             currentEntry: null,
@@ -729,11 +794,15 @@ function handleConnection(ws /*, req */) {
 
         subscribe(sid, ws);
         watchDir(directory, ws);
-        const { history, lastTokens, truncated } = jsonlReader.readHistory(sid, directory);
+        const sessEngine = engineStore.engineOf(sid) || 'claude';
+        const { history, lastTokens, truncated } = sessEngine === 'codex'
+          ? codex.readCodexHistory(sid)
+          : jsonlReader.readHistory(sid, directory);
         send(ws, {
           type: 'history',
           sessionId: sid,
           directory,
+          engine: sessEngine,
           branch: gitInfo.currentBranch(directory),
           history,
           truncated,

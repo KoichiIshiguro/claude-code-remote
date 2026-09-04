@@ -132,6 +132,26 @@
   .sess-item.active { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
   .sess-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
   .sess-item.running .sess-dot { background: var(--green); }
+  /* Engine badge: which CLI owns this session. Color + letter (not color
+     alone) so it reads for everyone. */
+  .sess-eng {
+    flex-shrink: 0; width: 14px; height: 14px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700; font-family: inherit; line-height: 1;
+  }
+  .sess-eng.eng-claude { background: rgba(217,119,87,.16); color: #d97757; }
+  .sess-eng.eng-codex  { background: rgba(16,163,127,.16); color: #10a37f; }
+  /* Engine picker cards (new-session modal) */
+  .engine-card {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 8px;
+    cursor: pointer; color: var(--text); text-align: left;
+  }
+  .engine-card:hover { border-color: var(--accent); }
+  .engine-card-txt { display: flex; flex-direction: column; gap: 2px; }
+  .engine-card-txt b { font-size: 14px; }
+  .engine-card-txt small { font-size: 11px; color: var(--text-muted); }
   .sess-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sess-empty {
     font-size: 11px; color: var(--text-muted); padding: 2px 10px 6px 22px;
@@ -1035,9 +1055,9 @@
     </div>
     <div class="perm-body">
       <div class="perm-group">
-        <div class="perm-group-title">モデル</div>
+        <div class="perm-group-title">Claude モデル</div>
         <p style="font-size:12px; color:var(--text-muted); line-height:1.6; margin-bottom:8px;">
-          応答に使うモデル。「既定」のままなら Claude CLI の既定モデルを使います。
+          Claude セッションで使うモデル。「既定」のままなら Claude CLI の既定モデルを使います。
         </p>
         <select id="modelSelect"
                 style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
@@ -1057,7 +1077,7 @@
         </p>
       </div>
       <div class="perm-group">
-        <div class="perm-group-title">工数 (effort)</div>
+        <div class="perm-group-title">Claude 工数 (effort)</div>
         <p style="font-size:12px; color:var(--text-muted); line-height:1.6; margin-bottom:8px;">
           思考にかける手間。低いほど速く・安く、高いほど丁寧。未指定なら CLI 既定。
         </p>
@@ -1069,6 +1089,29 @@
           <option value="high">高 (high)</option>
           <option value="xhigh">超高 (xhigh)</option>
           <option value="max">Max</option>
+        </select>
+      </div>
+      <div class="perm-group">
+        <div class="perm-group-title">Codex モデル</div>
+        <p style="font-size:12px; color:var(--text-muted); line-height:1.6; margin-bottom:8px;">
+          Codex セッションで使うモデル。「既定」のままなら Codex CLI の設定 (config.toml) に従います。
+        </p>
+        <select id="codexModelSelect"
+                style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
+          <option value="">既定 (CLI まかせ)</option>
+          <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
+          <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
+        </select>
+      </div>
+      <div class="perm-group">
+        <div class="perm-group-title">Codex 工数 (reasoning effort)</div>
+        <select id="codexEffortSelect"
+                style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
+          <option value="">既定 (CLI まかせ)</option>
+          <option value="minimal">最小 (minimal)</option>
+          <option value="low">低 (low)</option>
+          <option value="medium">中 (medium)</option>
+          <option value="high">高 (high)</option>
         </select>
       </div>
       <div class="perm-group">
@@ -1092,6 +1135,29 @@
     <div class="perm-ftr">
       <button class="btn-ghost" id="permCancel">キャンセル</button>
       <button class="btn-save" id="permSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── New-session engine picker ── -->
+<div class="modal-overlay" id="engineOverlay">
+  <div class="perm-modal" style="max-width:360px;">
+    <div class="perm-hdr">
+      <h3>新規セッション</h3>
+      <button class="side-close" id="engineClose">×</button>
+    </div>
+    <div class="perm-body">
+      <p style="font-size:12px; color:var(--text-muted); line-height:1.6; margin-bottom:12px;">
+        使うエンジンを選択してください。セッションのエンジンは後から変更できません。
+      </p>
+      <button class="engine-card" id="engineClaude">
+        <span class="sess-eng eng-claude" style="width:22px;height:22px;font-size:12px;">C</span>
+        <span class="engine-card-txt"><b>Claude</b><small>Claude Code CLI</small></span>
+      </button>
+      <button class="engine-card" id="engineCodex">
+        <span class="sess-eng eng-codex" style="width:22px;height:22px;font-size:12px;">X</span>
+        <span class="engine-card-txt"><b>Codex</b><small>OpenAI Codex CLI</small></span>
+      </button>
     </div>
   </div>
 </div>
@@ -1336,6 +1402,8 @@ function handleMessage(msg) {
     case 'history': {
       const dir = msg.directory || '';
       curDirectory = dir;
+      _sessionEngine = msg.engine === 'codex' ? 'codex' : 'claude';
+      refreshModelPill();
       document.getElementById('dirLabel').textContent = dir || sessionId;
       const branchPill = document.getElementById('branchPill');
       branchPill.textContent = msg.branch ? '⎇ ' + msg.branch : '';
@@ -1671,6 +1739,8 @@ let _autoCompactEffective = null;
     if (data.autoCompactThreshold === 0) _autoCompactEffective = 0;
     else if (typeof data.autoCompactThreshold === 'number') _autoCompactEffective = data.autoCompactThreshold;
     else _autoCompactEffective = data.autoCompactDefault || 167_000;
+    _curCodexModel = data.codexModel || '';
+    _curCodexEffort = data.codexEffort || '';
     updateModelPill(data.model, data.effort);
   } catch { /* leave null, falls back inside updateCtx */ }
 })();
@@ -1683,6 +1753,14 @@ const MODEL_LABELS = {
   'claude-haiku-4-5-20251001': 'Haiku 4.5',
 };
 const EFFORT_LABELS = { low: '低', medium: '中', high: '高', xhigh: '超高', max: 'Max' };
+// Codex counterparts. Dropdown-only by design — no free-text model input.
+const CODEX_MODELS = ['', 'gpt-5.6-sol', 'gpt-5.6-luna'];
+const CODEX_MODEL_LABELS = { '': '既定', 'gpt-5.6-sol': 'GPT-5.6 Sol', 'gpt-5.6-luna': 'GPT-5.6 Luna' };
+const CODEX_EFFORT_LABELS = { minimal: '最小', low: '低', medium: '中', high: '高' };
+// Engine of the session currently open in the main pane. Drives which model
+// list the pill/menu shows; set from the `history` payload on every attach.
+let _sessionEngine = 'claude';
+let _curCodexModel = '', _curCodexEffort = '';
 // Put a saved model into the right control: a known value selects the dropdown
 // (clearing the free-text box); anything else goes into the free-text box (with
 // the dropdown reset to 既定) so custom/new model names survive a reload.
@@ -1697,10 +1775,20 @@ let _curModel = '', _curEffort = '';
 function updateModelPill(model, effort) {
   _curModel = model || '';
   _curEffort = effort || '';
+  refreshModelPill();
+}
+// Renders the pill from stored state, per the active session's engine.
+function refreshModelPill() {
   const pill = document.getElementById('modelPill');
   if (!pill) return;
-  const m = MODEL_LABELS[model || ''] || model || '既定';
-  const e = effort ? EFFORT_LABELS[effort] || effort : '';
+  if (_sessionEngine === 'codex') {
+    const m = CODEX_MODEL_LABELS[_curCodexModel] || _curCodexModel || '既定';
+    const e = _curCodexEffort ? (CODEX_EFFORT_LABELS[_curCodexEffort] || _curCodexEffort) : '';
+    pill.textContent = 'Codex ' + (e ? `${m}・${e}` : m);
+    return;
+  }
+  const m = MODEL_LABELS[_curModel] || _curModel || '既定';
+  const e = _curEffort ? EFFORT_LABELS[_curEffort] || _curEffort : '';
   pill.textContent = e ? `${m}・${e}` : m;
 }
 
@@ -2919,7 +3007,7 @@ function rerenderProjList() {
     newBtn.textContent = '+';
     newBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      wsSend({ type: 'create_session', directory: p.path });
+      openEngineModal(p.path);
     });
     head.appendChild(newBtn);
     group.appendChild(head);
@@ -2941,7 +3029,10 @@ function rerenderProjList() {
         item.className = 'sess-item'
           + (s.streaming ? ' running' : '')
           + (isActive ? ' active' : '');
-        item.innerHTML = `<span class="sess-dot"></span><span class="sess-label">${escHtml(label)}</span>`;
+        const eng = s.engine === 'codex' ? 'codex' : 'claude';
+        item.innerHTML = `<span class="sess-dot"></span>`
+          + `<span class="sess-eng eng-${eng}" title="${eng === 'codex' ? 'Codex' : 'Claude'}">${eng === 'codex' ? 'X' : 'C'}</span>`
+          + `<span class="sess-label">${escHtml(label)}</span>`;
         item.addEventListener('click', () => {
           if (isActive) { closeSide('sideL'); return; }
           location.href = `/terminal?session=${s.id}`;
@@ -2975,6 +3066,30 @@ async function refreshProjects() {
   } catch { _projects = []; }
   rerenderProjList();
 }
+
+// ── New-session engine picker ────────────────────────────────────────────────
+// The per-project "+" opens this instead of creating directly: the engine is
+// fixed at creation time (a session can never switch CLIs mid-life).
+let _enginePickDir = null;
+function openEngineModal(dirPath) {
+  _enginePickDir = dirPath;
+  document.getElementById('engineOverlay').classList.add('on');
+}
+function closeEngineModal() {
+  _enginePickDir = null;
+  document.getElementById('engineOverlay').classList.remove('on');
+}
+function pickEngine(engine) {
+  if (!_enginePickDir) return closeEngineModal();
+  wsSend({ type: 'create_session', directory: _enginePickDir, engine });
+  closeEngineModal();
+}
+document.getElementById('engineClaude').addEventListener('click', () => pickEngine('claude'));
+document.getElementById('engineCodex').addEventListener('click', () => pickEngine('codex'));
+document.getElementById('engineClose').addEventListener('click', closeEngineModal);
+document.getElementById('engineOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'engineOverlay') closeEngineModal();
+});
 
 // ── + 新規プロジェクト → フォルダ選択モーダルを直接開く ──────────────────────
 const newProjTrigger = document.getElementById('newProjTrigger');
@@ -4036,6 +4151,8 @@ async function applyQuickSetting(patch) {
       body: JSON.stringify(patch),
     });
     if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || ('HTTP ' + r.status)); }
+    if ('codexModel' in patch) _curCodexModel = patch.codexModel || '';
+    if ('codexEffort' in patch) _curCodexEffort = patch.codexEffort || '';
     updateModelPill('model' in patch ? patch.model : _curModel,
                     'effort' in patch ? patch.effort : _curEffort);
   } catch (err) {
@@ -4057,16 +4174,24 @@ function openModelMenu() {
   gear.addEventListener('click', () => { hideModelMenu(); openSettingsModal(); });
   head.appendChild(title); head.appendChild(gear);
   el.appendChild(head);
-  // A custom (free-text) model not in the quick list still shows, checked, so
-  // the picker never hides the active choice.
-  const models = QUICK_MODELS.includes(_curModel) ? QUICK_MODELS : [_curModel, ...QUICK_MODELS];
+  const isCdx = _sessionEngine === 'codex';
+  if (isCdx) title.textContent = 'モデル (Codex)';
+  // Codex sessions only ever see Codex models and vice versa — the engine is
+  // fixed per session, so the other engine's list is never offered.
+  // (Claude: a custom free-text model not in the quick list still shows,
+  // checked, so the picker never hides the active choice.)
+  const curModel = isCdx ? _curCodexModel : _curModel;
+  const quick = isCdx ? CODEX_MODELS : QUICK_MODELS;
+  const labels = isCdx ? CODEX_MODEL_LABELS : MODEL_LABELS;
+  const models = quick.includes(curModel) ? quick : [curModel, ...quick];
   for (const v of models) {
     const b = document.createElement('button');
     b.className = 'mm-item';
     b.innerHTML = '<span></span><span class="chk"></span>';
-    b.firstChild.textContent = MODEL_LABELS[v] || v;
-    b.lastChild.textContent = v === _curModel ? '✓' : '';
-    b.addEventListener('click', () => applyQuickSetting({ model: v || null }));
+    b.firstChild.textContent = labels[v] || v;
+    b.lastChild.textContent = v === curModel ? '✓' : '';
+    b.addEventListener('click', () => applyQuickSetting(
+      isCdx ? { codexModel: v || null } : { model: v || null }));
     el.appendChild(b);
   }
   const eff = document.createElement('div');
@@ -4074,13 +4199,17 @@ function openModelMenu() {
   const lab = document.createElement('label');
   lab.textContent = '工数';
   const sel = document.createElement('select');
-  for (const [v, t] of [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']]) {
+  const effOpts = isCdx
+    ? [['', '既定'], ['minimal', '最小'], ['low', '低'], ['medium', '中'], ['high', '高']]
+    : [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']];
+  for (const [v, t] of effOpts) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
   }
-  sel.value = _curEffort;
-  sel.addEventListener('change', () => applyQuickSetting({ effort: sel.value || null }));
+  sel.value = isCdx ? _curCodexEffort : _curEffort;
+  sel.addEventListener('change', () => applyQuickSetting(
+    isCdx ? { codexEffort: sel.value || null } : { effort: sel.value || null }));
   eff.appendChild(lab); eff.appendChild(sel);
   el.appendChild(eff);
   el.hidden = false;
@@ -4111,6 +4240,10 @@ async function openSettingsModal() {
     _settingsDefault = data.autoCompactDefault || 167000;
     setModelControls(data.model || '');
     document.getElementById('effortSelect').value = data.effort || '';
+    document.getElementById('codexModelSelect').value = data.codexModel || '';
+    document.getElementById('codexEffortSelect').value = data.codexEffort || '';
+    _curCodexModel = data.codexModel || '';
+    _curCodexEffort = data.codexEffort || '';
     updateModelPill(data.model, data.effort);
     const inp = document.getElementById('autoCompactInput');
     const cb  = document.getElementById('autoCompactDisabled');
@@ -4155,6 +4288,8 @@ async function saveSettings() {
   const effortVal = document.getElementById('effortSelect').value;
   payload.model = modelVal || null;
   payload.effort = effortVal || null;
+  payload.codexModel = document.getElementById('codexModelSelect').value || null;
+  payload.codexEffort = document.getElementById('codexEffortSelect').value || null;
   try {
     const r = await fetch('/api/settings', {
       method: 'POST',
@@ -4168,6 +4303,8 @@ async function saveSettings() {
     // Refresh the cached threshold so the ctx-meter recomputes against the new value.
     if (payload.autoCompactThreshold === null) _autoCompactEffective = _settingsDefault;
     else _autoCompactEffective = payload.autoCompactThreshold;
+    _curCodexModel = payload.codexModel || '';
+    _curCodexEffort = payload.codexEffort || '';
     updateModelPill(payload.model, payload.effort);
     closeSettingsModal();
   } catch (err) {

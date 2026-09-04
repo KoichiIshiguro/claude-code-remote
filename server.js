@@ -680,12 +680,17 @@ app.post('/api/fs/copy', requireAuth, fsOpHandler(
 app.get('/api/settings', requireAuth, (req, res) => {
   const cfg = require('./src/auth').loadConfig();
   const sm = require('./src/session-manager');
+  const codex = require('./src/codex');
   res.json({
     autoCompactThreshold: typeof cfg.autoCompactThreshold === 'number' ? cfg.autoCompactThreshold : null,
     autoCompactDefault: sm.AUTO_COMPACT_DEFAULT,
     model: typeof cfg.model === 'string' ? cfg.model : null,
     effort: typeof cfg.effort === 'string' ? cfg.effort : null,
     effortLevels: sm.EFFORT_LEVELS,
+    codexModel: typeof cfg.codexModel === 'string' ? cfg.codexModel : null,
+    codexEffort: typeof cfg.codexEffort === 'string' ? cfg.codexEffort : null,
+    codexModels: codex.CODEX_MODELS,
+    codexEffortLevels: codex.CODEX_EFFORT_LEVELS,
   });
 });
 // Slash commands valid in the `-p` environment, captured from the latest
@@ -695,7 +700,8 @@ app.get('/api/slash-commands', requireAuth, (req, res) => {
 });
 app.post('/api/settings', requireAuth, (req, res) => {
   const sm = require('./src/session-manager');
-  const { autoCompactThreshold, model, effort } = req.body || {};
+  const codex = require('./src/codex');
+  const { autoCompactThreshold, model, effort, codexModel, codexEffort } = req.body || {};
   const patch = {};
   if (autoCompactThreshold === null) {
     patch.autoCompactThreshold = null;
@@ -722,6 +728,22 @@ app.post('/api/settings', requireAuth, (req, res) => {
     patch.effort = effort;
   } else if (effort !== undefined) {
     return res.status(400).json({ error: `effort must be one of ${sm.EFFORT_LEVELS.join(', ')} or null` });
+  }
+  // Codex model: dropdown-only in the UI, so the server enforces the known
+  // list too (null clears → codex config.toml default).
+  if (codexModel === null) {
+    patch.codexModel = null;
+  } else if (typeof codexModel === 'string' && codex.CODEX_MODELS.includes(codexModel)) {
+    patch.codexModel = codexModel;
+  } else if (codexModel !== undefined) {
+    return res.status(400).json({ error: `codexModel must be one of ${codex.CODEX_MODELS.join(', ')} or null` });
+  }
+  if (codexEffort === null) {
+    patch.codexEffort = null;
+  } else if (typeof codexEffort === 'string' && codex.CODEX_EFFORT_LEVELS.includes(codexEffort)) {
+    patch.codexEffort = codexEffort;
+  } else if (codexEffort !== undefined) {
+    return res.status(400).json({ error: `codexEffort must be one of ${codex.CODEX_EFFORT_LEVELS.join(', ')} or null` });
   }
   const { saveConfig } = require('./src/auth');
   saveConfig(patch);
