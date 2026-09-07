@@ -620,6 +620,10 @@
     padding: 3px 9px; cursor: pointer; line-height: 1.4; }
   .pill-btn:hover { color: var(--text); border-color: var(--accent); }
   .pill-btn:disabled { opacity: .4; cursor: default; }
+  /* 読み上げトグル: ON で強調、再生中は停止ボタンとして点滅 */
+  .pill-btn.tts-on { color: var(--accent); border-color: var(--accent); }
+  .pill-btn.tts-speaking { animation: tts-pulse 1.2s ease-in-out infinite; }
+  @keyframes tts-pulse { 50% { opacity: .45; } }
   /* Current git branch of the active session's directory — tap to switch. */
   .branch-pill { font-size: 11px; color: var(--text-muted); white-space: nowrap;
     background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -819,6 +823,7 @@
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
       <button class="sched-badge" id="schedBadge" title="予約送信">⏰ <span id="schedCount">0</span> 予約</button>
       <div id="schedList" hidden></div>
+      <button class="pill-btn" id="ttsBtn" title="読み上げ OFF (タップで ON)" aria-label="回答の読み上げ" aria-pressed="false">🔇</button>
       <button class="pill-btn" id="sessionPathBtn" title="現在のセッションファイルのパスをコピー" aria-label="セッションファイルのパスをコピー">⧉ path</button>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
     </div>
@@ -1434,6 +1439,7 @@ function handleMessage(msg) {
         : '削除対象（GUIに無い ccr-* セッション）はありませんでした');
       break;
     case 'history': {
+      ttsStop(); // 別セッションへ移っても前の回答を読み続けない
       const dir = msg.directory || '';
       curDirectory = dir;
       currentSessionPath = msg.sessionPath || '';
@@ -1555,6 +1561,7 @@ function handleMessage(msg) {
     }
     case 'stream_start': {
       isStreaming = true;
+      _ttsSpokeThisTurn = false; // 新しいターンの最初の文で前の読み上げを置き換える
       const isCompact = !!(msg.autoCompact || msg.compact);
       setStreamingUI(true, isCompact);
       if (isCompact) {
@@ -1922,7 +1929,7 @@ function handleStreamEvent(event) {
         updateCtxPill(total);
       }
       for (const blk of (event.message?.content || [])) {
-        if (blk.type === 'text') { appendStreamText(c, blk.text); }
+        if (blk.type === 'text') { appendStreamText(c, blk.text); ttsEnqueue(blk.text); }
         else if (blk.type === 'tool_use') {
           finalizeText();
           if (blk.name === 'AskUserQuestion') {
@@ -1953,7 +1960,7 @@ function handleStreamEvent(event) {
       if (typeof event.result === 'string') scanLimitReset(event.result);
       appendTurnCost(c, event);
       break;
-    case 'cancelled': finalizeText(); appendCancelled(); break;
+    case 'cancelled': finalizeText(); appendCancelled(); ttsStop(); break; // 止めたのに喋り続けない
   }
   scrollToBottom();
 }
@@ -4441,6 +4448,144 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 window.addEventListener('beforeunload', (ev) => {
   if (_fvDirty) { ev.preventDefault(); ev.returnValue = ''; }
 });
+
+// ── 読み上げ (TTS) ─────────────────────────────────────────────────────────
+// migiude と同じ方式: サーバー経由で VOICEVOX(ずんだもん)に合成させ、文の
+// 切れ目で分割したチャンクをキューで順に再生する。再生中に次のチャンクを
+// 先行合成して、文間で待たせない。エンジン未起動などの失敗は黙って飛ばし、
+// チャット本体を一切妨げない。
+const TTS_KEY = 'ccr_tts';
+let ttsOn = localStorage.getItem(TTS_KEY) === '1';
+let ttsSeq = 0;          // 世代。停止・置き換えで進めて古い再生ループを無効化
+let ttsQueue = [];
+let ttsPumping = false;
+let ttsAudio = null;
+let ttsSpeaking = false;
+let _ttsSpokeThisTurn = false; // このターンで読み始めたか(前の読み上げの置き換え用)
+
+// 読み上げ用にマークダウンを整える。コード・URL・記号は聞いても分からない。
+function toSpeechText(md) {
+  return String(md || '')
+    .replace(/```[\s\S]*?```/g, 'コードは省略。')
+    .replace(/^\|.*\|\s*$/gm, '') // 表は行ごと落とす
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, 'URL')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_~>]/g, '')
+    .replace(/^\s*[-+]\s+/gm, '')
+    .replace(/([。!?!?])\s*\n+\s*/g, '$1')
+    .replace(/[、,]?\s*\n+\s*/g, '。')
+    .replace(/^。+/, '')
+    .trim();
+}
+
+// 文の切れ目で分けて、1回の合成を短く保つ(最初の一声までの待ちを縮める)。
+function splitSpeech(text) {
+  const chunks = [];
+  let buf = '';
+  for (let part of text.split(/(?<=[。!?!?\n])/)) {
+    while (part) {
+      const room = 120 - buf.length;
+      if (part.length <= room) { buf += part; break; }
+      buf += part.slice(0, room);
+      chunks.push(buf); buf = '';
+      part = part.slice(room);
+    }
+  }
+  if (buf) chunks.push(buf);
+  return chunks.map(c => c.trim()).filter(Boolean);
+}
+
+// 1チャンクを合成。失敗は null(会話を妨げない)。
+function fetchWav(text) {
+  return fetch('/api/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ text }),
+  }).then(r => r.ok ? r.blob() : null).catch(() => null);
+}
+
+function ttsStop() {
+  ttsSeq++;
+  ttsQueue = [];
+  if (ttsAudio) ttsAudio.pause(); // onpause で再生待ちの Promise が解ける
+  ttsAudio = null;
+  ttsSpeaking = false;
+  updateTtsBtn();
+}
+
+// キューを順に合成→再生。再生中に次のチャンクの合成を裏で始めておく。
+async function ttsPump() {
+  if (ttsPumping) return;
+  ttsPumping = true;
+  const my = ttsSeq;
+  ttsSpeaking = true; updateTtsBtn();
+  try {
+    let next = null;
+    for (;;) {
+      if (next === null) {
+        const t = ttsQueue.shift();
+        if (t === undefined) break; // 直前の await から同期で来るので本当に読み終わり
+        next = fetchWav(t);
+      }
+      const blob = await next;
+      next = null;
+      if (ttsSeq !== my) return;
+      const t2 = ttsQueue.shift();
+      if (t2 !== undefined) next = fetchWav(t2);
+      if (!blob) continue;
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      ttsAudio = audio;
+      await new Promise((resolve) => {
+        audio.onended = resolve;
+        audio.onerror = resolve;
+        audio.onpause = resolve; // ttsStop の pause でも抜ける
+        audio.play().catch(resolve);
+      });
+      URL.revokeObjectURL(url);
+      if (ttsSeq !== my) return;
+    }
+  } finally {
+    ttsPumping = false;
+    if (ttsSeq === my) { ttsAudio = null; ttsSpeaking = false; updateTtsBtn(); }
+    // 停止(世代交代)の隙間に新世代のキューが積まれていたら再始動する。
+    // 旧ループの終了前に ttsEnqueue → ttsPump が空振りするレースの保険。
+    else if (ttsQueue.length) ttsPump();
+  }
+}
+
+// 回答テキストをキューへ足す。ターン最初の1回は前の読み上げを置き換える。
+function ttsEnqueue(raw) {
+  if (!ttsOn || compactNoteEl) return; // compact の要約は読まない
+  const chunks = splitSpeech(toSpeechText(raw));
+  if (!chunks.length) return;
+  if (!_ttsSpokeThisTurn) { ttsStop(); _ttsSpokeThisTurn = true; }
+  ttsQueue.push(...chunks);
+  ttsPump();
+}
+
+function updateTtsBtn() {
+  const b = document.getElementById('ttsBtn');
+  if (!b) return;
+  b.textContent = ttsSpeaking ? '⏹' : (ttsOn ? '🔊' : '🔇');
+  b.classList.toggle('tts-on', ttsOn);
+  b.classList.toggle('tts-speaking', ttsSpeaking);
+  b.setAttribute('aria-pressed', ttsOn ? 'true' : 'false');
+  b.title = ttsSpeaking ? '読み上げを停止'
+    : (ttsOn ? '読み上げ ON (タップで OFF)' : '読み上げ OFF (タップで ON)');
+}
+
+document.getElementById('ttsBtn').addEventListener('click', () => {
+  if (ttsSpeaking) { ttsStop(); return; } // 再生中のタップは停止(ON のまま)
+  ttsOn = !ttsOn;
+  localStorage.setItem(TTS_KEY, ttsOn ? '1' : '0');
+  if (!ttsOn) ttsStop(); else updateTtsBtn();
+});
+updateTtsBtn();
 
 // ── Mobile: drag/flick anywhere to open/close the sidebars ─────────────
 // Mirrors migiude's drawer interaction: wait until the gesture is clearly

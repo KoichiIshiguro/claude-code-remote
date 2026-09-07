@@ -750,6 +750,35 @@ app.post('/api/settings', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ── TTS: relay to a local VOICEVOX engine (same scheme as migiude) ──────────
+// The browser never talks to the engine directly; relaying keeps CORS and the
+// engine address server-side, so phones on the LAN can use it too. The chat
+// must never depend on the engine: any failure is a 503 the UI quietly skips.
+const VOICEVOX_URL = process.env.VOICEVOX_URL || 'http://127.0.0.1:50021';
+const VOICEVOX_SPEAKER = process.env.VOICEVOX_SPEAKER || '3'; // 3 = ずんだもん
+app.post('/api/tts', requireAuth, async (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!text) return res.status(400).json({ error: 'empty text' });
+  if (text.length > 500) return res.status(413).json({ error: 'text too long' });
+  try {
+    // VOICEVOX は2段構え: テキスト→抑揚などのクエリ→音声
+    const q = await fetch(`${VOICEVOX_URL}/audio_query?speaker=${VOICEVOX_SPEAKER}&text=${encodeURIComponent(text)}`,
+      { method: 'POST' });
+    if (!q.ok) throw new Error(`audio_query ${q.status}`);
+    const s = await fetch(`${VOICEVOX_URL}/synthesis?speaker=${VOICEVOX_SPEAKER}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(await q.json()),
+    });
+    if (!s.ok) throw new Error(`synthesis ${s.status}`);
+    res.set('Content-Type', 'audio/wav').set('Cache-Control', 'no-store');
+    res.send(Buffer.from(await s.arrayBuffer()));
+  } catch (e) {
+    console.error('[tts]', e.message);
+    res.status(503).json({ error: 'VOICEVOX エンジンに接続できません' });
+  }
+});
+
 // Page routes
 app.get('/', requireAuth, (req, res) => res.redirect('/terminal'));
 app.get('/terminal', requireAuth, (req, res) => {
