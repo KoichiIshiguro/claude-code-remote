@@ -140,6 +140,20 @@ function findDirectoryForSessionId(sessionId) {
   return null;
 }
 
+// Return the transcript file that the native CLI uses for this session.
+// Claude paths are deterministic from cwd + session id; Codex rollouts live
+// in a date tree, so its adapter locates the actual file on disk.
+function findSessionFilePath(sessionId) {
+  if (!sessionId) return null;
+  if (engineStore.engineOf(sessionId) === 'codex') {
+    return codex.findRolloutPath(sessionId);
+  }
+  const directory = findDirectoryForSessionId(sessionId);
+  if (!directory) return null;
+  const file = jsonlReader.jsonlPathFor(sessionId, directory);
+  return fs.existsSync(file) ? file : null;
+}
+
 function sessionToLegacyShape(s, projectPath) {
   return {
     id: s.sessionId,
@@ -516,6 +530,10 @@ async function runOneTurn(key, directory, prompt, imagePaths) {
     // Codex rows sort by registry lastActivity (no jsonl mtime to lean on).
     // touch() is a no-op for ids it doesn't know (e.g. an unresolved placeholder).
     if (isCodex) engineStore.touch(bk);
+    // A newly-created session did not have a transcript path when the client
+    // first attached. Once the turn has flushed the file, prime the client so
+    // its next copy tap can write synchronously within the user gesture.
+    broadcast(bk, { type: 'session_path', sessionId: bk, path: findSessionFilePath(bk) });
     broadcast(bk, { type: 'stream_end', sessionId: bk });
     if (isNewSession) {
       if (resolvedSessionId) {
@@ -637,6 +655,16 @@ function handleConnection(ws /*, req */) {
         } else {
           send(ws, { type: 'sessions_list', sessions: listAllSessionsLegacy() });
         }
+        break;
+      }
+
+      case 'get_session_path': {
+        const sid = msg.sessionId;
+        send(ws, {
+          type: 'session_path',
+          sessionId: sid || null,
+          path: findSessionFilePath(sid),
+        });
         break;
       }
 
@@ -764,6 +792,7 @@ function handleConnection(ws /*, req */) {
             directory: entry.directory,
             engine: entry.engine || 'claude',
             branch: gitInfo.currentBranch(entry.directory),
+            sessionPath: findSessionFilePath(sid),
             history: [],
             streaming: procTracker.isRunning(sid),
             liveTurn: liveTurnPayload(sid),
@@ -783,6 +812,7 @@ function handleConnection(ws /*, req */) {
             sessionId: sid,
             directory: '',
             engine: 'claude',
+            sessionPath: null,
             history: [],
             streaming: false,
             currentEntry: null,
@@ -804,6 +834,7 @@ function handleConnection(ws /*, req */) {
           directory,
           engine: sessEngine,
           branch: gitInfo.currentBranch(directory),
+          sessionPath: findSessionFilePath(sid),
           history,
           truncated,
           streaming: procTracker.isRunning(sid),

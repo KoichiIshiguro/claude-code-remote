@@ -64,11 +64,16 @@
     .side {
       position: fixed; top: 0; bottom: calc(52px + env(safe-area-inset-bottom, 0px));
       width: 100vw; max-width: none;
-      z-index: 300; transition: transform .25s ease;
+      z-index: 300; transition: transform .32s cubic-bezier(.22, 1, .36, 1);
+      will-change: transform;
     }
     .side-left  { left: 0;  transform: translateX(-100%); }
     .side-right { right: 0; transform: translateX(100%); width: 100vw; }
     .side.open  { transform: translateX(0) !important; }
+    /* Swipe drag: the gesture handler drives --drag-x inline; this must sit
+       after .side.open so it wins while the finger is down. */
+    .side.dragging { transition: none !important; transform: var(--drag-x) !important; }
+    @media (prefers-reduced-motion: reduce) { .side { transition: none; } }
     .side-resize-handle { display: none; }
     .backdrop { bottom: calc(52px + env(safe-area-inset-bottom, 0px)); }
   }
@@ -593,13 +598,13 @@
   .thread-queue:empty { display: none; }
   .thread-queue .queue-item { opacity: .9; }
   /* Two stacked rows above the composer: row 1 = run state (Stop / queued /
-     予約) on the left, compact on the right; row 2 = branch + model on the
+     予約) on the left, path + compact on the right; row 2 = branch + model on the
      left, context size on the right. */
   .status-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
   /* Even 8px vertical rhythm: top edge → row1 → row2 → textarea all match. */
   .status-bar-top { padding: 0 0 4px; }
   .status-bar-meta { padding: 4px 0 8px; }
-  .status-bar-top #compactBtn { margin-left: auto; }   /* compact → far right of row 1 */
+  .status-bar-top #sessionPathBtn { margin-left: auto; } /* path + compact → far right of row 1 */
   .status-bar-meta .ctx-meter { margin-left: auto; }    /* context → far right of row 2 */
   /* Inline "compacting…" note shown in the message stream while /compact runs. */
   .compact-note { align-self: center; max-width: 90%; margin: 8px auto; padding: 6px 14px;
@@ -814,6 +819,7 @@
       <div class="queue-badge" id="queueBadge">⏳ <span id="queueCount">0</span> queued</div>
       <button class="sched-badge" id="schedBadge" title="予約送信">⏰ <span id="schedCount">0</span> 予約</button>
       <div id="schedList" hidden></div>
+      <button class="pill-btn" id="sessionPathBtn" title="現在のセッションファイルのパスをコピー" aria-label="セッションファイルのパスをコピー">⧉ path</button>
       <button class="pill-btn" id="compactBtn" title="会話を要約して context を圧縮 (/compact)">⊟ compact</button>
     </div>
     <div class="status-bar status-bar-meta">
@@ -1121,6 +1127,7 @@
         <select id="codexModelSelect"
                 style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
           <option value="">既定 (CLI まかせ)</option>
+          <option value="gpt-6-astra">GPT-6 Astra</option>
           <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
           <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
         </select>
@@ -1130,10 +1137,11 @@
         <select id="codexEffortSelect"
                 style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
           <option value="">既定 (CLI まかせ)</option>
-          <option value="minimal">最小 (minimal)</option>
           <option value="low">低 (low)</option>
           <option value="medium">中 (medium)</option>
           <option value="high">高 (high)</option>
+          <option value="xhigh">超高 (xhigh)</option>
+          <option value="max">Max</option>
         </select>
       </div>
       <div class="perm-group">
@@ -1256,6 +1264,10 @@
 // leaving the id stuck on the dead placeholder → "directory could not be
 // determined" on the next prompt / reload.
 let sessionId = new URLSearchParams(location.search).get('session');
+// Preloaded with history so a copy tap can write immediately. On iOS/plain
+// HTTP, clipboard writes attempted after a WebSocket round-trip are rejected
+// because the browser no longer considers them part of the user gesture.
+let currentSessionPath = '';
 // Directory of the session currently on screen — needed by the branch picker
 // to scope list/switch requests, and to filter incoming `branch_changed`.
 let curDirectory = '';
@@ -1424,6 +1436,7 @@ function handleMessage(msg) {
     case 'history': {
       const dir = msg.directory || '';
       curDirectory = dir;
+      currentSessionPath = msg.sessionPath || '';
       _sessionEngine = msg.engine === 'codex' ? 'codex' : 'claude';
       refreshModelPill();
       document.getElementById('dirLabel').textContent = dir || sessionId;
@@ -1514,6 +1527,12 @@ function handleMessage(msg) {
       fbTab = 'sandbox';
       if (dir) fbEnsureMeta().then(() => loadDir(dir));
       scrollToBottomNow();
+      break;
+    }
+    case 'session_path': {
+      // Ignore a late reply after navigating to another session.
+      if (msg.sessionId !== sessionId) break;
+      currentSessionPath = msg.path || '';
       break;
     }
     case 'branch_list': {
@@ -1776,9 +1795,12 @@ const MODEL_LABELS = {
 };
 const EFFORT_LABELS = { low: '低', medium: '中', high: '高', xhigh: '超高', max: 'Max' };
 // Codex counterparts. Dropdown-only by design — no free-text model input.
-const CODEX_MODELS = ['', 'gpt-5.6-sol', 'gpt-5.6-luna'];
-const CODEX_MODEL_LABELS = { '': '既定', 'gpt-5.6-sol': 'GPT-5.6 Sol', 'gpt-5.6-luna': 'GPT-5.6 Luna' };
-const CODEX_EFFORT_LABELS = { minimal: '最小', low: '低', medium: '中', high: '高' };
+const CODEX_MODELS = ['', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
+const CODEX_MODEL_LABELS = {
+  '': '既定', 'gpt-6-astra': 'GPT-6 Astra',
+  'gpt-5.6-sol': 'GPT-5.6 Sol', 'gpt-5.6-luna': 'GPT-5.6 Luna',
+};
+const CODEX_EFFORT_LABELS = { low: '低', medium: '中', high: '高', xhigh: '超高', max: 'Max' };
 // Engine of the session currently open in the main pane. Drives which model
 // list the pill/menu shows; set from the `history` payload on every attach.
 let _sessionEngine = 'claude';
@@ -2284,6 +2306,29 @@ document.getElementById('compactBtn').addEventListener('click', () => {
   if (now - _compactSentAt < 3000) return;
   _compactSentAt = now;
   dispatchPrompt('/compact', []);
+});
+
+function flashSessionPathButton(label, duration = 1400) {
+  const btn = document.getElementById('sessionPathBtn');
+  if (!btn) return;
+  btn.textContent = label;
+  clearTimeout(btn._flashTimer);
+  btn._flashTimer = setTimeout(() => { btn.textContent = '⧉ path'; }, duration);
+}
+
+document.getElementById('sessionPathBtn').addEventListener('click', () => {
+  if (!sessionId) return;
+  if (!currentSessionPath) {
+    flashSessionPathButton('未作成');
+    wsSend({ type: 'get_session_path', sessionId });
+    return;
+  }
+  // Start clipboard access directly in the click handler. In particular, do
+  // not put a WebSocket/fetch await before this call: iOS then drops the user
+  // activation and rejects both Clipboard API and execCommand fallback.
+  clipboardWrite(currentSessionPath).then(ok => {
+    flashSessionPathButton(ok ? '✓ copied' : 'コピー失敗');
+  });
 });
 
 function renderQueue() {
@@ -4222,7 +4267,7 @@ function openModelMenu() {
   lab.textContent = '工数';
   const sel = document.createElement('select');
   const effOpts = isCdx
-    ? [['', '既定'], ['minimal', '最小'], ['low', '低'], ['medium', '中'], ['high', '高']]
+    ? [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']]
     : [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']];
   for (const [v, t] of effOpts) {
     const o = document.createElement('option');
@@ -4397,65 +4442,152 @@ window.addEventListener('beforeunload', (ev) => {
   if (_fvDirty) { ev.preventDefault(); ev.returnValue = ''; }
 });
 
-// ── Mobile: swipe on the bottom-nav to open/close left & right sidebars ───
-// Edge-swipe used to fight the browser's back gesture on iOS; we gave up
-// on that battle and moved the swipe surface entirely onto the bottom-nav
-// bar (Projects / Chat / Files). Treat it like tab-switching:
-//   swipe-right on nav → open sideL (Projects) ; if sideR open, close sideR
-//   swipe-left  on nav → open sideR (Files)    ; if sideL open, close sideL
-// Vertical-dominant gestures are ignored. If a swipe fires, we also swallow
-// the trailing synthetic click so the underlying nav button doesn't toggle.
+// ── Mobile: drag/flick anywhere to open/close the sidebars ─────────────
+// Mirrors migiude's drawer interaction: wait until the gesture is clearly
+// horizontal, follow the finger 1:1, then use both position and release
+// velocity to choose the destination. Vertical scrolling keeps priority.
 (function setupSwipe() {
-  const MIN_DX = 50, MAX_DY_RATIO = 0.6, MAX_T = 500;
-  let sx = 0, sy = 0, st = 0, tracking = false;
+  const HYSTERESIS = 12, FLICK_VX = 200;
+  let drag = null;
+  let settleTimer = null;
+  let clickSuppressTimer = null;
   let swipeJustFired = false;
 
-  function nav() { return document.getElementById('bottomNav'); }
-  function inNav(target) { const n = nav(); return n && n.contains(target); }
+  function clearSettling() {
+    if (settleTimer !== null) clearTimeout(settleTimer);
+    settleTimer = null;
+    for (const id of ['sideL', 'sideR']) {
+      const side = document.getElementById(id);
+      side.style.transition = '';
+      side.style.transform = '';
+      side.style.removeProperty('--drag-x');
+      side.classList.remove('dragging');
+    }
+    backdrop.style.transition = '';
+    backdrop.style.opacity = '';
+    backdrop.style.pointerEvents = '';
+    const anyOpen = document.querySelector('.side.open');
+    if (!anyOpen) backdrop.classList.remove('on');
+  }
+
+  function setDrawerX(d, x) {
+    const side = document.getElementById(d.id);
+    const openness = d.id === 'sideL' ? 1 + x / d.width : 1 - x / d.width;
+    side.classList.add('dragging');
+    side.style.setProperty('--drag-x', `translateX(${x}px)`);
+    backdrop.classList.add('on');
+    backdrop.style.transition = 'none';
+    backdrop.style.opacity = String(Math.max(0, Math.min(1, openness)));
+    backdrop.style.pointerEvents = openness > 0 ? 'auto' : 'none';
+  }
+
+  function settleDrawer(d, open) {
+    const side = document.getElementById(d.id);
+    const otherId = d.id === 'sideL' ? 'sideR' : 'sideL';
+    const otherOpen = document.getElementById(otherId).classList.contains('open');
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const targetX = open ? 0 : (d.id === 'sideL' ? -d.width : d.width);
+
+    side.classList.remove('dragging');
+    side.style.removeProperty('--drag-x');
+    side.style.transition = reduce ? 'none' : 'transform 320ms cubic-bezier(.22, 1, .36, 1)';
+    side.style.transform = `translateX(${targetX}px)`;
+    side.classList.toggle('open', open);
+    localStorage.setItem(d.id + '-open', open ? '1' : '0');
+
+    backdrop.classList.add('on');
+    backdrop.style.transition = reduce ? 'none' : 'opacity 320ms ease';
+    backdrop.style.opacity = open || otherOpen ? '1' : '0';
+    backdrop.style.pointerEvents = open || otherOpen ? 'auto' : 'none';
+
+    if (open) setActiveNav(d.id === 'sideL' ? 'bnavProj' : 'bnavFiles');
+    else if (otherOpen) setActiveNav(otherId === 'sideL' ? 'bnavProj' : 'bnavFiles');
+    else setActiveNav('bnavChat');
+
+    settleTimer = setTimeout(clearSettling, reduce ? 0 : 340);
+  }
 
   function onStart(e) {
     if (!isMobile()) return;
     if (e.touches.length !== 1) return;
-    if (!inNav(e.target)) return;
+    if (e.target.closest && e.target.closest('.modal-overlay.on')) return;
+    clearSettling();
     const t = e.touches[0];
-    tracking = true; sx = t.clientX; sy = t.clientY; st = Date.now();
+    drag = {
+      startX: t.clientX, startY: t.clientY,
+      lastX: t.clientX, lastT: e.timeStamp,
+      vx: 0, x: 0, id: null, mode: null, width: 0, active: true,
+      blocksOpening: !!(e.target.closest && e.target.closest('pre, table')),
+    };
   }
-  function onEnd(e) {
-    if (!tracking) return;
-    tracking = false;
-    const t = (e.changedTouches && e.changedTouches[0]) || null;
-    if (!t) return;
-    const dx = t.clientX - sx;
-    const dy = Math.abs(t.clientY - sy);
-    const dt = Date.now() - st;
-    if (dt > MAX_T) return;
-    if (Math.abs(dx) < MIN_DX) return;
-    if (dy / Math.max(1, Math.abs(dx)) > MAX_DY_RATIO) return; // vertical scroll
 
-    const sideL = document.getElementById('sideL').classList.contains('open');
-    const sideR = document.getElementById('sideR').classList.contains('open');
-    let acted = false;
-    if (dx > 0) {
-      // swipe-right: prefer closing right pane if open, else open left
-      if (sideR) { closeSide('sideR'); acted = true; }
-      else if (!sideL) { openSide('sideL'); acted = true; }
-    } else {
-      // swipe-left: prefer closing left pane if open, else open right
-      if (sideL) { closeSide('sideL'); acted = true; }
-      else if (!sideR) { openSide('sideR'); acted = true; }
+  function onMove(e) {
+    const d = drag;
+    if (!d?.active || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const dx = t.clientX - d.startX;
+    const dy = t.clientY - d.startY;
+
+    if (!d.mode) {
+      if (Math.abs(dx) < HYSTERESIS && Math.abs(dy) < HYSTERESIS) return;
+      if (Math.abs(dy) > Math.abs(dx)) { d.active = false; return; }
+
+      const leftOpen = document.getElementById('sideL').classList.contains('open');
+      const rightOpen = document.getElementById('sideR').classList.contains('open');
+      if (dx > 0 && rightOpen) { d.id = 'sideR'; d.mode = 'close'; }
+      else if (dx < 0 && leftOpen) { d.id = 'sideL'; d.mode = 'close'; }
+      else if (dx > 0 && !leftOpen && !rightOpen && !d.blocksOpening) { d.id = 'sideL'; d.mode = 'open'; }
+      else if (dx < 0 && !leftOpen && !rightOpen && !d.blocksOpening) { d.id = 'sideR'; d.mode = 'open'; }
+      else { d.active = false; return; }
+
+      const side = document.getElementById(d.id);
+      d.width = side.offsetWidth || window.innerWidth;
+      d.x = d.mode === 'open'
+        ? (d.id === 'sideL' ? -d.width : d.width)
+        : 0;
     }
-    if (acted) {
-      swipeJustFired = true;
-      setTimeout(() => { swipeJustFired = false; }, 350);
+
+    if (e.cancelable) e.preventDefault();
+    const dt = e.timeStamp - d.lastT;
+    if (dt > 0) {
+      const instantVx = ((t.clientX - d.lastX) / dt) * 1000;
+      d.vx = d.vx * 0.2 + instantVx * 0.8;
     }
+    d.lastX = t.clientX;
+    d.lastT = e.timeStamp;
+
+    const base = d.mode === 'open'
+      ? (d.id === 'sideL' ? -d.width : d.width)
+      : 0;
+    d.x = Math.max(-d.width, Math.min(d.width, base + dx));
+    if (d.id === 'sideL') d.x = Math.min(0, d.x);
+    else d.x = Math.max(0, d.x);
+    setDrawerX(d, d.x);
   }
+
+  function onEnd(cancelled) {
+    const d = drag;
+    drag = null;
+    if (!d?.active || !d.mode) return;
+    const projected = d.x + ((d.vx / 1000) * 0.998) / (1 - 0.998);
+    let open;
+    if (cancelled) open = d.mode === 'close';
+    else if (Math.abs(d.vx) > FLICK_VX) open = d.id === 'sideL' ? d.vx > 0 : d.vx < 0;
+    else open = d.id === 'sideL' ? projected > -d.width / 2 : projected < d.width / 2;
+    settleDrawer(d, open);
+    swipeJustFired = true;
+    if (clickSuppressTimer !== null) clearTimeout(clickSuppressTimer);
+    clickSuppressTimer = setTimeout(() => { swipeJustFired = false; }, 350);
+  }
+
   document.addEventListener('touchstart', onStart, { passive: true });
-  document.addEventListener('touchend', onEnd, { passive: true });
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', () => onEnd(false), { passive: true });
+  document.addEventListener('touchcancel', () => onEnd(true), { passive: true });
 
-  // Swallow the synthetic click that follows the swipe so the nav button
-  // under the finger doesn't also toggle (Projects/Chat/Files).
+  // Swallow the synthetic click following a drag, wherever it started.
   document.addEventListener('click', (e) => {
-    if (swipeJustFired && inNav(e.target)) {
+    if (swipeJustFired) {
       e.stopPropagation();
       e.preventDefault();
     }
@@ -4648,16 +4780,17 @@ async function clipboardWrite(text) {
       return true;
     }
   } catch {}
+  let ta = null;
   try {
-    const ta = document.createElement('textarea');
+    ta = document.createElement('textarea');
     ta.value = text;
-    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;font-size:16px;';
     document.body.appendChild(ta);
-    ta.focus(); ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
+    ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    return document.execCommand('copy');
   } catch { return false; }
+  finally { if (ta?.parentNode) ta.parentNode.removeChild(ta); }
 }
 
 function flashShellKey(btn, label) {

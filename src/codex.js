@@ -24,11 +24,11 @@ const os = require('os');
 const path = require('path');
 const procTracker = require('./proc-tracker');
 
-// Models usable on this machine's ChatGPT-authed codex (probed 2026-09: other
-// published ids are rejected with invalid_request_error for this account type).
-const CODEX_MODELS = ['gpt-5.6-sol', 'gpt-5.6-luna'];
+// Models exposed by the web UI. Availability still depends on the account
+// connected to Codex; the CLI reports a clear error while a rollout is pending.
+const CODEX_MODELS = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
 // model_reasoning_effort values codex accepts.
-const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high'];
+const CODEX_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 
@@ -330,4 +330,7 @@ function codexPreview(sessionId, maxLen = 120) {
   return u ? u.text.slice(0, maxLen) : '';
 }
 
-module.exports = { runPrompt, readCodexHistory, codexPreview, CODEX_MODELS, CODEX_EFFORT_LEVELS };
+module.exports = {
+  runPrompt, readCodexHistory, codexPreview, findRolloutPath,
+  CODEX_MODELS, CODEX_EFFORT_LEVELS,
+};
