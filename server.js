@@ -806,7 +806,7 @@ app.get('/login', (req, res) => {
 });
 
 // Upgrade HTTP → WebSocket
-server.on('upgrade', (req, socket, head) => {
+function onUpgrade(req, socket, head) {
   authenticateUpgrade(req, (authenticated) => {
     if (!authenticated) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -817,11 +817,36 @@ server.on('upgrade', (req, socket, head) => {
       wss.emit('connection', ws, req);
     });
   });
-});
+}
+server.on('upgrade', onUpgrade);
 
 wss.on('connection', handleConnection);
 
 const PORT = process.env.PORT || 4000;
+// Boot-order race with `tailscale serve`: it TLS-terminates the SAME port on
+// the tailscale IP (ts-IP:4000 → proxy 127.0.0.1:4000). If node starts first,
+// both coexist; if tailscale binds first (typical right after a reboot), our
+// wildcard listen dies with EADDRINUSE and launchd's KeepAlive respawn loops
+// forever. In that case fall back to per-address binds that skip the ts-IP —
+// serve's proxy reaches us via loopback, LAN keeps its direct address.
+server.once('error', (err) => {
+  if (err.code !== 'EADDRINUSE') throw err;
+  console.error(`[listen] wildcard :${PORT} in use (tailscale serve bound first) — per-address fallback`);
+  const isTsIp = (ip) => { const m = /^(\d+)\.(\d+)\./.exec(ip); return !!m && +m[1] === 100 && +m[2] >= 64 && +m[2] <= 127; };
+  const hosts = new Set(['127.0.0.1']);
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list || []) {
+      if (ni.family === 'IPv4' && !ni.internal && !isTsIp(ni.address)) hosts.add(ni.address);
+    }
+  }
+  for (const host of hosts) {
+    const s = http.createServer(app);
+    s.on('upgrade', onUpgrade);
+    // A dead LAN address must not take the whole server down with it.
+    s.on('error', (e) => console.error(`[listen] ${host}:${PORT} failed:`, e.message));
+    s.listen(PORT, host, () => console.log(`Claude Code Remote running at http://${host}:${PORT}`));
+  }
+});
 server.listen(PORT, () => {
   console.log(`Claude Code Remote running at http://localhost:${PORT}`);
 });
