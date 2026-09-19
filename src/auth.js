@@ -10,6 +10,9 @@ const FileSessionStore = require('./session-store');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
+// Additional login accounts (the admin lives in admin.json). Same shape per
+// row: { username, passwordHash }. Added with `node scripts/add-user.js`.
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'auth-sessions.json');
 
@@ -62,6 +65,34 @@ function saveAdmin(username, password) {
   writeJson(ADMIN_FILE, { username, passwordHash });
 }
 
+function loadUsers() {
+  const list = readJson(USERS_FILE);
+  return Array.isArray(list) ? list : [];
+}
+
+// Admin first, then extra accounts. Returns null when nobody matches.
+function findAccount(username) {
+  const admin = loadAdmin();
+  if (admin && admin.username === username) return admin;
+  return loadUsers().find(u => u.username === username) || null;
+}
+
+function addUser(username, password) {
+  if (!username || !password) throw new Error('username and password required');
+  if (findAccount(username)) throw new Error(`user "${username}" already exists`);
+  const users = loadUsers();
+  users.push({ username, passwordHash: bcrypt.hashSync(password, 10) });
+  writeJson(USERS_FILE, users);
+}
+
+function removeUser(username) {
+  const users = loadUsers();
+  const next = users.filter(u => u.username !== username);
+  if (next.length === users.length) return false;
+  writeJson(USERS_FILE, next);
+  return true;
+}
+
 function isSetupComplete() {
   return !!loadAdmin();
 }
@@ -101,11 +132,12 @@ function setupAuth(app) {
     if (!admin) {
       return res.status(503).json({ error: 'Server not set up. Visit /setup first.' });
     }
-    if (admin.username !== username || !bcrypt.compareSync(password, admin.passwordHash)) {
+    const account = findAccount(username);
+    if (!account || !bcrypt.compareSync(password, account.passwordHash)) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    req.session.user = { username: admin.username };
-    res.json({ ok: true, username: admin.username });
+    req.session.user = { username: account.username };
+    res.json({ ok: true, username: account.username });
   });
 
   app.post('/auth/logout', (req, res) => {
@@ -146,6 +178,9 @@ module.exports = {
   loadConfig,
   saveConfig,
   resetAdmin,
+  loadUsers,
+  addUser,
+  removeUser,
   ADMIN_FILE,
   DATA_DIR,
 };
