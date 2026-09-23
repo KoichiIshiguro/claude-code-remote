@@ -1782,6 +1782,10 @@ let _autoCompactEffective = null;
     else _autoCompactEffective = data.autoCompactDefault || 167_000;
     _curCodexModel = data.codexModel || '';
     _curCodexEffort = data.codexEffort || '';
+    // Populate the Codex model list at load, not just when the settings modal
+    // opens — otherwise the pill's quick picker on a Codex session offers
+    // nothing but 既定 until you've been into 詳細設定 once.
+    setCodexCatalog(data.codexCatalog);
     updateModelPill(data.model, data.effort);
   } catch { /* leave null, falls back inside updateCtx */ }
 })();

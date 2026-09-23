@@ -18,7 +18,7 @@
 // profile gets. All knobs go through `-c key=value` config overrides because
 // those are accepted by both `exec` and `exec resume` (unlike -C / -s).
 
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -30,8 +30,11 @@ const procTracker = require('./proc-tracker');
 // so cache it and fall back to the last known list if the CLI is unavailable.
 const CODEX_MODELS_FALLBACK = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
 const CODEX_EFFORTS_FALLBACK = ['low', 'medium', 'high', 'xhigh', 'max'];
-const CATALOG_TTL_MS = 10 * 60 * 1000;
-let _catalog = null, _catalogAt = 0;
+// Soft TTL: a stale read is served immediately and triggers a background
+// refresh, so a codex self-update (which is when new models usually appear)
+// shows up within a minute without ever costing a request the ~400ms exec.
+const CATALOG_TTL_MS = 60 * 1000;
+let _catalog = null, _catalogAt = 0, _refreshing = false;
 
 function fallbackCatalog() {
   return {
@@ -44,31 +47,59 @@ function fallbackCatalog() {
 // Catalog of models this codex install actually offers, newest/most-capable
 // first (the CLI's own `priority`). `visibility: 'hide'` entries are internal
 // (gpt-reserve, codex-auto-review) and never shown.
+function parseCatalog(raw) {
+  const rows = (JSON.parse(raw).models || [])
+    .filter(m => m && m.slug && m.visibility === 'list')
+    .sort((a, b) => (a.priority ?? 1e9) - (b.priority ?? 1e9))
+    .map(m => ({
+      slug: m.slug,
+      label: m.display_name || m.slug,
+      efforts: (m.supported_reasoning_levels || []).map(e => e.effort).filter(Boolean),
+      defaultEffort: m.default_reasoning_level || null,
+    }));
+  if (!rows.length) throw new Error('empty catalog');
+  // Union across models: the settings dropdown is model-agnostic, and a
+  // per-model effort that the chosen model rejects is the CLI's call.
+  const efforts = [];
+  for (const m of rows) for (const e of m.efforts) if (!efforts.includes(e)) efforts.push(e);
+  return { models: rows, efforts, stale: false };
+}
+
+const CATALOG_EXEC_OPTS = {
+  encoding: 'utf8', timeout: 15000, maxBuffer: 32 * 1024 * 1024,
+  stdio: ['ignore', 'pipe', 'ignore'],
+};
+
+function refreshCatalogAsync() {
+  if (_refreshing) return;
+  _refreshing = true;
+  execFile('codex', ['debug', 'models'], CATALOG_EXEC_OPTS, (err, stdout) => {
+    _refreshing = false;
+    _catalogAt = Date.now();
+    try {
+      if (err) throw err;
+      _catalog = parseCatalog(stdout);
+    } catch (e) {
+      // Keep serving the last good list, but say so: a silently-old catalog
+      // is what made a new model look unavailable before.
+      if (_catalog) _catalog = { ..._catalog, stale: true };
+      console.error('[codex] model catalog refresh failed:', e.message);
+    }
+  });
+}
+
 function modelCatalog({ force = false } = {}) {
-  if (!force && _catalog && Date.now() - _catalogAt < CATALOG_TTL_MS) return _catalog;
+  const fresh = _catalog && Date.now() - _catalogAt < CATALOG_TTL_MS;
+  if (!force && fresh) return _catalog;
+  // Warm cache past its TTL: answer now, refresh behind the request.
+  if (!force && _catalog) { refreshCatalogAsync(); return _catalog; }
   try {
-    const raw = execFileSync('codex', ['debug', 'models'], {
-      encoding: 'utf8', timeout: 15000, maxBuffer: 32 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const rows = (JSON.parse(raw).models || [])
-      .filter(m => m && m.slug && m.visibility === 'list')
-      .sort((a, b) => (a.priority ?? 1e9) - (b.priority ?? 1e9))
-      .map(m => ({
-        slug: m.slug,
-        label: m.display_name || m.slug,
-        efforts: (m.supported_reasoning_levels || []).map(e => e.effort).filter(Boolean),
-        defaultEffort: m.default_reasoning_level || null,
-      }));
-    if (!rows.length) throw new Error('empty catalog');
-    // Union across models: the settings dropdown is model-agnostic, and a
-    // per-model effort that the chosen model rejects is the CLI's call.
-    const efforts = [];
-    for (const m of rows) for (const e of m.efforts) if (!efforts.includes(e)) efforts.push(e);
-    _catalog = { models: rows, efforts, stale: false };
+    _catalog = parseCatalog(execFileSync('codex', ['debug', 'models'], CATALOG_EXEC_OPTS));
   } catch (e) {
     // codex missing / not logged in / output shape changed: keep the UI usable.
     if (!_catalog) _catalog = fallbackCatalog();
+    else _catalog = { ..._catalog, stale: true };
+    console.error('[codex] model catalog read failed:', e.message);
   }
   _catalogAt = Date.now();
   return _catalog;
