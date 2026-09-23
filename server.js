@@ -689,8 +689,9 @@ app.get('/api/settings', requireAuth, (req, res) => {
     effortLevels: sm.EFFORT_LEVELS,
     codexModel: typeof cfg.codexModel === 'string' ? cfg.codexModel : null,
     codexEffort: typeof cfg.codexEffort === 'string' ? cfg.codexEffort : null,
-    codexModels: codex.CODEX_MODELS,
-    codexEffortLevels: codex.CODEX_EFFORT_LEVELS,
+    // Read live from the codex CLI so a newly-rolled-out model shows up
+    // without a redeploy. `stale` means the CLI could not be read.
+    codexCatalog: codex.modelCatalog(),
   });
 });
 // Slash commands valid in the `-p` environment, captured from the latest
@@ -733,17 +734,17 @@ app.post('/api/settings', requireAuth, (req, res) => {
   // list too (null clears → codex config.toml default).
   if (codexModel === null) {
     patch.codexModel = null;
-  } else if (typeof codexModel === 'string' && codex.CODEX_MODELS.includes(codexModel)) {
+  } else if (typeof codexModel === 'string' && codex.codexModelSlugs().includes(codexModel)) {
     patch.codexModel = codexModel;
   } else if (codexModel !== undefined) {
-    return res.status(400).json({ error: `codexModel must be one of ${codex.CODEX_MODELS.join(', ')} or null` });
+    return res.status(400).json({ error: `codexModel must be one of ${codex.codexModelSlugs().join(', ')} or null` });
   }
   if (codexEffort === null) {
     patch.codexEffort = null;
-  } else if (typeof codexEffort === 'string' && codex.CODEX_EFFORT_LEVELS.includes(codexEffort)) {
+  } else if (typeof codexEffort === 'string' && codex.codexEffortLevels().includes(codexEffort)) {
     patch.codexEffort = codexEffort;
   } else if (codexEffort !== undefined) {
-    return res.status(400).json({ error: `codexEffort must be one of ${codex.CODEX_EFFORT_LEVELS.join(', ')} or null` });
+    return res.status(400).json({ error: `codexEffort must be one of ${codex.codexEffortLevels().join(', ')} or null` });
   }
   const { saveConfig } = require('./src/auth');
   saveConfig(patch);

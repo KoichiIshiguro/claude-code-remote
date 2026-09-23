@@ -18,17 +18,65 @@
 // profile gets. All knobs go through `-c key=value` config overrides because
 // those are accepted by both `exec` and `exec resume` (unlike -C / -s).
 
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const procTracker = require('./proc-tracker');
 
-// Models exposed by the web UI. Availability still depends on the account
-// connected to Codex; the CLI reports a clear error while a rollout is pending.
-const CODEX_MODELS = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
-// model_reasoning_effort values codex accepts.
-const CODEX_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
+// `codex debug models` renders the CLI's own model catalog as JSON, so the UI
+// can follow account rollouts without this file being edited each time. It is
+// a local, sub-second call, but the catalog only changes when codex updates —
+// so cache it and fall back to the last known list if the CLI is unavailable.
+const CODEX_MODELS_FALLBACK = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
+const CODEX_EFFORTS_FALLBACK = ['low', 'medium', 'high', 'xhigh', 'max'];
+const CATALOG_TTL_MS = 10 * 60 * 1000;
+let _catalog = null, _catalogAt = 0;
+
+function fallbackCatalog() {
+  return {
+    models: CODEX_MODELS_FALLBACK.map(slug => ({ slug, label: slug, efforts: CODEX_EFFORTS_FALLBACK, defaultEffort: null })),
+    efforts: CODEX_EFFORTS_FALLBACK,
+    stale: true,
+  };
+}
+
+// Catalog of models this codex install actually offers, newest/most-capable
+// first (the CLI's own `priority`). `visibility: 'hide'` entries are internal
+// (gpt-reserve, codex-auto-review) and never shown.
+function modelCatalog({ force = false } = {}) {
+  if (!force && _catalog && Date.now() - _catalogAt < CATALOG_TTL_MS) return _catalog;
+  try {
+    const raw = execFileSync('codex', ['debug', 'models'], {
+      encoding: 'utf8', timeout: 15000, maxBuffer: 32 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const rows = (JSON.parse(raw).models || [])
+      .filter(m => m && m.slug && m.visibility === 'list')
+      .sort((a, b) => (a.priority ?? 1e9) - (b.priority ?? 1e9))
+      .map(m => ({
+        slug: m.slug,
+        label: m.display_name || m.slug,
+        efforts: (m.supported_reasoning_levels || []).map(e => e.effort).filter(Boolean),
+        defaultEffort: m.default_reasoning_level || null,
+      }));
+    if (!rows.length) throw new Error('empty catalog');
+    // Union across models: the settings dropdown is model-agnostic, and a
+    // per-model effort that the chosen model rejects is the CLI's call.
+    const efforts = [];
+    for (const m of rows) for (const e of m.efforts) if (!efforts.includes(e)) efforts.push(e);
+    _catalog = { models: rows, efforts, stale: false };
+  } catch (e) {
+    // codex missing / not logged in / output shape changed: keep the UI usable.
+    if (!_catalog) _catalog = fallbackCatalog();
+  }
+  _catalogAt = Date.now();
+  return _catalog;
+}
+
+// Accepted values for server-side validation of the settings POST.
+function codexModelSlugs() { return modelCatalog().models.map(m => m.slug); }
+function codexEffortLevels() { return modelCatalog().efforts; }
 
 const CODEX_SESSIONS_DIR = path.join(os.homedir(), '.codex', 'sessions');
 
@@ -148,7 +196,7 @@ async function* runPrompt({ directory, prompt, imagePaths = [], resumeSessionId 
     '-c', 'approval_policy="never"',
   );
   if (model && typeof model === 'string') args.push('-c', `model=${tomlStr(model)}`);
-  if (effort && CODEX_EFFORT_LEVELS.includes(effort)) args.push('-c', `model_reasoning_effort=${tomlStr(effort)}`);
+  if (effort && codexEffortLevels().includes(effort)) args.push('-c', `model_reasoning_effort=${tomlStr(effort)}`);
 
   const codexBin = process.env.CODEX_PATH || 'codex';
   // stdin MUST be closed: codex appends piped stdin to the prompt and waits
@@ -332,5 +380,5 @@ function codexPreview(sessionId, maxLen = 120) {
 
 module.exports = {
   runPrompt, readCodexHistory, codexPreview, findRolloutPath,
-  CODEX_MODELS, CODEX_EFFORT_LEVELS,
+  modelCatalog, codexModelSlugs, codexEffortLevels,
 };

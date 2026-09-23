@@ -1128,13 +1128,11 @@
         <div class="perm-group-title">Codex モデル</div>
         <p style="font-size:12px; color:var(--text-muted); line-height:1.6; margin-bottom:8px;">
           Codex セッションで使うモデル。「既定」のままなら Codex CLI の設定 (config.toml) に従います。
+          一覧は Codex CLI が持つモデルカタログから取得するので、使えるモデルが増えれば自動で現れます。
         </p>
         <select id="codexModelSelect"
                 style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
           <option value="">既定 (CLI まかせ)</option>
-          <option value="gpt-6-astra">GPT-6 Astra</option>
-          <option value="gpt-5.6-sol">GPT-5.6 Sol</option>
-          <option value="gpt-5.6-luna">GPT-5.6 Luna</option>
         </select>
       </div>
       <div class="perm-group">
@@ -1142,11 +1140,6 @@
         <select id="codexEffortSelect"
                 style="width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:8px 10px; color:var(--text); font-size:13px;">
           <option value="">既定 (CLI まかせ)</option>
-          <option value="low">低 (low)</option>
-          <option value="medium">中 (medium)</option>
-          <option value="high">高 (high)</option>
-          <option value="xhigh">超高 (xhigh)</option>
-          <option value="max">Max</option>
         </select>
       </div>
       <div class="perm-group">
@@ -1802,12 +1795,42 @@ const MODEL_LABELS = {
 };
 const EFFORT_LABELS = { low: '低', medium: '中', high: '高', xhigh: '超高', max: 'Max' };
 // Codex counterparts. Dropdown-only by design — no free-text model input.
-const CODEX_MODELS = ['', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna'];
-const CODEX_MODEL_LABELS = {
-  '': '既定', 'gpt-6-astra': 'GPT-6 Astra',
-  'gpt-5.6-sol': 'GPT-5.6 Sol', 'gpt-5.6-luna': 'GPT-5.6 Luna',
-};
-const CODEX_EFFORT_LABELS = { low: '低', medium: '中', high: '高', xhigh: '超高', max: 'Max' };
+// The list is not hardcoded: the server reads it from `codex debug models`,
+// so an account gaining a new model needs no redeploy. Until /api/settings
+// answers (first paint, or the CLI being unreadable) this stays empty and the
+// pill just shows the saved slug.
+let _codexCatalog = { models: [], efforts: [], stale: true };
+const CODEX_EFFORT_LABELS = { low: '低', medium: '中', high: '高', xhigh: '超高', max: 'Max', ultra: 'Ultra' };
+const codexModelLabel = (slug) =>
+  (_codexCatalog.models.find(m => m.slug === slug) || {}).label || slug;
+// Apply a catalog from /api/settings and repaint anything derived from it.
+function setCodexCatalog(cat) {
+  if (!cat || !Array.isArray(cat.models)) return;
+  _codexCatalog = cat;
+  const sel = document.getElementById('codexModelSelect');
+  if (sel) {
+    const keep = sel.value;
+    sel.innerHTML = '<option value="">既定 (CLI まかせ)</option>';
+    for (const m of cat.models) {
+      const o = document.createElement('option');
+      o.value = m.slug; o.textContent = m.label;
+      sel.appendChild(o);
+    }
+    sel.value = keep;
+  }
+  const esel = document.getElementById('codexEffortSelect');
+  if (esel) {
+    const keep = esel.value;
+    esel.innerHTML = '<option value="">既定 (CLI まかせ)</option>';
+    for (const e of cat.efforts) {
+      const o = document.createElement('option');
+      o.value = e; o.textContent = `${CODEX_EFFORT_LABELS[e] || e} (${e})`;
+      esel.appendChild(o);
+    }
+    esel.value = keep;
+  }
+  refreshModelPill();
+}
 // Engine of the session currently open in the main pane. Drives which model
 // list the pill/menu shows; set from the `history` payload on every attach.
 let _sessionEngine = 'claude';
@@ -1833,7 +1856,7 @@ function refreshModelPill() {
   const pill = document.getElementById('modelPill');
   if (!pill) return;
   if (_sessionEngine === 'codex') {
-    const m = CODEX_MODEL_LABELS[_curCodexModel] || _curCodexModel || '既定';
+    const m = _curCodexModel ? codexModelLabel(_curCodexModel) : '既定';
     const e = _curCodexEffort ? (CODEX_EFFORT_LABELS[_curCodexEffort] || _curCodexEffort) : '';
     pill.textContent = 'Codex ' + (e ? `${m}・${e}` : m);
     return;
@@ -4255,8 +4278,12 @@ function openModelMenu() {
   // (Claude: a custom free-text model not in the quick list still shows,
   // checked, so the picker never hides the active choice.)
   const curModel = isCdx ? _curCodexModel : _curModel;
-  const quick = isCdx ? CODEX_MODELS : QUICK_MODELS;
-  const labels = isCdx ? CODEX_MODEL_LABELS : MODEL_LABELS;
+  const quick = isCdx
+    ? ['', ..._codexCatalog.models.map(m => m.slug)]
+    : QUICK_MODELS;
+  const labels = isCdx
+    ? Object.fromEntries([['', '既定'], ..._codexCatalog.models.map(m => [m.slug, m.label])])
+    : MODEL_LABELS;
   const models = quick.includes(curModel) ? quick : [curModel, ...quick];
   for (const v of models) {
     const b = document.createElement('button');
@@ -4274,8 +4301,9 @@ function openModelMenu() {
   lab.textContent = '工数';
   const sel = document.createElement('select');
   const effOpts = isCdx
-    ? [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']]
+    ? [['', '既定'], ..._codexCatalog.efforts.map(e => [e, CODEX_EFFORT_LABELS[e] || e])]
     : [['', '既定'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', 'Max']];
+
   for (const [v, t] of effOpts) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
@@ -4317,6 +4345,7 @@ async function openSettingsModal() {
     _settingsDefault = data.autoCompactDefault || 167000;
     setModelControls(data.model || '');
     document.getElementById('effortSelect').value = data.effort || '';
+    setCodexCatalog(data.codexCatalog);
     document.getElementById('codexModelSelect').value = data.codexModel || '';
     document.getElementById('codexEffortSelect').value = data.codexEffort || '';
     _curCodexModel = data.codexModel || '';
